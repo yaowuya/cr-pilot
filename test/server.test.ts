@@ -4,7 +4,21 @@ import { createLogger } from "../src/logger.ts";
 import { startServer } from "../src/server.ts";
 import type { Reviewer } from "../src/reviewer.ts";
 
-const config = { port: 0, host: "127.0.0.1", promptPath: "prompts/review.md", timeoutMs: 1000, logLevel: "info" as const };
+const config = {
+  port: 0,
+  host: "127.0.0.1",
+  promptPath: "prompts/review.md",
+  timeoutMs: 1000,
+  logLevel: "info" as const,
+  // backend-008 会整体重写本文件；此处先补 GitLab 必填字段保持可编译。
+  gitlabUrl: "https://gitlab.example.com",
+  gitlabToken: "t",
+  gitlabWebhookSecret: "s",
+  gitlabInsecureTls: false,
+  gitlabApiTimeoutMs: 1000,
+  batchMaxTokens: 6000,
+  rulesDir: "prompts/rules",
+};
 
 const okReviewer: Reviewer = { review: async () => ({ text: "ok", model: "m" }) };
 
