@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .idea/
+.agent
+.apifox/
+.mcp.json
