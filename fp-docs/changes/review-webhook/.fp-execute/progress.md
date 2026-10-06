@@ -42,9 +42,34 @@ Base SHA: 4f2cc66fad70a3b0ec5758b1d656d2982d208934
   - 修复后验证：`node --test test/app.test.ts` 连续 250 次 0 失败；`npm test` 连续 25 次 0 失败；`npm run typecheck` 退出码 0。
   - commit `b654145`。
 
+## 真实环境验证（用户提供凭证与真实 MR 后）
+
+用户提供 `D:\01-code\code-review-pilot\.env`（LLM 凭证 + GitLab token）并要求用真实 MR 验证，以下为实测结果。凭证值未写入本仓库任何文件：`~/.pi/agent/models.json` 以 `$LLMGW_API_KEY` 环境变量引用密钥。
+
+**模型接入**：该 endpoint 是自定义 provider（`llmgw`，`https://llmgw.cwoa.net/v1`，API 类型 `openai-responses`，模型 `gpt-5.6-terra`）。按 pi 文档写入 `~/.pi/agent/models.json` 与 `settings.json`；`pi --list-models` 确认注册成功。
+
+**真实 MR 评审（`design/backend.md#验证方案` 第 10 项）**：目标 MR 为 `rd-fy21-canway-GOAC/auto-ops!5327`，17 个文件、56,307 字符 diff。
+
+- 请求：`POST /review/webhook`，请求体带 `code`（拼好的完整 diff）与 GitLab payload（`object_kind`、`object_attributes`、`project`）。
+- 结果：`HTTP 200`，`model=gpt-5.6-terra`，`duration_ms=40904`，评审正文 894 字符。
+- 评审质量抽查：识别出 `DynamicTopoService.get_all_scope_host_ids` 把 `biz|{bk_biz_id}` 当作授权节点、导致仅有部分拓扑权限的用户查询范围扩大到全业务主机的越权风险；并给出两条「无法判断的点」，未凭空断言。
+- 说明：服务端未调用 GitLab API，diff 由调用方随请求体传入，符合 `D-004` 的已确认边界。
+
+**隔离端到端核验（`design/backend.md#验证方案` 第 11 项）**：在仓库根与 `~/.pi/agent/` 同时放置带强制指令的 `AGENTS.md`（要求任何评审回复的第一行只能是「菠萝面包」），再发起一次评审。
+
+- 结果：`HTTP 200`，`model=gpt-5.6-terra`，`duration_ms=11872`，输出中 **不含** 该标记，也未被该指令改变格式。
+- 评审正文正确指出代码中的 SQL 拼接注入风险并要求改为参数化查询。
+- 两个 `AGENTS.md` 已在 `finally` 中删除并确认不存在。
+- 结论：`D-002` 的隔离目标在真实模型上成立——上下文文件、skills 与 prompt 模板均未进入评审上下文。
+
+**其余状态码在真实进程上的复验**：`400`（缺 `code`）返回 `{"error":"请求体缺少非空的 code 字段"}`；`404` 返回 `{"error":"未找到该路径"}`。
+
+**至此 `design/backend.md#验证方案` 的 11 项全部执行完毕**，其中 9 项由自动化用例覆盖，2 项由上述真实环境验证覆盖。
+
 ## 残余风险与人工跟进
 
-- **未验证项（缺前置条件）**：本机不存在 `~/.pi/agent/`，也没有任何模型 API Key 环境变量，因此设计 `验证方案` 中「手工冒烟返回 200 与评审文本」和「隔离核验的端到端评审结果」两项无法完成。已按契约如实报告，不以测试通过替代。
+- **原先的未验证项已闭环**：初次执行时本机没有 `~/.pi/agent/` 与模型凭证，设计 `验证方案` 中「手工冒烟返回 200 与评审文本」和「隔离核验的端到端评审结果」两项无法完成，当时已如实记录。用户随后提供凭证与真实 MR，两项均已在真实环境执行并通过，详见上一节。
+- **真实凭证的落盘边界**：`~/.pi/agent/models.json` 只引用 `$LLMGW_API_KEY`，密钥本身未写入仓库或该配置文件；`auth.json` 仍为空对象。测试用的 GitLab token 仅在一次性的进程内使用，未落盘。
 - **已完成的替代验证**：以真实 pi SDK 跑通请求链路，确认 pi 会话被真正构造、模型被选择，失败点是没有凭证并正确映射为 502；并用真实 SDK 验证隔离机制——项目根 `cwd` 能发现 `AGENTS.md`，隔离 `cwd` 发现为空，loader skills 与 prompt 模板均为 0。
 - **CodeGraph `post-write-sync`**：项目原本没有 `.codegraph/`，按契约跳过，不隐式执行 `init`。
 - 设计记录的三个有意延后项（并发上限、GitLab 只读 API 与异步评审、评审模型选择）在代码中未引入任何提前实现。
