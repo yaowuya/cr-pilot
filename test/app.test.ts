@@ -1,10 +1,40 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer, type Server } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Express } from "express";
 import { createApp } from "../src/app.ts";
 import type { Reviewer } from "../src/reviewer.ts";
+
+/**
+ * Fetch 规范定义了一组禁用端口，undici 会直接拒绝连接并报 `bad port`。
+ * `listen(0)` 偶尔会分配到这些端口，使测试随机失败，因此绑定后必须校验。
+ * 只列出大于 1024 的条目：动态端口不会落在更低的范围。
+ */
+const FETCH_BAD_PORTS = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000,
+  6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080,
+]);
+
+/** 启动一个 fetch 可访问的临时服务器，跳过规范禁用的端口。 */
+async function listenOnFetchablePort(app: Express): Promise<{ server: Server; port: number }> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const server = createServer(app);
+    await new Promise<void>((resolve, reject) => {
+      // 先挂事件再 listen：Express 的 listen 回调不对应 listening 事件。
+      server.once("error", reject);
+      server.once("listening", () => resolve());
+      server.listen(0, "127.0.0.1");
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    if (port > 0 && !FETCH_BAD_PORTS.has(port)) return { server, port };
+    await new Promise((resolve) => server.close(resolve));
+  }
+  throw new Error("连续 20 次都分配到 fetch 不可用的端口");
+}
 
 async function withApp(
   run: (base: string) => Promise<void>,
@@ -12,10 +42,7 @@ async function withApp(
   promptPath: string,
   timeoutMs = 5000,
 ): Promise<void> {
-  const server = createApp({ reviewer, promptPath, timeoutMs }).listen(0, "127.0.0.1");
-  await new Promise((resolve) => server.once("listening", resolve));
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
+  const { server, port } = await listenOnFetchablePort(createApp({ reviewer, promptPath, timeoutMs }));
   try {
     await run(`http://127.0.0.1:${port}`);
   } finally {
