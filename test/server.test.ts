@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createLogger } from "../src/logger.ts";
-import { startServer } from "../src/server.ts";
-import type { Reviewer } from "../src/reviewer.ts";
+import { createTaskQueue } from "../src/queue.ts";
+import { createReviewPipeline } from "../src/pipeline.ts";
+import { startServer, type ServerDeps } from "../src/server.ts";
+import type { GitlabClient } from "../src/gitlab-client.ts";
+import type { ReviewRules } from "../src/rules.ts";
+import { createSilentLogger } from "../src/logger.ts";
 
 const config = {
   port: 0,
@@ -10,7 +14,6 @@ const config = {
   promptPath: "prompts/review.md",
   timeoutMs: 1000,
   logLevel: "info" as const,
-  // backend-008 会整体重写本文件；此处先补 GitLab 必填字段保持可编译。
   gitlabUrl: "https://gitlab.example.com",
   gitlabToken: "t",
   gitlabWebhookSecret: "s",
@@ -20,17 +23,30 @@ const config = {
   rulesDir: "prompts/rules",
 };
 
-const okReviewer: Reviewer = { review: async () => ({ text: "ok", model: "m" }) };
-
 /** 收集日志行，便于断言启动日志内容。 */
 function collectingLogger(): { lines: string[]; logger: ReturnType<typeof createLogger> } {
   const lines: string[] = [];
   return { lines, logger: createLogger("info", (line) => lines.push(line)) };
 }
 
-test("startServer 在随机端口监听并可关闭", async () => {
+/** 构造最小可用的装配依赖：队列 + 空管线 + webhook 入队。 */
+function makeDeps(logger: ReturnType<typeof createLogger>): ServerDeps {
+  const queue = createTaskQueue(logger);
+  const client = {} as GitlabClient;
+  const rules = { resolve: () => ({ systemPrompt: "s", userPrompt: "u" }) } as unknown as ReviewRules;
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: { review: async () => ({ text: "x", model: "m" }) },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  return { queue, webhookSecret: "s", pipeline, logger };
+}
+
+test("startServer 装配后监听并可关闭，打印监听日志", async () => {
   const { lines, logger } = collectingLogger();
-  const server = await startServer(config, okReviewer, logger);
+  const server = await startServer(config, makeDeps(logger), logger);
   const address = server.address();
   assert.equal(typeof address === "object" && address !== null && address.port > 0, true);
   await new Promise((resolve) => server.close(resolve));
@@ -39,12 +55,12 @@ test("startServer 在随机端口监听并可关闭", async () => {
 
 test("startServer 端口被占用时拒绝", async () => {
   const { logger } = collectingLogger();
-  const first = await startServer(config, okReviewer, logger);
+  const first = await startServer(config, makeDeps(logger), logger);
   const address = first.address();
   assert.equal(typeof address === "object" && address !== null, true);
   const taken = (address as { port: number }).port;
   try {
-    await assert.rejects(() => startServer({ ...config, port: taken }, okReviewer, logger));
+    await assert.rejects(() => startServer({ ...config, port: taken }, makeDeps(logger), logger));
   } finally {
     await new Promise((resolve) => first.close(resolve));
   }
