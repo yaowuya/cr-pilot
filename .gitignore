@@ -1,6 +1,15 @@
 node_modules/
 *.log
 .idea/
-.agent
 .apifox/
 .mcp.json
+
+# Skills under .agent are shared code and are committed. Everything else in .agent
+# is local state and stays out of the repository.
+.agent/*
+!.agent/skills/
+
+# The skills exception above re-admits the whole subtree, so credential patterns have
+# to be re-ignored explicitly, including inside the skills tree.
+.agent/**/.env
+.agent/**/*.env.*
