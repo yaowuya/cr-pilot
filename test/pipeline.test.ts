@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { estimateTokens, splitChangesIntoBatches, type Change } from "../src/pipeline.ts";
+import { estimateTokens, splitChangesIntoBatches } from "../src/pipeline.ts";
+import type { Change } from "../src/gitlab-client.ts";
 
 function change(diff: string, newPath = "a.ts"): Change {
   return { newPath, oldPath: newPath, diff };
@@ -17,24 +18,25 @@ test("小变更保持单批", () => {
   assert.equal(batches.length, 1);
 });
 
-test("超过预算的多个变更拆成多批", () => {
-  const big = "x".repeat(4000); // ≈1000 tokens
+test("超过预算的多个变更拆成多批，且每批不超阈值", () => {
+  const big = "x".repeat(4000); // ≈1000 tokens；单行超阈值时会按字符再拆
   const changes = [change(big, "a.ts"), change(big, "b.ts"), change(big, "c.ts")];
-  const batches = splitChangesIntoBatches(changes, 1200, 100); // 预算 1200，85% 阈值 1020，开销 100
-  assert.equal(batches.length, 3);
+  const batches = splitChangesIntoBatches(changes, 1200, 100); // 阈值 = 1200*0.85-100 = 920 tokens
+  assert.ok(batches.length > 3);
   for (const batch of batches) {
-    assert.equal(batch.length, 1);
+    const totalTokens = batch.reduce((sum, c) => sum + estimateTokens(c.diff), 0);
+    assert.ok(totalTokens <= 920, `批过大：${totalTokens} tokens`);
   }
 });
 
-test("单文件超预算时按 diff 行拆分", () => {
+test("单文件超预算时按 diff 行拆分，且每批不超阈值", () => {
   const lines = Array.from({ length: 8 }, (_, i) => `+line-${i}-${"y".repeat(200)}`);
   const diff = lines.join("\n");
-  const batches = splitChangesIntoBatches([change(diff, "big.ts")], 600, 100);
+  const batches = splitChangesIntoBatches([change(diff, "big.ts")], 600, 100); // 阈值 = 410 tokens
   assert.ok(batches.length > 1);
   for (const batch of batches) {
-    const total = batch.reduce((sum, c) => sum + c.diff.length, 0);
-    assert.ok(total <= 900, `批过大：${total}`);
+    const totalTokens = batch.reduce((sum, c) => sum + estimateTokens(c.diff), 0);
+    assert.ok(totalTokens <= 410, `批过大：${totalTokens} tokens`);
   }
 });
 
