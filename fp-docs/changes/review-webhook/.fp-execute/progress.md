@@ -34,6 +34,14 @@ Base SHA: 4f2cc66fad70a3b0ec5758b1d656d2982d208934
 7. **启动失败判定**：实测发现 Express 5 `app.listen(port, host, cb)` 的回调**不对应 `listening` 事件**——端口占用时它先于 `error` 触发，导致启动失败被当成成功（`address()` 为 null）。改为显式 `createServer` 并在 `listen()` 之前挂 `error` / `listening`。这是本次执行发现的真实缺陷。
 8. **`package-lock.json`**：计划 File Structure 未列出，它是 `npm install` 对已声明依赖的生成物，按通行做法提交，未新增任何未声明依赖。
 
+## 终审前发现并修复的缺陷
+
+- **测试基础设施缺陷（`test/app.test.ts`）**：终审前跑 `npm test` 出现 1 次 `not ok 7 - pi 返回空文本返回 502`，报错为 `fetch failed`。诊断后确认根因：Fetch 规范定义了一组禁用端口，undici 依规范直接拒绝连接并报 `bad port`；`listen(0)` 会偶发分配到这些端口。抓到的失败端口为 `10080`、`5061`、`6566`、`6666`、`6667`、`6668`，全部在该禁用列表中。
+  - 恢复率证据：原始测试文件 60 次中失败 1 次；带 fetch 拦截的诊断副本 200 次中失败 6 次。产品代码本身无缺陷。
+  - 修复：`test/app.test.ts` 的测试服务器改用 `createServer` + 先挂事件再 `listen`，并在绑定后校验端口，命中禁用列表就重新绑定（最多 20 次）。
+  - 修复后验证：`node --test test/app.test.ts` 连续 250 次 0 失败；`npm test` 连续 25 次 0 失败；`npm run typecheck` 退出码 0。
+  - commit `b654145`。
+
 ## 残余风险与人工跟进
 
 - **未验证项（缺前置条件）**：本机不存在 `~/.pi/agent/`，也没有任何模型 API Key 环境变量，因此设计 `验证方案` 中「手工冒烟返回 200 与评审文本」和「隔离核验的端到端评审结果」两项无法完成。已按契约如实报告，不以测试通过替代。
