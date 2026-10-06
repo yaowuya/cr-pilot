@@ -1,4 +1,4 @@
-- [ ] **Task backend-007: webhook 路由改造**
+- [x] **Task backend-007: webhook 路由改造**
 
 **Files:**
 - Modify: `src/app.ts`
@@ -150,7 +150,7 @@ git add src/app.ts test/app.test.ts
 git commit -m "feat: gitlab webhook route with secret check and queue dispatch"
 ```
 
-- [ ] **Task backend-008: 装配、文档与端到端启动**
+- [x] **Task backend-008: 装配、文档与端到端启动**
 
 **Files:**
 - Modify: `src/server.ts`

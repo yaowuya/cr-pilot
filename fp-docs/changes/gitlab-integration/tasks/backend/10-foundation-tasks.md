@@ -1,4 +1,4 @@
-- [ ] **Task backend-001: 配置扩展与端口默认值**
+- [x] **Task backend-001: 配置扩展与端口默认值**
 
 **Files:**
 - Modify: `src/config.ts`
@@ -79,7 +79,7 @@ git add src/config.ts package.json test/config.test.ts package-lock.json
 git commit -m "feat: extend config with gitlab, batching and rules settings"
 ```
 
-- [ ] **Task backend-002: 仓库规则加载与匹配**
+- [x] **Task backend-002: 仓库规则加载与匹配**
 
 **Files:**
 - Create: `src/rules.ts`
@@ -184,7 +184,7 @@ git add src/rules.ts prompts/rules/default.yaml test/rules.test.ts
 git commit -m "feat: per-repository review rules with yaml loader"
 ```
 
-- [ ] **Task backend-003: GitLab 客户端**
+- [x] **Task backend-003: GitLab 客户端**
 
 **Files:**
 - Create: `src/gitlab-client.ts`

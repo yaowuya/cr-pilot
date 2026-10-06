@@ -1,4 +1,4 @@
-- [ ] **Task backend-004: 内存串行队列**
+- [x] **Task backend-004: 内存串行队列**
 
 **Files:**
 - Create: `src/queue.ts`
@@ -83,7 +83,7 @@ git add src/queue.ts test/queue.test.ts
 git commit -m "feat: in-memory serial task queue"
 ```
 
-- [ ] **Task backend-005: 分批拆分纯函数**
+- [x] **Task backend-005: 分批拆分纯函数**
 
 **Files:**
 - Create: `src/pipeline.ts`（本任务先落地拆分部分）
@@ -168,7 +168,7 @@ git add src/pipeline.ts test/pipeline.test.ts
 git commit -m "feat: token-estimated diff batching for review pipeline"
 ```
 
-- [ ] **Task backend-006: 逐批评审与汇总编排**
+- [x] **Task backend-006: 逐批评审与汇总编排**
 
 **Files:**
 - Modify: `src/pipeline.ts`
