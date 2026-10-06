@@ -15,12 +15,62 @@ npm install
 
 ## 前置条件：pi 模型凭证
 
-服务在进程内嵌入 pi SDK，因此运行服务的进程必须能解析到模型凭证。凭证由 pi 自身管理，不属于本项目的配置项。
+服务在进程内嵌入 pi SDK，因此运行服务的进程必须能解析到模型凭证。凭证由 pi 自身管理，不属于本项目的配置项，也不通过本服务的环境变量传入。
 
-- 全局配置目录为 `~/.pi/agent/`，包含 `settings.json` 与 `auth.json`。
-- 评审所用的模型也由该配置决定，本服务不提供按请求选模型的入口。
+配置目录默认为 `~/.pi/agent/`，可用 `PI_CODING_AGENT_DIR` 改到别处。需要两个文件。
 
-凭证缺失或模型不可用时，每次评审都会返回 502。
+**`models.json` — 声明评审使用的模型。** 内置 provider 之外的自定义 endpoint 写在这里：
+
+```json
+{
+  "providers": {
+    "llmgw": {
+      "baseUrl": "https://llmgw.cwoa.net/v1",
+      "api": "openai-responses",
+      "models": [
+        {
+          "id": "gpt-5.6-terra",
+          "name": "gpt-5.6-terra",
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 32000,
+          "reasoning": false,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
+```
+
+**`auth.json` — 存放该 provider 的密钥。** 键名与 `models.json` 里的 provider 名一致：
+
+```json
+{
+  "llmgw": { "type": "api_key", "key": "<模型服务密钥>" }
+}
+```
+
+`settings.json` 里的 `defaultModel` 决定默认模型；本服务不提供按请求选模型的入口。
+
+### 校验配置是否可用
+
+```bash
+npx pi auth check --provider llmgw --json   # 期望 {"status":"ready",...}
+npx pi --list-models                        # 期望能列出上面声明的模型
+```
+
+两处都通过后服务才能评审成功。注意 `models.json` 的 `apiKey` 字段是可选的环境变量插值形式（`$NAME`）；把密钥放在 `auth.json` 更合适，也不会因为进程缺少该环境变量而失败。
+
+### 凭证缺失时的表现
+
+每次评审返回 `502`，错误体形如：
+
+```json
+{"error": "No API key found for the selected model."}
+```
+
+看到这个错误说明凭证没被解析到，按上面的两处检查核对；这是配置问题，不是接口问题。
 
 ## 配置
 
