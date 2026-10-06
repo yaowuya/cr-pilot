@@ -1,4 +1,4 @@
-import express, { type Express } from "express";
+import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { extractGitlabContext, isGitlabPayload } from "./gitlab.ts";
 import { loadReviewPrompt } from "./prompt.ts";
 import type { Reviewer } from "./reviewer.ts";
@@ -44,13 +44,54 @@ export function createApp(deps: AppDeps): Express {
     const context = contextParts.join("\n\n") || undefined;
 
     const startedAt = Date.now();
-    const systemPrompt = await loadReviewPrompt(deps.promptPath);
+    let systemPrompt: string;
+    try {
+      systemPrompt = await loadReviewPrompt(deps.promptPath);
+    } catch (error) {
+      // prompt 不可用属于服务端配置问题，与评审失败区分开，调用方据此排查方向不同。
+      res.status(500).json({ error: error instanceof Error ? error.message : "读取 prompt 失败" });
+      return;
+    }
+
     const signal = AbortSignal.timeout(deps.timeoutMs);
-    const result = await deps.reviewer.review({ systemPrompt, code, context, signal });
-    res.json({ review: result.text, model: result.model, duration_ms: Date.now() - startedAt });
+    try {
+      const result = await deps.reviewer.review({ systemPrompt, code, context, signal });
+      const review = result.text.trim();
+      if (!review) {
+        // Reviewer 是可替换契约，空结果在这里再挡一次，避免把空评审当成功返回。
+        res.status(502).json({ error: "评审结果为空" });
+        return;
+      }
+      res.json({ review, model: result.model, duration_ms: Date.now() - startedAt });
+    } catch (error) {
+      // 超时判定只看信号状态：pi 在中断时抛出的错误类型不稳定，不能作为判定依据。
+      if (signal.aborted) {
+        res.status(504).json({ error: `评审超时（${deps.timeoutMs}ms）` });
+        return;
+      }
+      res.status(502).json({ error: error instanceof Error ? error.message : "评审调用失败" });
+    }
+  });
+
+  app.use((_req, res) => {
+    res.status(404).json({ error: "未找到该路径" });
+  });
+
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (res.headersSent) return;
+    // 请求体 JSON 解析失败与体积超限由 body-parser 以带 status 的错误抛出，沿用该状态码。
+    res.status(readClientErrorStatus(error)).json({
+      error: error instanceof Error ? error.message : "服务器内部错误",
+    });
   });
 
   return app;
+}
+
+/** 读取 body-parser 给出的 4xx 状态码；其他情况一律按 500 处理。 */
+function readClientErrorStatus(error: unknown): number {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500 ? status : 500;
 }
 
 /**

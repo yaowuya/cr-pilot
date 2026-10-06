@@ -38,6 +38,11 @@ const okReviewer: Reviewer = {
   review: async () => ({ text: "REVIEW", model: "test-model" }),
 };
 
+/** fetch 的 json() 返回 unknown，测试里统一读取为可索引对象。 */
+async function readJson(response: { json(): Promise<unknown> }): Promise<Record<string, unknown>> {
+  return (await response.json()) as Record<string, unknown>;
+}
+
 test("成功路径返回 200 与三个字段", async () => {
   await withPromptFile((promptPath) => withApp(async (base) => {
     const response = await fetch(`${base}/review/webhook`, {
@@ -46,7 +51,7 @@ test("成功路径返回 200 与三个字段", async () => {
       body: JSON.stringify({ code: "const a = 1;" }),
     });
     assert.equal(response.status, 200);
-    const body = await response.json();
+    const body = await readJson(response);
     assert.equal(body.review, "REVIEW");
     assert.equal(body.model, "test-model");
     assert.equal(typeof body.duration_ms, "number");
@@ -61,7 +66,7 @@ test("缺少 code 返回 400", async () => {
       body: JSON.stringify({}),
     });
     assert.equal(response.status, 400);
-    assert.equal(typeof (await response.json()).error, "string");
+    assert.equal(typeof (await readJson(response)).error, "string");
   }, okReviewer, promptPath));
 });
 
@@ -84,6 +89,80 @@ test("GitLab payload 缺 code 时错误信息点明 payload 不含代码", async
       body: JSON.stringify({ object_kind: "merge_request", object_attributes: { iid: 1, title: "t" } }),
     });
     assert.equal(response.status, 400);
-    assert.match((await response.json()).error, /payload 不含代码/);
+    assert.match(String((await readJson(response)).error), /payload 不含代码/);
+  }, okReviewer, promptPath));
+});
+
+test("prompt 文件不存在返回 500", async () => {
+  await withApp(async (base) => {
+    const response = await fetch(`${base}/review/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "x" }),
+    });
+    assert.equal(response.status, 500);
+    assert.equal(typeof (await readJson(response)).error, "string");
+  }, okReviewer, join(tmpdir(), "crp-missing-prompt.md"));
+});
+
+test("pi 调用抛错返回 502", async () => {
+  const failingReviewer: Reviewer = {
+    review: async () => {
+      throw new Error("模型不可用");
+    },
+  };
+  await withPromptFile((promptPath) => withApp(async (base) => {
+    const response = await fetch(`${base}/review/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "x" }),
+    });
+    assert.equal(response.status, 502);
+  }, failingReviewer, promptPath));
+});
+
+test("pi 返回空文本返回 502", async () => {
+  const emptyReviewer: Reviewer = { review: async () => ({ text: "   ", model: "m" }) };
+  await withPromptFile((promptPath) => withApp(async (base) => {
+    const response = await fetch(`${base}/review/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "x" }),
+    });
+    assert.equal(response.status, 502);
+  }, emptyReviewer, promptPath));
+});
+
+test("超时返回 504 且假实现观察到信号中断", async () => {
+  let observedAbort = false;
+  const observingReviewer: Reviewer = {
+    review: ({ signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            observedAbort = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      }),
+  };
+  await withPromptFile((promptPath) => withApp(async (base) => {
+    const response = await fetch(`${base}/review/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "x" }),
+    });
+    assert.equal(response.status, 504);
+    assert.equal(observedAbort, true);
+  }, observingReviewer, promptPath, 50));
+});
+
+test("未知路径返回 JSON 形状的 404", async () => {
+  await withPromptFile((promptPath) => withApp(async (base) => {
+    const response = await fetch(`${base}/nope`);
+    assert.equal(response.status, 404);
+    assert.equal(typeof (await readJson(response)).error, "string");
   }, okReviewer, promptPath));
 });
