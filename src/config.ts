@@ -1,3 +1,5 @@
+import { parseLogLevel, type LogLevel } from "./logger.ts";
+
 /** 服务运行期配置。所有字段都有默认值，只有非法输入才会让启动失败。 */
 export interface AppConfig {
   /** 监听端口。 */
@@ -8,6 +10,8 @@ export interface AppConfig {
   promptPath: string;
   /** 单次评审的超时毫秒数。 */
   timeoutMs: number;
+  /** 日志级别。默认 info，输出请求处理的每个步骤。 */
+  logLevel: LogLevel;
 }
 
 const DEFAULT_PORT = 3000;
@@ -27,6 +31,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     host: env.HOST?.trim() || DEFAULT_HOST,
     promptPath: env.REVIEW_PROMPT_PATH?.trim() || DEFAULT_PROMPT_PATH,
     timeoutMs: readPositiveInt(env, "REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
+    logLevel: parseLogLevel(env.LOG_LEVEL),
   };
 }
 

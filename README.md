@@ -80,6 +80,39 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `REVIEW_PROMPT_PATH` | `prompts/review.md` | 评审 prompt 文件路径 |
 | `REVIEW_TIMEOUT_MS` | `120000` | 单次评审超时毫秒数 |
+| `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
+
+## 日志
+
+服务把请求处理的每个步骤都写到控制台，默认 `info` 级别即可看到完整流水线。时间使用本地时区，`debug` 与 `info` 走标准输出，`warn` 与 `error` 走标准错误。
+
+一次成功评审的输出形如：
+
+```text
+[2026-10-06 20:01:57.363] INFO  cr-pilot 正在启动 node=v22.19.0 logLevel=info
+[2026-10-06 20:01:57.368] INFO  生效配置 host=127.0.0.1 port=3305 promptPath=prompts/review.md timeoutMs=300000
+[2026-10-06 20:01:57.384] INFO  服务已开始监听 url=http://127.0.0.1:3305/review/webhook
+[2026-10-06 20:01:58.888] INFO  收到评审请求 method=POST path=/review/webhook remote=127.0.0.1 bodyBytes=409
+[2026-10-06 20:01:58.891] INFO  请求体解析完成 isGitlabPayload=false bodyFields=code,context
+[2026-10-06 20:01:58.893] INFO  入参校验通过 codeChars=331 contextSources=1 contextChars=13
+[2026-10-06 20:01:58.897] INFO  prompt 就绪 promptPath=prompts/review.md promptChars=491 durationMs=3
+[2026-10-06 20:01:58.898] INFO  开始调用 pi timeoutMs=300000 promptChars=491 codeChars=331 contextChars=13
+[2026-10-06 20:02:27.214] INFO  评审完成 model=gpt-5.6-terra reviewChars=430 durationMs=28317
+[2026-10-06 20:02:27.218] INFO  响应完成 status=200 reviewChars=430 totalMs=28330
+```
+
+失败路径同样按步骤记录，例如：
+
+```text
+[2026-10-06 20:02:28.288] WARN  入参校验失败 status=400 reason=missing_code totalMs=1
+[2026-10-06 20:03:00.983] ERROR 监听失败 host=127.0.0.1 port=3306 message="listen EACCES: permission denied 127.0.0.1:3306"
+```
+
+`LOG_LEVEL=debug` 额外输出 pi 会话的内部步骤：隔离工作目录、会话创建与释放、送入 pi 的消息长度、pi 返回。
+
+**日志不记录代码正文与评审正文**，只记录长度与耗时。请求体里是待评审的源代码，日志经常被转发到控制台以外的位置，写全文会扩大泄露面。排查内容问题请直接看接口响应。
+
+`silent` 用于测试等需要完全静默的场景。
 
 `HOST` 默认只绑本机。接口按已确认的设计不做鉴权，改成对外地址前请自行评估暴露风险。非法数值会在启动时直接报错，不会静默回退到默认值。
 

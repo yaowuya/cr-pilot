@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
 import { createApp } from "../src/app.ts";
+import { createLogger, createSilentLogger, type Logger } from "../src/logger.ts";
 import type { Reviewer } from "../src/reviewer.ts";
 
 /**
@@ -41,13 +42,20 @@ async function withApp(
   reviewer: Reviewer,
   promptPath: string,
   timeoutMs = 5000,
+  logger: Logger = createSilentLogger(),
 ): Promise<void> {
-  const { server, port } = await listenOnFetchablePort(createApp({ reviewer, promptPath, timeoutMs }));
+  const { server, port } = await listenOnFetchablePort(createApp({ reviewer, promptPath, timeoutMs, logger }));
   try {
     await run(`http://127.0.0.1:${port}`);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+/** 收集日志行，用于断言请求处理的每个步骤都有输出。 */
+function collectingLogger(): { lines: string[]; logger: Logger } {
+  const lines: string[] = [];
+  return { lines, logger: createLogger("info", (line) => lines.push(line)) };
 }
 
 async function withPromptFile(run: (path: string) => Promise<void>): Promise<void> {
@@ -192,4 +200,60 @@ test("未知路径返回 JSON 形状的 404", async () => {
     assert.equal(response.status, 404);
     assert.equal(typeof (await readJson(response)).error, "string");
   }, okReviewer, promptPath));
+});
+
+test("成功路径按顺序打印每个处理步骤", async () => {
+  const { lines, logger } = collectingLogger();
+  await withPromptFile((promptPath) => withApp(async (base) => {
+    const response = await fetch(`${base}/review/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: "const a = 1;", context: "上下文" }),
+    });
+    assert.equal(response.status, 200);
+  }, okReviewer, promptPath, 5000, logger));
+
+  const steps = ["收到评审请求", "请求体解析完成", "入参校验通过", "prompt 就绪", "开始调用 pi", "评审完成", "响应完成"];
+  const positions = steps.map((step) => lines.findIndex((line) => line.includes(step)));
+  for (const [index, step] of steps.entries()) {
+    assert.notEqual(positions[index], -1, `缺少步骤日志：${step}`);
+  }
+  const ordered = [...positions].sort((a, b) => a - b);
+  assert.deepEqual(positions, ordered, `步骤日志顺序不正确：\n${lines.join("\n")}`);
+  assert.match(lines.join("\n"), /status=200/);
+});
+
+test("入参校验失败也打印步骤日志", async () => {
+  const { lines, logger } = collectingLogger();
+  await withPromptFile((promptPath) => withApp(async (base) => {
+    const response = await fetch(`${base}/review/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 400);
+  }, okReviewer, promptPath, 5000, logger));
+  const text = lines.join("\n");
+  assert.match(text, /收到评审请求/);
+  assert.match(text, /入参校验失败/);
+  assert.match(text, /status=400/);
+});
+
+test("日志不包含代码正文与评审正文", async () => {
+  const { lines, logger } = collectingLogger();
+  const secretCode = "const API_TOKEN = 'super-secret-value';";
+  const secretReview = "评审里不应出现在日志中的内容";
+  await withPromptFile((promptPath) => withApp(async (base) => {
+    const response = await fetch(`${base}/review/webhook`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: secretCode }),
+    });
+    assert.equal(response.status, 200);
+  }, { review: async () => ({ text: secretReview, model: "m" }) }, promptPath, 5000, logger));
+  const text = lines.join("\n");
+  assert.doesNotMatch(text, /super-secret-value/, "代码正文不应写入日志");
+  assert.doesNotMatch(text, /评审里不应出现在日志中的内容/, "评审正文不应写入日志");
+  assert.match(text, /codeChars=\d+/);
+  assert.match(text, /reviewChars=\d+/);
 });

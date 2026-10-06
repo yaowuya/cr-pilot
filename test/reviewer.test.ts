@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, rmSync } from "node:fs";
+import { createLogger } from "../src/logger.ts";
 import {
   buildLoaderOptions,
   buildUserMessage,
@@ -81,4 +82,18 @@ test("createPiReviewer 在信号已中断时不创建会话直接失败", async 
   await assert.rejects(() => reviewer.review({ systemPrompt: "P", code: "CODE", signal: controller.signal }));
   assert.equal(disposeCount(), 0);
   assert.equal(prompted, false);
+});
+
+test("createPiReviewer 在 debug 级别记录会话生命周期", async () => {
+  const lines: string[] = [];
+  const logger = createLogger("debug", (line) => lines.push(line));
+  const { session } = fakeSession("  评审结论  ");
+  const reviewer = createPiReviewer({ sessionFactory: async () => session, logger });
+  await reviewer.review({ systemPrompt: "P", code: "CODE", context: "CTX", signal: AbortSignal.timeout(5000) });
+  const text = lines.join("\n");
+  assert.match(text, /创建 pi 会话/);
+  assert.match(text, /会话已释放/);
+  assert.match(text, /systemPromptChars=1/);
+  assert.match(text, /userMessageChars=\d+/);
+  assert.doesNotMatch(text, /CODE/, "用户消息正文不应写入日志");
 });

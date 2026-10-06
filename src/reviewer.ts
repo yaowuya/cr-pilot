@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createSilentLogger, type Logger } from "./logger.ts";
 
 /**
  * 资源加载选项类型。
@@ -105,33 +106,48 @@ export function buildUserMessage(code: string, context?: string): string {
  * 会话释放在 `finally` 中用标志位保证只执行一次：超时信号与正常结束可能同时到达，
  * 重复释放会打断 pi 自身的清理流程。信号在评审开始前就已中断时直接失败，
  * 不创建会话，避免为注定失败的请求分配资源。
+ *
+ * 日志只记录 prompt 与用户消息的长度，不记录正文：用户消息里是待评审的源代码。
  */
-export function createPiReviewer(options: { sessionFactory?: PiSessionFactory } = {}): Reviewer {
+export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; logger?: Logger } = {}): Reviewer {
   const workspace = createIsolatedWorkspace();
   const sessionFactory = options.sessionFactory ?? createRealSession;
+  const logger = options.logger ?? createSilentLogger();
+  logger.debug("已创建隔离工作目录", { cwd: workspace });
   return {
     async review({ systemPrompt, code, context, signal }) {
       if (signal.aborted) {
+        logger.debug("评审在开始前已中断，不创建会话");
         throw signal.reason ?? new Error("评审在开始前已被中断");
       }
+      const userMessage = buildUserMessage(code, context);
+      logger.debug("创建 pi 会话", {
+        cwd: workspace,
+        systemPromptChars: systemPrompt.length,
+        userMessageChars: userMessage.length,
+      });
       const session = await sessionFactory({ systemPrompt, cwd: workspace });
       let disposed = false;
       const disposeOnce = (): void => {
         if (disposed) return;
         disposed = true;
         session.dispose();
+        logger.debug("pi 会话已释放");
       };
       const onAbort = (): void => {
+        logger.warn("评审被中断，释放 pi 会话");
         disposeOnce();
       };
       signal.addEventListener("abort", onAbort, { once: true });
       try {
-        await session.prompt(buildUserMessage(code, context));
+        logger.debug("送入 pi 评审", { userMessageChars: userMessage.length });
+        await session.prompt(userMessage);
         if (signal.aborted) {
           throw signal.reason ?? new Error("评审已中断");
         }
         const text = session.getLastAssistantText()?.trim() ?? "";
         if (!text) throw new EmptyReviewError("pi 返回了空评审文本");
+        logger.debug("pi 已返回", { reviewChars: text.length, model: session.model?.id ?? "unknown" });
         return { text, model: session.model?.id ?? "unknown" };
       } finally {
         signal.removeEventListener("abort", onAbort);
