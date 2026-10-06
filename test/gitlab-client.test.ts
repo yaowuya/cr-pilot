@@ -97,11 +97,20 @@ test("URL 尾部斜杠被规范化", async () => {
   assert.equal(calls[0].url, "https://gitlab.example.com/api/v4/projects/1/merge_requests/1/changes?access_raw_diffs=true");
 });
 
-test("insecureTls 为真时使用允许自签名的 dispatcher", async () => {
-  const { calls, fetchFn } = trackFetch(() => jsonResponse(200, { changes: [] }));
-  const client = makeClient(fetchFn, { insecureTls: true });
+test("insecureTls 为真且未配置全局信任时给出告警", async () => {
+  const warnings: string[] = [];
+  const logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (message: string) => {
+      warnings.push(message);
+    },
+    error: () => {},
+  };
+  // 返回非空结果避免触发 changes 重试日志，让告警成为唯一 warn
+  const { fetchFn } = trackFetch(() => jsonResponse(200, { changes: [{ diff: "d", new_path: "a.ts", old_path: "a.ts" }] }));
+  const client = makeClient(fetchFn, { insecureTls: true, logger, retryDelayMs: 0 });
   await client.getMergeRequestChanges(1, 1);
-  // 断言 dispatcher 被传递：非空对象即证明 TLS 旁路路径被启用
-  assert.equal(typeof calls[0].init.dispatcher, "object");
-  assert.ok(calls[0].init.dispatcher);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /NODE_TLS_REJECT_UNAUTHORIZED/);
 });

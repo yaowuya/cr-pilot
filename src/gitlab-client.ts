@@ -1,4 +1,3 @@
-import { Agent } from "undici";
 import { createSilentLogger, type Logger } from "./logger.ts";
 
 /** GitLab API 返回的单个文件变更。字段名与 GitLab `/changes` 响应一致。 */
@@ -65,18 +64,23 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
   const { logger } = options;
   const baseUrl = options.url.replace(/\/+$/, "");
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
-  const dispatcher = options.insecureTls
-    ? new Agent({ connect: { rejectUnauthorized: false } })
-    : undefined;
+  const fetchFn = options.fetchFn ?? fetch;
+
+  // Node 22 的全局 fetch 不接受第三方 undici Agent 实例作 dispatcher（instanceof
+  // 检查失败，报 UND_ERR_INVALID_ARG），因此内网自签名的处理只能用进程级
+  // NODE_TLS_REJECT_UNAUTHORIZED=0 环境变量。此处只告警提示，不再构造 dispatcher。
+  if (options.insecureTls && process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0") {
+    logger.warn(
+      "GITLAB_INSECURE_TLS 已启用但未生效：Node 无法对单个请求关闭 TLS 校验。" +
+        "如需信任自签名证书，请设置 NODE_TLS_REJECT_UNAUTHORIZED=0 或配置 NODE_EXTRA_CA_CERTS 后重启进程。",
+    );
+  }
 
   const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
-    const response = await options.fetchFn!(
+    const response = await fetchFn(
       `${baseUrl}${path}`,
       {
         ...init,
-        // undici 的 Agent 类型与 RequestInit.dispatcher 的声明不完全一致，
-        // 但运行时就是同一个对象；此处显式断言以透传 TLS 旁路 dispatcher。
-        ...(dispatcher ? { dispatcher: dispatcher as unknown as RequestInit["dispatcher"] } : {}),
         headers: { "PRIVATE-TOKEN": options.token, ...(init.headers ?? {}) },
         signal: AbortSignal.timeout(options.timeoutMs),
       },
