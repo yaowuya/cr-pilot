@@ -1,7 +1,15 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DefaultResourceLoaderOptions } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
+
+/**
+ * 资源加载选项类型。
+ *
+ * SDK 根入口只导出 `DefaultResourceLoader` 类而不导出其选项类型，因此从构造函数
+ * 签名派生，避免维护一份会随 SDK 升级失配的本地副本。
+ */
+type LoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>[0];
 
 /** pi 会话的最小可替换面。只声明本服务用到的成员，测试可注入假实现。 */
 export interface PiSessionLike {
@@ -41,7 +49,7 @@ export function buildLoaderOptions(input: {
   prompt: string;
   cwd: string;
   agentDir: string;
-}): DefaultResourceLoaderOptions {
+}): LoaderOptions {
   return {
     cwd: input.cwd,
     agentDir: input.agentDir,
@@ -51,4 +59,100 @@ export function buildLoaderOptions(input: {
     systemPromptOverride: () => input.prompt,
     appendSystemPromptOverride: () => [],
   };
+}
+
+/** 一次评审的输入。systemPrompt 是 prompt 文件全文，code 是待评审内容。 */
+export interface ReviewInput {
+  systemPrompt: string;
+  code: string;
+  context?: string;
+  signal: AbortSignal;
+}
+
+/** 评审结果。model 取自实际会话，便于调用方确认真正生效的模型。 */
+export interface ReviewResult {
+  text: string;
+  model: string;
+}
+
+/**
+ * pi 返回了空评审文本。
+ *
+ * 与调用失败区分开：空文本通常指向 prompt 内容或模型配置问题，而不是 pi 崩溃。
+ */
+export class EmptyReviewError extends Error {
+  override readonly name = "EmptyReviewError";
+}
+
+/** 评审执行者。实现方负责创建与释放 pi 会话；超时由调用方按信号状态判定。 */
+export interface Reviewer {
+  review(input: ReviewInput): Promise<ReviewResult>;
+}
+
+/** 组装用户消息。不使用代码围栏，避免 diff 里出现反引号时截断内容。 */
+export function buildUserMessage(code: string, context?: string): string {
+  const parts: string[] = [];
+  const trimmedContext = context?.trim();
+  if (trimmedContext) parts.push(`背景信息：\n${trimmedContext}`);
+  parts.push(`待评审的代码变更：\n${code}`);
+  return parts.join("\n\n");
+}
+
+/**
+ * 创建基于 pi SDK 的评审执行者。
+ *
+ * 隔离工作目录在构造时创建一次并在进程内复用，避免每个请求产生临时目录。
+ * 会话释放在 `finally` 中用标志位保证只执行一次：超时信号与正常结束可能同时到达，
+ * 重复释放会打断 pi 自身的清理流程。信号在评审开始前就已中断时直接失败，
+ * 不创建会话，避免为注定失败的请求分配资源。
+ */
+export function createPiReviewer(options: { sessionFactory?: PiSessionFactory } = {}): Reviewer {
+  const workspace = createIsolatedWorkspace();
+  const sessionFactory = options.sessionFactory ?? createRealSession;
+  return {
+    async review({ systemPrompt, code, context, signal }) {
+      if (signal.aborted) {
+        throw signal.reason ?? new Error("评审在开始前已被中断");
+      }
+      const session = await sessionFactory({ systemPrompt, cwd: workspace });
+      let disposed = false;
+      const disposeOnce = (): void => {
+        if (disposed) return;
+        disposed = true;
+        session.dispose();
+      };
+      const onAbort = (): void => {
+        disposeOnce();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        await session.prompt(buildUserMessage(code, context));
+        if (signal.aborted) {
+          throw signal.reason ?? new Error("评审已中断");
+        }
+        const text = session.getLastAssistantText()?.trim() ?? "";
+        if (!text) throw new EmptyReviewError("pi 返回了空评审文本");
+        return { text, model: session.model?.id ?? "unknown" };
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        disposeOnce();
+      }
+    },
+  };
+}
+
+/** 默认会话工厂：按已核实的 SDK 签名装配一次隔离的 pi 会话。 */
+async function createRealSession(options: { systemPrompt: string; cwd: string }): Promise<PiSessionLike> {
+  const loader = new DefaultResourceLoader(
+    buildLoaderOptions({ prompt: options.systemPrompt, cwd: options.cwd, agentDir: getAgentDir() }),
+  );
+  await loader.reload();
+  const { session } = await createAgentSession({
+    cwd: options.cwd,
+    resourceLoader: loader,
+    sessionManager: SessionManager.inMemory(),
+    // "all" 关闭内置、扩展与自定义工具；字符串枚举而非布尔值是 SDK 的实际签名。
+    noTools: "all",
+  });
+  return session;
 }
