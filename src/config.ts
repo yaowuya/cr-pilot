@@ -2,37 +2,81 @@ import { parseLogLevel, type LogLevel } from "./logger.ts";
 
 /** 服务运行期配置。所有字段都有默认值，只有非法输入才会让启动失败。 */
 export interface AppConfig {
-  /** 监听端口。 */
+  /** 监听端口。默认 5001，对齐团队既有约定。 */
   port: number;
-  /** 监听地址。默认只绑本机，接口按已确认决策不做鉴权。 */
+  /** 监听地址。默认只绑本机。 */
   host: string;
-  /** 评审 prompt 文件路径，每次评审都重新读取。 */
+  /** 评审 prompt 兜底文件路径（无 YAML 规则时使用）。 */
   promptPath: string;
-  /** 单次评审的超时毫秒数。 */
+  /** 单次评审（单批 / 汇总）的超时毫秒数。 */
   timeoutMs: number;
   /** 日志级别。默认 info，输出请求处理的每个步骤。 */
   logLevel: LogLevel;
+  /** GitLab 实例地址，不带尾部斜杠。必填。 */
+  gitlabUrl: string;
+  /** GitLab 访问令牌：拉取变更与回写评论。必填，只从环境变量读取。 */
+  gitlabToken: string;
+  /** webhook 来源校验 secret，与 GitLab 配置的 Secret Token 一致。必填。 */
+  gitlabWebhookSecret: string;
+  /** 为 true 时跳过 GitLab TLS 证书校验，仅用于内网自签名场景。 */
+  gitlabInsecureTls: boolean;
+  /** GitLab API 单次请求超时毫秒数。 */
+  gitlabApiTimeoutMs: number;
+  /** 单批评审的 token 预算。 */
+  batchMaxTokens: number;
+  /** 仓库规则目录，default.yaml 为全局默认。 */
+  rulesDir: string;
 }
 
-const DEFAULT_PORT = 3000;
+const DEFAULT_PORT = 5001;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PROMPT_PATH = "prompts/review.md";
 const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_GITLAB_API_TIMEOUT_MS = 15000;
+const DEFAULT_BATCH_MAX_TOKENS = 6000;
+const DEFAULT_RULES_DIR = "prompts/rules";
 
 /**
  * 读取服务配置。
  *
- * 非法数值直接抛出，而不是回退到默认值：把 NaN 或负数透传给监听端口或超时计时器，
- * 会在运行期以难以定位的方式失败，启动即失败更容易排查。
+ * 非法值与缺失的必填项直接抛出，而不是回退默认：GitLab 三项配置缺失时服务
+ * 会「启动成功但每次评审都拉取失败」，启动即失败更容易排查。返回的 URL 会
+ * 去掉尾部斜杠，客户端拼接路径时不需要再做规范化。
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const gitlabUrl = requireNonEmpty(env, "GITLAB_URL").replace(/\/+$/, "");
   return {
     port: readPositiveInt(env, "PORT", DEFAULT_PORT),
     host: env.HOST?.trim() || DEFAULT_HOST,
     promptPath: env.REVIEW_PROMPT_PATH?.trim() || DEFAULT_PROMPT_PATH,
     timeoutMs: readPositiveInt(env, "REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
     logLevel: parseLogLevel(env.LOG_LEVEL),
+    gitlabUrl,
+    gitlabToken: requireNonEmpty(env, "GITLAB_TOKEN"),
+    gitlabWebhookSecret: requireNonEmpty(env, "GITLAB_WEBHOOK_SECRET"),
+    gitlabInsecureTls: readBooleanFlag(env, "GITLAB_INSECURE_TLS"),
+    gitlabApiTimeoutMs: readPositiveInt(env, "GITLAB_API_TIMEOUT", DEFAULT_GITLAB_API_TIMEOUT_MS),
+    batchMaxTokens: readPositiveInt(env, "REVIEW_BATCH_MAX_TOKENS", DEFAULT_BATCH_MAX_TOKENS),
+    rulesDir: env.REVIEW_RULES_DIR?.trim() || DEFAULT_RULES_DIR,
   };
+}
+
+/** 读取必填的非空字符串环境变量，缺失或空白时抛错并带上变量名。 */
+function requireNonEmpty(env: NodeJS.ProcessEnv, name: string): string {
+  const value = env[name]?.trim();
+  if (!value) {
+    throw new Error(`环境变量 ${name} 是必填项，当前未配置`);
+  }
+  return value;
+}
+
+/** 读取 0/1 布尔开关。空值走 false，其它值抛错，避免拼错后静默关闭安全开关。 */
+function readBooleanFlag(env: NodeJS.ProcessEnv, name: string): boolean {
+  const raw = env[name]?.trim();
+  if (!raw) return false;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  throw new Error(`环境变量 ${name} 必须是 0 或 1，实际收到 ${raw}`);
 }
 
 /** 读取正整数环境变量。空值走默认值，非正整数抛错并带上变量名。 */
