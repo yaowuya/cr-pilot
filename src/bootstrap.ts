@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { readFile } from "node:fs/promises";
-import { createConsoleLogger } from "./shared/logger.ts";
+import { createConsoleLogger, createFileLogger } from "./shared/logger.ts";
 import { loadConfig } from "./shared/config.ts";
 import { createTaskQueue } from "./shared/queue.ts";
 import { createGitlabClient } from "./infrastructure/gitlab/gitlab-client.ts";
@@ -17,7 +17,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // 本地开发把密钥放在 .env（已 gitignore），部署时用真实环境变量注入。
   loadEnvFileIfPresent(".env");
   const config = loadConfig();
-  const logger = createConsoleLogger(config.logLevel);
+  const logger = config.logFile ? createFileLogger(config.logLevel, config.logFile) : createConsoleLogger(config.logLevel);
   // 启动横幅先打印生效配置：排障时第一步就是确认进程实际用了哪套配置。
   logger.info("cr-pilot 正在启动", { node: process.version, logLevel: config.logLevel });
   logger.info("生效配置", {
@@ -30,6 +30,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     rulesDir: config.rulesDir,
     reviewStyle: config.reviewStyle,
     queueConcurrency: config.queueConcurrency,
+    logFile: config.logFile,
     // 只确认是否配置，绝不打印密钥值。容器内 pi 通过 models.json 的
     // $LLMGW_API_KEY 插值取密钥；为空时评审会报 No API key found。
     llmgwKeySet: Boolean(process.env.LLMGW_API_KEY),

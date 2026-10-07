@@ -101,6 +101,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |
 | `QUEUE_CONCURRENCY` | `5` | 后台队列并发数：同时处理的 MR 评审任务上限 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
+| `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。Docker 部署建议 `/app/logs/cr-pilot.log`（compose 已挂载宿主机 `/data/logs/cr-pilot`） |
 
 无任何必填配置。访问令牌随 webhook 请求头 `X-Gitlab-Token` 携带（每个项目独立，对齐参考项目），`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。
 
@@ -116,11 +117,18 @@ npm start
 
 ```bash
 # 1. 准备 .env：cp .env.example .env，填入 LLMGW_API_KEY（pi 模型密钥）
-# 2. 构建并启动
+#    Docker 部署建议同时设 LOG_FILE=/app/logs/cr-pilot.log
+# 2. 准备宿主机日志目录
+sudo mkdir -p /data/logs/cr-pilot
+# 3. 构建并启动
 docker compose up -d --build
 
 # 健康检查
 curl http://localhost:5001/health   # → {"status":"ok"}
+
+# 查看日志（控制台 + /data/logs/cr-pilot/cr-pilot.log）
+docker compose logs -f cr-pilot
+tail -f /data/logs/cr-pilot/cr-pilot.log
 ```
 
 **pi 凭证闭环**：镜像内置 `pi-agent/models.json` + `settings.json`（`PI_CODING_AGENT_DIR=/app/pi-agent`），其中 `apiKey` 用 `$LLMGW_API_KEY` 环境变量插值；`docker-compose.yml` 把宿主机 `.env` 挂载为 `/app/.env:ro`，应用启动时自动加载。全部配置（含模型密钥）只在一个 `.env` 文件里维护，不依赖宿主机 `~/.pi/agent` 挂载。

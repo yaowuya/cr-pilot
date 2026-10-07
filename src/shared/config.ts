@@ -12,6 +12,8 @@ export interface AppConfig {
   timeoutMs: number;
   /** 日志级别。默认 info，输出请求处理的每个步骤。 */
   logLevel: LogLevel;
+  /** 日志文件路径。空串 = 只写控制台；非空 = 同时写入该文件（目录不存在时自动创建）。 */
+  logFile: string;
   /** GitLab 实例地址，不带尾部斜杠。可选：缺省时从 webhook 的 X-Gitlab-Instance 头或 payload 派生。 */
   gitlabUrl: string;
   /** 为 true 时跳过 GitLab TLS 证书校验，仅用于内网自签名场景。 */
@@ -37,6 +39,7 @@ const DEFAULT_BATCH_MAX_TOKENS = 6000;
 const DEFAULT_RULES_DIR = "prompts/rules";
 const DEFAULT_REVIEW_STYLE = "professional";
 const DEFAULT_QUEUE_CONCURRENCY = 5;
+const DEFAULT_LOG_FILE = "";
 
 /**
  * 读取服务配置。
@@ -54,6 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     promptPath: env.REVIEW_PROMPT_PATH?.trim() || DEFAULT_PROMPT_PATH,
     timeoutMs: readPositiveInt(env, "REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
     logLevel: parseLogLevel(env.LOG_LEVEL),
+    logFile: env.LOG_FILE?.trim() || DEFAULT_LOG_FILE,
     gitlabUrl: normalizeUrl(env.GITLAB_URL),
     gitlabInsecureTls: readBooleanFlag(env, "GITLAB_INSECURE_TLS"),
     gitlabApiTimeoutMs: readPositiveInt(env, "GITLAB_API_TIMEOUT", DEFAULT_GITLAB_API_TIMEOUT_MS),

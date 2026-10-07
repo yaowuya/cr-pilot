@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createLogger, createSilentLogger, parseLogLevel, type LogLevel } from "../../src/shared/logger.ts";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createFileLogger, createLogger, createSilentLogger, parseLogLevel, type LogLevel } from "../../src/shared/logger.ts";
 
 /** 收集日志行，避免测试改写全局输出流。 */
 function collector(level: LogLevel): { lines: string[]; kinds: string[]; logger: ReturnType<typeof createLogger> } {
@@ -72,4 +75,24 @@ test("silent logger 可安全调用", () => {
     logger.warn("w");
     logger.error("e");
   });
+});
+
+test("createFileLogger 写入日志文件并自动创建目录", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crp-log-"));
+  try {
+    const file = join(dir, "sub", "cr-pilot.log"); // sub 目录不存在，应自动创建
+    const logger = createFileLogger("info", file);
+    logger.info("文件日志测试");
+    logger.warn("警告日志");
+    const content = readFileSync(file, "utf8");
+    assert.match(content, /文件日志测试/);
+    assert.match(content, /WARN {2}警告日志/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("createFileLogger 空路径等价于纯控制台日志器", () => {
+  const logger = createFileLogger("silent", "");
+  assert.doesNotThrow(() => logger.info("x"));
 });

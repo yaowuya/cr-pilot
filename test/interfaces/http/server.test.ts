@@ -14,6 +14,7 @@ const config = {
   promptPath: "prompts/review.md",
   timeoutMs: 1000,
   logLevel: "info" as const,
+  logFile: "",
   gitlabUrl: "https://gitlab.example.com",
   gitlabInsecureTls: false,
   gitlabApiTimeoutMs: 1000,

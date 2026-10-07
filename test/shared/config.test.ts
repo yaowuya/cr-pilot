@@ -22,6 +22,7 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     promptPath: "prompts/review.md",
     timeoutMs: 120000,
     logLevel: "info",
+    logFile: "",
     gitlabUrl: "https://gitlab.example.com",
     gitlabInsecureTls: false,
     gitlabApiTimeoutMs: 15000,
@@ -53,12 +54,14 @@ test("loadConfig 采用环境变量覆盖", () => {
     REVIEW_RULES_DIR: "other/rules",
     REVIEW_STYLE: "gentle",
     QUEUE_CONCURRENCY: "3",
+    LOG_FILE: "/app/logs/cr-pilot.log",
   });
   assert.equal(config.port, 8080);
   assert.equal(config.host, "0.0.0.0");
   assert.equal(config.promptPath, "a.md");
   assert.equal(config.timeoutMs, 5000);
   assert.equal(config.logLevel, "debug");
+  assert.equal(config.logFile, "/app/logs/cr-pilot.log");
   assert.equal(config.gitlabInsecureTls, true);
   assert.equal(config.gitlabApiTimeoutMs, 20000);
   assert.equal(config.batchMaxTokens, 9000);

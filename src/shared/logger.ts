@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 /** 日志级别。`silent` 关闭全部输出，用于测试。 */
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
@@ -79,6 +82,41 @@ export function createConsoleLogger(level: LogLevel): Logger {
     }
     process.stdout.write(`${line}\n`);
   });
+}
+
+/**
+ * 创建带文件落点的日志器：控制台 + 日志文件双写。
+ *
+ * `filePath` 为空串时等价于 `createConsoleLogger`。文件用同步追加写入——
+ * 本服务日志量低（每秒几行），同步写保证每行即时落盘、进程崩溃不丢最后几行，
+ * 同时避免流式缓冲带来的测试与排障不确定性。目录不存在时用 mkdirSync 递归
+ * 创建（Docker 挂载的 /app/logs 首次启动时可能还不存在）。文件写入失败不
+ * 抛出——日志丢失不应拖垮评审链路，只降级为控制台输出。
+ */
+export function createFileLogger(level: LogLevel, filePath: string): Logger {
+  if (!filePath) return createConsoleLogger(level);
+  let ready = true;
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+  } catch {
+    ready = false;
+  }
+  const emit: LogSink = (line, kind) => {
+    if (ready) {
+      try {
+        appendFileSync(filePath, `${line}\n`);
+      } catch {
+        // 文件写入失败静默降级：日志不阻塞业务流程。
+      }
+    }
+    // 同时保留控制台输出，便于 docker logs 与本地调试。
+    if (kind === "warn" || kind === "error") {
+      process.stderr.write(`${line}\n`);
+      return;
+    }
+    process.stdout.write(`${line}\n`);
+  };
+  return createLogger(level, emit);
 }
 
 /** 创建不输出任何内容的日志器。测试与需要静默运行的场景使用。 */

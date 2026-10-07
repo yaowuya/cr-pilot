@@ -12,12 +12,27 @@ services:
     # 挂载进容器由应用在启动时加载；容器内不再散落任何密钥。
     # HOST / PORT / PI_CODING_AGENT_DIR 由镜像内 ENV 固定，无需在此重复。
     # 注意：必须在仓库根目录执行 docker compose；:z 用于 SELinux 环境（relabel 共享卷）。
+    environment:
+      # 必填：pi 模型密钥（models.json 里写 "$LLMGW_API_KEY"，运行时需此环境变量插值）
+      - LLMGW_API_KEY=${LLMGW_API_KEY}
+      # 可选：GitLab 访问令牌（全局兜底；webhook 请求头 X-Gitlab-Token 优先按任务级注入）
+      - GITLAB_TOKEN=${GITLAB_TOKEN:-}
+      # 可选：GitLab 实例地址（不填则从 webhook 请求头派生）
+      - GITLAB_URL=${GITLAB_URL:-}
+      # 可选：跳过 TLS 校验（内网自签名证书时设为 1）
+      - GITLAB_INSECURE_TLS=${GITLAB_INSECURE_TLS:-0}
+      # 可选：GitLab API 单次请求超时毫秒数
+      - GITLAB_API_TIMEOUT=${GITLAB_API_TIMEOUT:-15000}
+
+    # 注意：必须在仓库根目录执行 docker compose；:z 用于 SELinux 环境（relabel 共享卷）。
     volumes:
       # 环境变量与密钥（宿主机 .env → 容器 /app/.env，只读；文件不存在时
       # compose 会创建空目录并导致挂载失败，务必先在宿主机创建 .env）
       - ./.env:/app/.env:ro
       # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）
       - ./prompts:/app/prompts:ro,z
+      # 日志目录（宿主机 /data/logs/cr-pilot → 容器 /app/logs，应用按 LOG_FILE 写入）
+      - /data/logs/cr-pilot:/app/logs
 
     # 生产环境推荐：异常退出自动重启
     restart: unless-stopped
