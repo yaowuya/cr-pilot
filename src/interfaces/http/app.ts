@@ -49,10 +49,21 @@ export function createApp(deps: AppDeps): Express {
     }
 
     const instanceHeader = req.headers["x-gitlab-instance"];
-    const task = parseMergeRequestTask(payload, typeof instanceHeader === "string" ? instanceHeader : undefined);
+    const tokenHeader = req.headers["x-gitlab-token"];
+    const task = parseMergeRequestTask(
+      payload,
+      typeof instanceHeader === "string" ? instanceHeader : undefined,
+      typeof tokenHeader === "string" ? tokenHeader : undefined,
+    );
     if (!task) {
       logger.warn("merge_request payload 缺少关键字段", { status: 400 });
       res.status(400).json({ error: "merge_request payload 缺少 project 或 object_attributes 信息" });
+      return;
+    }
+    if (!task.gitlabToken) {
+      // 访问令牌随 webhook 请求头携带（对齐参考项目）：缺失时无法拉取/回写，直接拒绝。
+      logger.warn("webhook 缺少 X-Gitlab-Token", { status: 400 });
+      res.status(400).json({ error: "缺少 X-Gitlab-Token 请求头（GitLab 访问令牌）" });
       return;
     }
 

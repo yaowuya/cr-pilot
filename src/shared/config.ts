@@ -14,8 +14,6 @@ export interface AppConfig {
   logLevel: LogLevel;
   /** GitLab 实例地址，不带尾部斜杠。可选：缺省时从 webhook 的 X-Gitlab-Instance 头或 payload 派生。 */
   gitlabUrl: string;
-  /** GitLab 访问令牌：拉取变更与回写评论。必填，只从环境变量读取。 */
-  gitlabToken: string;
   /** 为 true 时跳过 GitLab TLS 证书校验，仅用于内网自签名场景。 */
   gitlabInsecureTls: boolean;
   /** GitLab API 单次请求超时毫秒数。 */
@@ -43,11 +41,11 @@ const DEFAULT_QUEUE_CONCURRENCY = 5;
 /**
  * 读取服务配置。
  *
- * 非法值与缺失的必填项直接抛出，而不是回退默认：`GITLAB_TOKEN` 缺失时服务
- * 会「启动成功但每次评审都拉取失败」，启动即失败更容易排查。`GITLAB_URL` 可选：
+ * 非法值与缺失的必填项直接抛出，而不是回退默认。`GITLAB_URL` 可选：
  * 现代 GitLab 的 webhook 请求头自带实例地址（X-Gitlab-Instance），payload 也有
  * homepage/web_url 可以派生，客户端会在任务级用「任务 URL > 配置 URL」兜底。
- * 返回的 URL 会去掉尾部斜杠，客户端拼接路径时不需要再做规范化。
+ * 访问令牌不在这里配置：GitLab webhook 请求头的 X-Gitlab-Token 随事件携带，
+ * 每个项目的 token 各自独立（对齐参考项目）。返回的 URL 会去掉尾部斜杠。
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
@@ -57,7 +55,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     timeoutMs: readPositiveInt(env, "REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
     logLevel: parseLogLevel(env.LOG_LEVEL),
     gitlabUrl: normalizeUrl(env.GITLAB_URL),
-    gitlabToken: requireNonEmpty(env, "GITLAB_TOKEN"),
     gitlabInsecureTls: readBooleanFlag(env, "GITLAB_INSECURE_TLS"),
     gitlabApiTimeoutMs: readPositiveInt(env, "GITLAB_API_TIMEOUT", DEFAULT_GITLAB_API_TIMEOUT_MS),
     batchMaxTokens: readPositiveInt(env, "REVIEW_BATCH_MAX_TOKENS", DEFAULT_BATCH_MAX_TOKENS),
@@ -65,15 +62,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     reviewStyle: env.REVIEW_STYLE?.trim() || DEFAULT_REVIEW_STYLE,
     queueConcurrency: readPositiveInt(env, "QUEUE_CONCURRENCY", DEFAULT_QUEUE_CONCURRENCY),
   };
-}
-
-/** 读取必填的非空字符串环境变量，缺失或空白时抛错并带上变量名。 */
-function requireNonEmpty(env: NodeJS.ProcessEnv, name: string): string {
-  const value = env[name]?.trim();
-  if (!value) {
-    throw new Error(`环境变量 ${name} 是必填项，当前未配置`);
-  }
-  return value;
 }
 
 /** 规范化实例 URL：去空白与尾部斜杠；空值返回空串（表示「从 webhook 派生」）。 */

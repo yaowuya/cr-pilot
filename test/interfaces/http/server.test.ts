@@ -15,7 +15,6 @@ const config = {
   timeoutMs: 1000,
   logLevel: "info" as const,
   gitlabUrl: "https://gitlab.example.com",
-  gitlabToken: "t",
   gitlabInsecureTls: false,
   gitlabApiTimeoutMs: 1000,
   batchMaxTokens: 6000,

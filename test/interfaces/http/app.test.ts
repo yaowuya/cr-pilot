@@ -79,21 +79,19 @@ function post(base: string, body: unknown, headers: Record<string, string> = {})
   });
 }
 
-test("不校验 X-Gitlab-Token：无该头也入队并返回 200", async () => {
+test("缺少 X-Gitlab-Token 请求头返回 400 不入队", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {
-    // 来源校验由部署层负责（多项目各自配置 secret，单实例无法用全局 secret 校验），
-    // 因此这里既不带 X-Gitlab-Token 也任意携带一个值，都应正常入队。
-    assert.equal((await post(base, mergeRequestPayload())).status, 200);
-    assert.equal((await post(base, mergeRequestPayload(), { "x-gitlab-token": "anything" })).status, 200);
+    // 访问令牌随 webhook 请求头携带（对齐参考项目），缺失时无法拉取/回写，直接拒绝。
+    assert.equal((await post(base, mergeRequestPayload())).status, 400);
   }, deps);
-  assert.equal(enqueued.length, 2);
+  assert.equal(enqueued.length, 0);
 });
 
-test("merge_request 事件入队并返回 200，携带正确任务字段", async () => {
+test("merge_request 事件携带 token 入队并返回 200", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {
-    const response = await post(base, mergeRequestPayload(), { "x-gitlab-token": "any-value" });
+    const response = await post(base, mergeRequestPayload(), { "x-gitlab-token": "event-token" });
     assert.equal(response.status, 200);
   }, deps);
   assert.equal(enqueued.length, 1);
@@ -102,12 +100,13 @@ test("merge_request 事件入队并返回 200，携带正确任务字段", async
   assert.equal(enqueued[0].fullName, "team/app");
   assert.equal(enqueued[0].sourceBranch, "dev");
   assert.equal(enqueued[0].targetBranch, "main");
+  assert.equal(enqueued[0].gitlabToken, "event-token");
 });
 
 test("gitlabUrl 从 X-Gitlab-Instance 请求头派生", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {
-    const response = await post(base, mergeRequestPayload(), { "x-gitlab-instance": "https://code.cwoa.net" });
+    const response = await post(base, mergeRequestPayload(), { "x-gitlab-token": "t", "x-gitlab-instance": "https://code.cwoa.net" });
     assert.equal(response.status, 200);
   }, deps);
   assert.equal(enqueued[0].gitlabUrl, "https://code.cwoa.net");
@@ -119,7 +118,7 @@ test("无 X-Gitlab-Instance 时从 repository.homepage 派生 gitlabUrl", async 
     repository: { homepage: "https://code.cwoa.net/team/app" },
   });
   await withApp(async (base) => {
-    const response = await post(base, payload);
+    const response = await post(base, payload, { "x-gitlab-token": "t" });
     assert.equal(response.status, 200);
   }, deps);
   assert.equal(enqueued[0].gitlabUrl, "https://code.cwoa.net");
@@ -137,7 +136,7 @@ test("project_id 缺失时回退 project.id", async () => {
   const { deps, enqueued } = makeDeps();
   const payload = mergeRequestPayload({ project_id: undefined, project: { id: 99, path_with_namespace: "team/app" } });
   await withApp(async (base) => {
-    assert.equal((await post(base, payload)).status, 200);
+    assert.equal((await post(base, payload, { "x-gitlab-token": "t" })).status, 200);
   }, deps);
   assert.equal(enqueued[0].projectId, 99);
 });

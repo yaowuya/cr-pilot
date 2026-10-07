@@ -26,7 +26,6 @@ function trackFetch(respond: (url: string) => Response | Promise<Response>): { c
 function makeClient(fetchFn: FetchFn, overrides: Partial<Parameters<typeof createGitlabClient>[0]> = {}) {
   return createGitlabClient({
     url: "https://gitlab.example.com",
-    token: "TOKEN",
     timeoutMs: 1000,
     insecureTls: false,
     logger: createSilentLogger(),
@@ -35,12 +34,12 @@ function makeClient(fetchFn: FetchFn, overrides: Partial<Parameters<typeof creat
   });
 }
 
-test("getMergeRequestChanges 拼接 URL 与认证头", async () => {
+test("getMergeRequestChanges 拼接 URL 与任务级认证头", async () => {
   const { calls, fetchFn } = trackFetch(() => jsonResponse(200, { changes: [] }));
   const client = makeClient(fetchFn);
-  await client.getMergeRequestChanges(42, 7);
+  await client.getMergeRequestChanges(42, 7, "https://gitlab.example.com", "TASK-TOKEN");
   assert.equal(calls[0].url, "https://gitlab.example.com/api/v4/projects/42/merge_requests/7/changes?access_raw_diffs=true");
-  assert.equal((calls[0].init.headers as Record<string, string>)["PRIVATE-TOKEN"], "TOKEN");
+  assert.equal((calls[0].init.headers as Record<string, string>)["PRIVATE-TOKEN"], "TASK-TOKEN");
 });
 
 test("changes 为空时重试，最多 3 次", async () => {
@@ -87,12 +86,13 @@ test("getMergeRequestCommits 返回提交列表", async () => {
   assert.equal(commits[0].id, "c1");
 });
 
-test("postMergeRequestNote 发送 body 字段", async () => {
+test("postMergeRequestNote 发送 body 字段与任务级 token", async () => {
   const { calls, fetchFn } = trackFetch(() => jsonResponse(201, {}));
   const client = makeClient(fetchFn);
-  await client.postMergeRequestNote(42, 7, "评论正文");
+  await client.postMergeRequestNote(42, 7, "评论正文", "https://gitlab.example.com", "NOTE-TOKEN");
   assert.equal(calls[0].url, "https://gitlab.example.com/api/v4/projects/42/merge_requests/7/notes");
   assert.equal(JSON.parse(String(calls[0].init.body)).body, "评论正文");
+  assert.equal((calls[0].init.headers as Record<string, string>)["PRIVATE-TOKEN"], "NOTE-TOKEN");
 });
 
 test("URL 尾部斜杠被规范化", async () => {

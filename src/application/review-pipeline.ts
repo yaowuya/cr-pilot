@@ -48,8 +48,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       let changes: Change[];
       let commits: Commit[];
       try {
-        changes = await client.getMergeRequestChanges(task.projectId, task.iid, task.gitlabUrl);
-        commits = await client.getMergeRequestCommits(task.projectId, task.iid, task.gitlabUrl);
+        changes = await client.getMergeRequestChanges(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
+        commits = await client.getMergeRequestCommits(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
       } catch (error) {
         logger.error("拉取 MR 变更失败，任务结束", {
           projectId: task.projectId,
@@ -128,7 +128,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       }
 
       try {
-        await client.postMergeRequestNote(task.projectId, task.iid, finalComment, task.gitlabUrl);
+        await client.postMergeRequestNote(task.projectId, task.iid, finalComment, task.gitlabUrl, task.gitlabToken);
       } catch (error) {
         logger.error("回写评论失败，任务结束", {
           projectId: task.projectId,

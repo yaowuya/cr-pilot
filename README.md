@@ -92,7 +92,6 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | --- | --- | --- |
 | `PORT` | `5001` | 监听端口 |
 | `HOST` | `127.0.0.1` | 监听地址 |
-| `GITLAB_TOKEN` | 无（必填） | 访问令牌（拉 diff、回写评论），只从环境变量读取 |
 | `GITLAB_URL` | 无（可选） | GitLab 实例地址。缺省时从 webhook 派生：优先 `X-Gitlab-Instance` 请求头，其次 payload `repository.homepage` 的 origin；显式配置可覆盖派生值，并兜底老版本 GitLab |
 | `GITLAB_INSECURE_TLS` | `0` | 为 `1` 时跳过 GitLab TLS 证书校验（内网自签名） |
 | `GITLAB_API_TIMEOUT` | `15000` | GitLab API 单次请求超时毫秒数 |
@@ -103,7 +102,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `QUEUE_CONCURRENCY` | `5` | 后台队列并发数：同时处理的 MR 评审任务上限 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
 
-`GITLAB_TOKEN` 缺失时启动直接报错——服务「启动成功但每次评审都拉取失败」比「起不来」更难排查。`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。
+无任何必填配置。访问令牌随 webhook 请求头 `X-Gitlab-Token` 携带（每个项目独立，对齐参考项目），`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。
 
 本地开发可用 `.env`（复制 `.env.example`），启动时自动加载；已存在的同名环境变量优先。
 
@@ -117,9 +116,10 @@ npm start
 
 1. GitLab 项目 → Settings → Webhooks → URL 填 `http://<host>:5001/review/webhook`。
 2. 勾选 **Merge request events** 触发器（本服务只处理 `merge_request`，`push` 事件会返回 400）。
-3. **来源校验**：本服务不校验 `X-Gitlab-Token` / Secret token——一个 GitLab 实例有多个项目，每个项目的 Secret token 各不相同，单实例无法用一份全局 secret 校验所有来源。来源保护由部署层负责（内网隔离、网关白名单等）。
+3. **访问令牌**：GitLab webhook 请求头自带 `X-Gitlab-Token`（项目配置的 Secret token 会被 GitLab 放入该头），服务用其调用 GitLab API 拉取变更与回写评论，每个项目的 token 各自独立，无需任何环境变量。
+4. **来源保护**：服务不校验 token 本身（无法预知每个项目的值），来源保护由部署层负责（内网隔离、网关白名单等）。
 
-服务收到事件后立即返回 200，真正的评审在后台串行队列中执行：拉取变更 → 分批评审 → 汇总 → 回写一条 MR 评论。
+服务收到事件后立即返回 200，真正的评审在后台队列中执行（并发数 `QUEUE_CONCURRENCY`，默认 5）：拉取变更 → 分批评审 → 汇总 → 回写一条 MR 评论。
 
 **已知边界**：后台队列在内存中，服务重启会丢正在排队的任务；GitLab 重试同一事件可能产生多条评论。这两项是已确认的简化，升级计划见设计文档。
 

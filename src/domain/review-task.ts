@@ -31,6 +31,8 @@ export interface MergeRequestTask {
   targetBranch: string;
   /** 该事件来源的 GitLab 实例地址（webhook 派生）；缺省时客户端回落到全局配置。 */
   gitlabUrl?: string;
+  /** 该事件携带的 GitLab 访问令牌（webhook 请求头 X-Gitlab-Token）。 */
+  gitlabToken?: string;
 }
 
 /** 一次评审的输入。systemPrompt 是 prompt 文件全文，code 是待评审内容。 */
@@ -59,13 +61,13 @@ export interface Reviewer {
  * GitLab 集成端口：拉取 MR 变更与提交、回写评论。
  * 由 infrastructure/gitlab 实现；application 层只依赖本端口。
  *
- * `gitlabUrl` 参数是任务级实例地址（来自 webhook），实现方应优先使用它，
- * 为空时回落到构造时的全局配置。
+ * `gitlabUrl` 与 `gitlabToken` 参数是任务级实例信息（来自 webhook），实现方应
+ * 优先使用它们；为空时回落到构造时的全局配置。
  */
 export interface GitlabClient {
-  getMergeRequestChanges(projectId: number, iid: number, gitlabUrl?: string): Promise<Change[]>;
-  getMergeRequestCommits(projectId: number, iid: number, gitlabUrl?: string): Promise<Commit[]>;
-  postMergeRequestNote(projectId: number, iid: number, body: string, gitlabUrl?: string): Promise<void>;
+  getMergeRequestChanges(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Change[]>;
+  getMergeRequestCommits(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Commit[]>;
+  postMergeRequestNote(projectId: number, iid: number, body: string, gitlabUrl?: string, gitlabToken?: string): Promise<void>;
 }
 
 /**

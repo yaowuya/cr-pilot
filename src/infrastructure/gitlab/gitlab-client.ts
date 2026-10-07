@@ -15,10 +15,8 @@ export class GitlabApiError extends Error {
 }
 
 interface CreateGitlabClientOptions {
-  /** GitLab 实例地址，允许带尾部斜杠（内部会规范化）。 */
+  /** GitLab 实例地址，允许带尾部斜杠（内部会规范化）。可为空串，任务级 URL 兜底。 */
   url: string;
-  /** 访问令牌，只放进请求头，绝不写日志。 */
-  token: string;
   /** 单次请求超时毫秒数。 */
   timeoutMs: number;
   /** 为 true 时跳过 TLS 证书校验，仅用于内网自签名。 */
@@ -39,6 +37,9 @@ const DEFAULT_RETRY_DELAY_MS = 10000;
  *
  * 用全局 fetch（undici）而不是新增 HTTP 依赖。undici 是 pi SDK 的传递依赖，
  * 可解析但不提升为直接依赖。
+ *
+ * 访问令牌不在构造时固定：webhook 请求头的 X-Gitlab-Token 随事件携带，每个
+ * 项目 token 独立，任务级 token 在每次调用时传入（对齐参考项目）。
  */
 export function createGitlabClient(options: CreateGitlabClientOptions): GitlabClient {
   const { logger } = options;
@@ -56,13 +57,13 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     );
   }
 
-  const request = async <T>(gitlabUrl: string, path: string, init: RequestInit = {}): Promise<T> => {
+  const request = async <T>(gitlabUrl: string, gitlabToken: string, path: string, init: RequestInit = {}): Promise<T> => {
     const base = (gitlabUrl || baseUrl).replace(/\/+$/, "");
     const response = await fetchFn(
       `${base}${path}`,
       {
         ...init,
-        headers: { "PRIVATE-TOKEN": options.token, ...(init.headers ?? {}) },
+        headers: { "PRIVATE-TOKEN": gitlabToken, ...(init.headers ?? {}) },
         signal: AbortSignal.timeout(options.timeoutMs),
       },
     );
@@ -79,10 +80,10 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
   };
 
   return {
-    async getMergeRequestChanges(projectId, iid, gitlabUrl) {
+    async getMergeRequestChanges(projectId, iid, gitlabUrl = "", gitlabToken = "") {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/changes?access_raw_diffs=true`;
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
-        const payload = await request<{ changes?: Array<{ diff?: string; new_path?: string; old_path?: string }> }>(gitlabUrl ?? "", path);
+        const payload = await request<{ changes?: Array<{ diff?: string; new_path?: string; old_path?: string }> }>(gitlabUrl, gitlabToken, path);
         const changes = (payload.changes ?? [])
           .filter((change) => typeof change.diff === "string")
           .map((change) => ({
@@ -102,17 +103,17 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       return [];
     },
 
-    async getMergeRequestCommits(projectId, iid, gitlabUrl) {
+    async getMergeRequestCommits(projectId, iid, gitlabUrl = "", gitlabToken = "") {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/commits`;
-      const payload = await request<Array<{ id?: string; message?: string }>>(gitlabUrl ?? "", path);
+      const payload = await request<Array<{ id?: string; message?: string }>>(gitlabUrl, gitlabToken, path);
       return payload
         .filter((commit) => typeof commit.id === "string")
         .map((commit) => ({ id: commit.id ?? "", message: commit.message ?? "" }));
     },
 
-    async postMergeRequestNote(projectId, iid, body, gitlabUrl) {
+    async postMergeRequestNote(projectId, iid, body, gitlabUrl = "", gitlabToken = "") {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/notes`;
-      await request(gitlabUrl ?? "", path, {
+      await request(gitlabUrl, gitlabToken, path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body }),
