@@ -30,7 +30,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     rulesDir: config.rulesDir,
     reviewStyle: config.reviewStyle,
     queueConcurrency: config.queueConcurrency,
+    // 只确认是否配置，绝不打印密钥值。容器内 pi 通过 models.json 的
+    // $LLMGW_API_KEY 插值取密钥；为空时评审会报 No API key found。
+    llmgwKeySet: Boolean(process.env.LLMGW_API_KEY),
   });
+  if (!process.env.LLMGW_API_KEY) {
+    logger.warn("LLMGW_API_KEY 未配置：pi 评审将报 No API key found，请在 .env 中填写模型密钥");
+  }
   try {
     // 组合根：把基础设施适配器实现注入到应用用例，再把用例注入 HTTP 路由。
     const queue = createTaskQueue(config.queueConcurrency, logger);

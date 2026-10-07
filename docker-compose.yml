@@ -11,11 +11,13 @@ services:
     # 环境变量闭环：所有配置（含 pi 模型密钥 LLMGW_API_KEY）统一放在 .env，
     # 挂载进容器由应用在启动时加载；容器内不再散落任何密钥。
     # HOST / PORT / PI_CODING_AGENT_DIR 由镜像内 ENV 固定，无需在此重复。
+    # 注意：必须在仓库根目录执行 docker compose；:z 用于 SELinux 环境（relabel 共享卷）。
     volumes:
-      # 环境变量与密钥（宿主机 .env → 容器 /app/.env，只读）
+      # 环境变量与密钥（宿主机 .env → 容器 /app/.env，只读；文件不存在时
+      # compose 会创建空目录并导致挂载失败，务必先在宿主机创建 .env）
       - ./.env:/app/.env:ro
       # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）
-      - ./prompts:/app/prompts:ro
+      - ./prompts:/app/prompts:ro,z
 
     # 生产环境推荐：异常退出自动重启
     restart: unless-stopped
