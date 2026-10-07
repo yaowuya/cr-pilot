@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createReviewPipeline, estimateTokens, splitChangesIntoBatches, type MergeRequestTask } from "../src/pipeline.ts";
+import { createReviewPipeline, estimateTokens, splitChangesIntoBatches, stripMarkdownFences, type MergeRequestTask } from "../src/pipeline.ts";
 import type { Change } from "../src/gitlab-client.ts";
 import type { GitlabClient } from "../src/gitlab-client.ts";
 import { createSilentLogger } from "../src/logger.ts";
@@ -15,6 +15,21 @@ test("estimateTokens 按字符数/4 向上取整", () => {
   assert.equal(estimateTokens(""), 0);
   assert.equal(estimateTokens("abc"), 1);
   assert.equal(estimateTokens("abcdefgh"), 2);
+});
+
+test("stripMarkdownFences 剥离首尾成对的代码块包裹", () => {
+  const fenced = "```markdown\n## 问题清单\n- [严重] x\n\n## 结论\n\n不适合合入。\n```";
+  assert.equal(stripMarkdownFences(fenced), "## 问题清单\n- [严重] x\n\n## 结论\n\n不适合合入。");
+});
+
+test("stripMarkdownFences 对纯 Markdown 原样返回", () => {
+  const plain = "## 问题清单\n\n- [严重] 位置：描述\n\n## 结论\n\n可以合入。";
+  assert.equal(stripMarkdownFences(plain), plain);
+});
+
+test("stripMarkdownFences 处理无语言标记的围栏", () => {
+  const fenced = "```\n正文内容\n```";
+  assert.equal(stripMarkdownFences(fenced), "正文内容");
 });
 
 test("小变更保持单批", () => {
@@ -174,4 +189,25 @@ test("单批评审失败不回写", async () => {
   });
   await assert.doesNotReject(() => pipeline.run(task));
   assert.equal(client.notes.length, 0);
+});
+
+test("汇总输出带代码块包裹时，回写前剥离围栏", async () => {
+  const client = fakeClient();
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: {
+      // 批评审返回普通文本；汇总返回被 ```markdown 包裹的最终评论。
+      review: async ({ systemPrompt }) => ({
+        text: systemPrompt.includes("合并") ? "```markdown\n## 问题清单\n- [一般] a\n\n## 结论\n\n可合入。\n```" : "批评论",
+        model: "m",
+      }),
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+  assert.equal(client.notes.length, 1);
+  assert.ok(!client.notes[0].includes("```"), "回写正文不应包含代码块围栏");
+  assert.match(client.notes[0], /^## 问题清单/);
 });

@@ -31,7 +31,7 @@ interface PipelineDeps {
 const DEFAULT_TIMEOUT_MS = 120000;
 
 /** 汇总 prompt 的系统提示后缀，要求模型把各批结果合并成一份最终评论。 */
-const SUMMARY_SUFFIX = "\n\n你之前分批评审了同一变更的各部分。下面按批序给出各批评审结果，请把它们合并成一份最终评论：去重、分级、保留各条问题的位置信息，并给出总体结论。";
+const SUMMARY_SUFFIX = "\n\n你之前分批评审了同一变更的各部分。下面按批序给出各批评审结果，请把它们合并成一份最终评论：去重、分级、保留各条问题的位置信息，并给出总体结论。只输出纯 Markdown 评论正文（结构为 `## 问题清单`、`## 结论`、`## 无法判断的点`），不要用 ``` 代码块包裹，不要加任何前言或后缀。";
 
 /**
  * 创建评审管线。
@@ -114,7 +114,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           context: undefined,
           signal: AbortSignal.timeout(timeoutMs),
         });
-        finalComment = summary.text.trim();
+        finalComment = stripMarkdownFences(summary.text.trim());
         logger.info("汇总完成", {
           projectId: task.projectId,
           iid: task.iid,
@@ -147,6 +147,22 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       });
     },
   };
+}
+
+/**
+ * 去掉模型偶尔输出的 ```markdown / ``` 代码块包裹。
+ *
+ * GitLab 会把代码块包裹的正文渲染成代码块而不是 Markdown，参考项目的
+ * `_strip_markdown` 有同样的清理逻辑。只有首尾成对出现围栏时才剥离；
+ * 输出本身是纯 Markdown 时原样返回。
+ */
+export function stripMarkdownFences(text: string): string {
+  const trimmed = text.trim();
+  const opening = trimmed.match(/^```(?:markdown|md)?\s*(?:\r?\n|$)/);
+  if (!opening) return trimmed;
+  const inner = trimmed.slice(opening[0].length);
+  const closing = inner.lastIndexOf("```");
+  return closing >= 0 ? inner.slice(0, closing).trim() : inner.trim();
 }
 
 /**
