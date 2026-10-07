@@ -100,6 +100,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `REVIEW_TIMEOUT_MS` | `120000` | 单批评审/汇总超时毫秒数 |
 | `REVIEW_RULES_DIR` | `prompts/rules` | 仓库规则目录 |
 | `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |
+| `QUEUE_CONCURRENCY` | `5` | 后台队列并发数：同时处理的 MR 评审任务上限 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
 
 `GITLAB_TOKEN` 缺失时启动直接报错——服务「启动成功但每次评审都拉取失败」比「起不来」更难排查。`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。

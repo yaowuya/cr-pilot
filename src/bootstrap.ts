@@ -31,10 +31,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     batchMaxTokens: config.batchMaxTokens,
     rulesDir: config.rulesDir,
     reviewStyle: config.reviewStyle,
+    queueConcurrency: config.queueConcurrency,
   });
   try {
     // 组合根：把基础设施适配器实现注入到应用用例，再把用例注入 HTTP 路由。
-    const queue = createTaskQueue(logger);
+    const queue = createTaskQueue(config.queueConcurrency, logger);
     const client = createGitlabClient({
       url: config.gitlabUrl,
       token: config.gitlabToken,

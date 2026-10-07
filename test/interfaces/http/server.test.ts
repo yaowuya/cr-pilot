@@ -21,6 +21,7 @@ const config = {
   batchMaxTokens: 6000,
   rulesDir: "prompts/rules",
   reviewStyle: "professional",
+  queueConcurrency: 2,
 };
 
 /** 收集日志行，便于断言启动日志内容。 */
@@ -31,7 +32,7 @@ function collectingLogger(): { lines: string[]; logger: ReturnType<typeof create
 
 /** 构造最小可用的装配依赖：队列 + 空管线 + webhook 入队。 */
 function makeDeps(logger: ReturnType<typeof createLogger>): ServerDeps {
-  const queue = createTaskQueue(logger);
+  const queue = createTaskQueue(2, logger);
   const client = {} as GitlabClient;
   const rules = { resolve: () => ({ systemPrompt: "s", userPrompt: "u" }) } as unknown as ReviewRules;
   const pipeline = createReviewPipeline({

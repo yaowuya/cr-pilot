@@ -29,6 +29,7 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     batchMaxTokens: 6000,
     rulesDir: "prompts/rules",
     reviewStyle: "professional",
+    queueConcurrency: 5,
   });
 });
 
@@ -52,6 +53,7 @@ test("loadConfig 采用环境变量覆盖", () => {
     REVIEW_BATCH_MAX_TOKENS: "9000",
     REVIEW_RULES_DIR: "other/rules",
     REVIEW_STYLE: "gentle",
+    QUEUE_CONCURRENCY: "3",
   });
   assert.equal(config.port, 8080);
   assert.equal(config.host, "0.0.0.0");
@@ -63,6 +65,7 @@ test("loadConfig 采用环境变量覆盖", () => {
   assert.equal(config.batchMaxTokens, 9000);
   assert.equal(config.rulesDir, "other/rules");
   assert.equal(config.reviewStyle, "gentle");
+  assert.equal(config.queueConcurrency, 3);
 });
 
 test("loadConfig 对非法数值快速失败", () => {

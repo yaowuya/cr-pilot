@@ -26,6 +26,8 @@ export interface AppConfig {
   rulesDir: string;
   /** 评审风格，注入规则模板的 `{{ style }}` 与风格分支。 */
   reviewStyle: string;
+  /** 后台队列并发数：同时处理的 MR 任务上限。 */
+  queueConcurrency: number;
 }
 
 const DEFAULT_PORT = 5001;
@@ -36,6 +38,7 @@ const DEFAULT_GITLAB_API_TIMEOUT_MS = 15000;
 const DEFAULT_BATCH_MAX_TOKENS = 6000;
 const DEFAULT_RULES_DIR = "prompts/rules";
 const DEFAULT_REVIEW_STYLE = "professional";
+const DEFAULT_QUEUE_CONCURRENCY = 5;
 
 /**
  * 读取服务配置。
@@ -60,6 +63,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     batchMaxTokens: readPositiveInt(env, "REVIEW_BATCH_MAX_TOKENS", DEFAULT_BATCH_MAX_TOKENS),
     rulesDir: env.REVIEW_RULES_DIR?.trim() || DEFAULT_RULES_DIR,
     reviewStyle: env.REVIEW_STYLE?.trim() || DEFAULT_REVIEW_STYLE,
+    queueConcurrency: readPositiveInt(env, "QUEUE_CONCURRENCY", DEFAULT_QUEUE_CONCURRENCY),
   };
 }
 
