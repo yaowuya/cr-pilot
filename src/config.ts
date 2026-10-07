@@ -24,6 +24,8 @@ export interface AppConfig {
   batchMaxTokens: number;
   /** 仓库规则目录，default.yaml 为全局默认。 */
   rulesDir: string;
+  /** 评审风格，注入规则模板的 `{{ style }}` 与风格分支。 */
+  reviewStyle: string;
 }
 
 const DEFAULT_PORT = 5001;
@@ -33,6 +35,7 @@ const DEFAULT_TIMEOUT_MS = 120000;
 const DEFAULT_GITLAB_API_TIMEOUT_MS = 15000;
 const DEFAULT_BATCH_MAX_TOKENS = 6000;
 const DEFAULT_RULES_DIR = "prompts/rules";
+const DEFAULT_REVIEW_STYLE = "professional";
 
 /**
  * 读取服务配置。
@@ -55,6 +58,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     gitlabApiTimeoutMs: readPositiveInt(env, "GITLAB_API_TIMEOUT", DEFAULT_GITLAB_API_TIMEOUT_MS),
     batchMaxTokens: readPositiveInt(env, "REVIEW_BATCH_MAX_TOKENS", DEFAULT_BATCH_MAX_TOKENS),
     rulesDir: env.REVIEW_RULES_DIR?.trim() || DEFAULT_RULES_DIR,
+    reviewStyle: env.REVIEW_STYLE?.trim() || DEFAULT_REVIEW_STYLE,
   };
 }
 

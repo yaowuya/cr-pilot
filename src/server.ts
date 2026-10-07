@@ -69,6 +69,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     timeoutMs: config.timeoutMs,
     batchMaxTokens: config.batchMaxTokens,
     rulesDir: config.rulesDir,
+    reviewStyle: config.reviewStyle,
   });
   try {
     const queue = createTaskQueue(logger);
@@ -80,7 +81,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       logger,
     });
     const fallbackPrompt = await readFile(config.promptPath, "utf8").catch(() => "");
-    const rules = await loadReviewRules(config.rulesDir, fallbackPrompt, logger);
+    const rules = await loadReviewRules(config.rulesDir, fallbackPrompt, {
+      logger,
+      style: config.reviewStyle,
+    });
     const reviewer = createPiReviewer({ logger });
     const pipeline = createReviewPipeline({
       client,

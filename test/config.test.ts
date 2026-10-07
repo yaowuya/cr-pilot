@@ -24,6 +24,7 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     gitlabApiTimeoutMs: 15000,
     batchMaxTokens: 6000,
     rulesDir: "prompts/rules",
+    reviewStyle: "professional",
   });
 });
 
@@ -46,6 +47,7 @@ test("loadConfig 采用环境变量覆盖", () => {
     GITLAB_API_TIMEOUT: "20000",
     REVIEW_BATCH_MAX_TOKENS: "9000",
     REVIEW_RULES_DIR: "other/rules",
+    REVIEW_STYLE: "gentle",
   });
   assert.equal(config.port, 8080);
   assert.equal(config.host, "0.0.0.0");
@@ -56,6 +58,7 @@ test("loadConfig 采用环境变量覆盖", () => {
   assert.equal(config.gitlabApiTimeoutMs, 20000);
   assert.equal(config.batchMaxTokens, 9000);
   assert.equal(config.rulesDir, "other/rules");
+  assert.equal(config.reviewStyle, "gentle");
 });
 
 test("loadConfig 对非法数值快速失败", () => {

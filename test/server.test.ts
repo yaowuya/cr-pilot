@@ -20,6 +20,7 @@ const config = {
   gitlabApiTimeoutMs: 1000,
   batchMaxTokens: 6000,
   rulesDir: "prompts/rules",
+  reviewStyle: "professional",
 };
 
 /** 收集日志行，便于断言启动日志内容。 */

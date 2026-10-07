@@ -70,6 +70,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `REVIEW_BATCH_MAX_TOKENS` | `6000` | 单批评审 token 预算 |
 | `REVIEW_TIMEOUT_MS` | `120000` | 单批评审/汇总超时毫秒数 |
 | `REVIEW_RULES_DIR` | `prompts/rules` | 仓库规则目录 |
+| `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
 
 `GITLAB_URL`、`GITLAB_TOKEN` 缺失时启动直接报错——服务「启动成功但每次拉取失败」比「起不来」更难排查。
@@ -94,10 +95,17 @@ npm start
 
 ## 仓库级 prompt
 
-`prompts/rules/` 目录下：
+`prompts/rules/` 目录下（已从参考项目 AI-CodeReview 的 `conf/review_rule/` 迁移 7 份真实规则）：
 
 - `default.yaml` — 全局默认规则，所有未单独配置的仓库生效。
-- 其余 `.yaml` — 每仓库一份，必须含 `repository:` 字段（GitLab 项目全名，如 `rd-fy21-canway-GOAC/auto-ops`）。
+- `auto-ops.yaml` — 匹配 `auto-ops` / `cw-auto-ops` / `auto-ops-platform` / `ops-node-server` / `auto-screenshot`（短项目名，逗号分隔）。
+- `cw-auto-ops.yaml` — 匹配 `rd-fy23-canway-kingark/auto-ops-v4/cw-auto-ops`（仅通知配置，无独立 prompt）。
+- `ada.yaml` — 匹配 `cw-publish` / `app-mgmt`（应用发布中心）。
+- `bcms.yaml` — 匹配 `cw-bcms-backend`（应急管理中心）。
+- `chaos.yaml` — 匹配 `cw-chaos-backend`（混沌工程）。
+- `demo.yaml` — 示例规则。
+
+其余 `.yaml` 必须含 `repository:` 字段，支持逗号分隔多个仓库。匹配规则对齐参考项目：先按项目全名、再按短项目名（最后一个 `/` 之后的部分）查找，大小写不敏感。
 
 规则结构：
 
@@ -114,7 +122,9 @@ code_review_prompt:
     {commits_text}
 ```
 
-`user_prompt` 支持 `{diffs_text}` 与 `{commits_text}` 两个占位符。匹配优先级：仓库规则 > `default.yaml` > `prompts/review.md`（全文作 system prompt 的最后兜底）。
+- `user_prompt` 支持 `{diffs_text}` 与 `{commits_text}` 两个占位符。
+- prompt 支持最小 Jinja2 模板：`{{ style }}` 变量与 `{% if style == '...' %} / {% elif ... %} / {% else %} / {% endif %}` 风格分支，`style` 由 `REVIEW_STYLE` 环境变量注入（默认 `professional`）。
+- 匹配优先级：仓库规则 > `default.yaml` > `prompts/review.md`（全文作 system prompt 的最后兜底）。
 
 ## 日志
 

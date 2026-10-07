@@ -1,0 +1,9 @@
+# 前端项目规则示例
+repository: "rd-fy23-canway-kingark/auto-ops-v4/cw-auto-ops"
+
+wecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=b28af1be-dfaa-4a15-8228-149caa7357af"
+wecom_score_threshold: 70      # 宽松阈值
+
+review_skip_regex:
+  - "\\[skip review\\]"
+  - "auto commit"

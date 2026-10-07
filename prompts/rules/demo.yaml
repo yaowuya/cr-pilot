@@ -1,15 +1,12 @@
-# 全局默认值，对所有未单独配置的仓库生效。
-# 字段与仓库规则文件相同，无需 repository: 字段。
+# 前端项目规则示例
+repository: "rd-fy23-canway-kingark/auto-ops-v4/cw-auto-ops"
 
-# 企业微信评分阈值：Review 分数严格低于此值才推送；留空则始终推送
-wecom_score_threshold: 80
+wecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=b28af1be-dfaa-4a15-8228-149caa7357af"
+wecom_score_threshold: 70      # 宽松阈值
 
-# 默认跳过规则：匹配 MR/PR 标题或任意 commit message 时跳过 AI Review
-# YAML 中正则的反斜杠需要双写（\\[ 表示字面量 \[）
 review_skip_regex:
-  - "\\[skip review\\]"   # 标题或提交信息含 [skip review]
-  - "\\[no review\\]"     # 标题或提交信息含 [no review]
-  - "^Revert "            # revert 提交自动跳过
+  - "\\[skip review\\]"
+  - "auto commit"
 
 # 全局默认 Prompt（Jinja2 模板，{{ style }} 由 REVIEW_STYLE 环境变量注入）
 # 各仓库 yaml 中写同名字段可覆盖此默认值；不写则继承此配置。
