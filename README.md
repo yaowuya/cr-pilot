@@ -95,7 +95,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `GITLAB_URL` | 无（可选） | GitLab 实例地址。缺省时从 webhook 派生：优先 `X-Gitlab-Instance` 请求头，其次 payload `repository.homepage` 的 origin；显式配置可覆盖派生值，并兜底老版本 GitLab |
 | `GITLAB_INSECURE_TLS` | `0` | 为 `1` 时跳过 GitLab TLS 证书校验（内网自签名） |
 | `GITLAB_API_TIMEOUT` | `15000` | GitLab API 单次请求超时毫秒数 |
-| `REVIEW_BATCH_MAX_TOKENS` | `6000` | 单批评审 token 预算 |
+| `REVIEW_BATCH_MAX_TOKENS` | `120000` | 单批评审 token 预算（模型上下文 1M，可按需调大） |
 | `REVIEW_TIMEOUT_MS` | `120000` | 单批评审/汇总超时毫秒数 |
 | `REVIEW_RULES_DIR` | `prompts/rules` | 仓库规则目录 |
 | `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |

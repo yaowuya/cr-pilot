@@ -9,7 +9,7 @@
           "id": "gpt-5.6-terra",
           "name": "gpt-5.6-terra",
           "input": ["text"],
-          "contextWindow": 128000,
+          "contextWindow": 1000000,
           "maxTokens": 32000,
           "reasoning": false,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }

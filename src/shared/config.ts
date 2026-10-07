@@ -33,9 +33,9 @@ export interface AppConfig {
 const DEFAULT_PORT = 5001;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PROMPT_PATH = "prompts/review.md";
-const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_TIMEOUT_MS = 1200000;
 const DEFAULT_GITLAB_API_TIMEOUT_MS = 15000;
-const DEFAULT_BATCH_MAX_TOKENS = 6000;
+const DEFAULT_BATCH_MAX_TOKENS = 120000;
 const DEFAULT_RULES_DIR = "prompts/rules";
 const DEFAULT_REVIEW_STYLE = "professional";
 const DEFAULT_QUEUE_CONCURRENCY = 5;

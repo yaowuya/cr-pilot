@@ -16,14 +16,14 @@ interface PipelineDeps {
   reviewer: Reviewer;
   logger: Logger;
   batchMaxTokens: number;
-  /** 单批评审/汇总的超时毫秒数，缺省 120000。 */
+  /** 单批评审/汇总的超时毫秒数，缺省 1200000（20 分钟）。 */
   timeoutMs?: number;
   /** 企业微信通知器，缺省时不推送企微。 */
   wecomNotifier?: WecomNotifier;
 }
 
-/** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致。 */
-const DEFAULT_TIMEOUT_MS = 120000;
+/** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致（20 分钟）。 */
+const DEFAULT_TIMEOUT_MS = 1200000;
 
 /** 汇总 prompt 的系统提示后缀，要求模型把各批结果合并成一份最终评论。 */
 const SUMMARY_SUFFIX = "\n\n你之前分批评审了同一变更的各部分。下面按批序给出各批评审结果，请把它们合并成一份最终评论：去重、按严重程度排序、保留各条问题的位置与证据、合并评分并给出总分。每个问题小节必须包含「位置」「问题（有问题的代码块，带语言标记）」「建议（改进后的代码块，带语言标记）」，问题之间用 --- 分隔。输出结构与格式完全遵循上述规则的要求；只输出纯 Markdown 评论正文，不要用 ``` 代码块包裹整个评论，不要加任何前言或后缀。";
