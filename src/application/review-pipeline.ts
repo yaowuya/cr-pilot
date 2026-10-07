@@ -1,7 +1,7 @@
 import { createSilentLogger, type Logger } from "../shared/logger.ts";
 import { estimateTokens, splitChangesIntoBatches } from "../domain/change.ts";
-import { renderUserPrompt, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
-import type { Change, Commit, GitlabClient, MergeRequestTask, Reviewer } from "../domain/review-task.ts";
+import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
+import type { Change, Commit, GitlabClient, MergeRequestTask, Reviewer, WecomNotifier } from "../domain/review-task.ts";
 
 export type { MergeRequestTask };
 
@@ -18,6 +18,8 @@ interface PipelineDeps {
   batchMaxTokens: number;
   /** 单批评审/汇总的超时毫秒数，缺省 120000。 */
   timeoutMs?: number;
+  /** 企业微信通知器，缺省时不推送企微。 */
+  wecomNotifier?: WecomNotifier;
 }
 
 /** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致。 */
@@ -135,6 +137,40 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         });
         return;
       }
+
+      // 回写成功后按规则推送企业微信：低于阈值的低分评审才进群提醒。
+      if (deps.wecomNotifier && ruleSet.wecomWebhookUrl) {
+        const score = parseReviewScore(finalComment);
+        if (shouldNotifyByScore(score, ruleSet.wecomScoreThreshold)) {
+          const message = buildWecomMessage({
+            projectId: task.projectId,
+            iid: task.iid,
+            fullName: task.fullName,
+            sourceBranch: task.sourceBranch,
+            targetBranch: task.targetBranch,
+            score,
+            comment: finalComment,
+          });
+          try {
+            await deps.wecomNotifier.send(ruleSet.wecomWebhookUrl, message);
+          } catch (error) {
+            // 企微推送失败不影响已完成的评审回写，只记日志。
+            logger.error("企业微信推送失败", {
+              projectId: task.projectId,
+              iid: task.iid,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } else {
+          logger.info("评分未低于企微阈值，跳过推送", {
+            projectId: task.projectId,
+            iid: task.iid,
+            score,
+            threshold: ruleSet.wecomScoreThreshold,
+          });
+        }
+      }
+
       logger.info("管线完成", {
         projectId: task.projectId,
         iid: task.iid,
@@ -142,4 +178,32 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       });
     },
   };
+}
+
+/**
+ * 组装企业微信 markdown 消息（application 层纯函数，供测试）。
+ *
+ * 只使用企微支持的 markdown 子集：标题、加粗、链接与正文；
+ * 评审正文过长时由 notifier 按 4096 字节截断。
+ */
+export function buildWecomMessage(input: {
+  projectId: number;
+  iid: number;
+  fullName: string;
+  sourceBranch: string;
+  targetBranch: string;
+  score: number;
+  comment: string;
+}): string {
+  const lines = [
+    `# 🤖 代码评审提醒 — ${input.fullName}`,
+    "",
+    `**MR:** !${input.iid}　**分支:** \`${input.sourceBranch}\` → \`${input.targetBranch}\``,
+    `**AI 评分:** ${input.score > 0 ? `${input.score} 分` : "未解析出分数"}（低于阈值）`,
+    "",
+    "---",
+    "",
+    input.comment,
+  ];
+  return lines.join("\n");
 }

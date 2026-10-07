@@ -6,6 +6,7 @@ import { createTaskQueue } from "./shared/queue.ts";
 import { createGitlabClient } from "./infrastructure/gitlab/gitlab-client.ts";
 import { createPiReviewer } from "./infrastructure/pi/reviewer.ts";
 import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
+import { createWecomNotifier } from "./infrastructure/wecom/wecom-notifier.ts";
 import { createReviewPipeline } from "./application/review-pipeline.ts";
 import { startServer } from "./interfaces/http/server.ts";
 
@@ -47,6 +48,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       style: config.reviewStyle,
     });
     const reviewer = createPiReviewer({ logger });
+    const wecomNotifier = createWecomNotifier({ logger });
     const pipeline = createReviewPipeline({
       client,
       rules,
@@ -54,6 +56,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       logger,
       batchMaxTokens: config.batchMaxTokens,
       timeoutMs: config.timeoutMs,
+      wecomNotifier,
     });
     await startServer(
       config,

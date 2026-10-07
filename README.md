@@ -154,6 +154,16 @@ code_review_prompt:
 - `user_prompt` 支持 `{diffs_text}` 与 `{commits_text}` 两个占位符。
 - prompt 支持最小 Jinja2 模板：`{{ style }}` 变量与 `{% if style == '...' %} / {% elif ... %} / {% else %} / {% endif %}` 风格分支，`style` 由 `REVIEW_STYLE` 环境变量注入（默认 `professional`）。
 - 匹配优先级：仓库规则 > `default.yaml` > `prompts/review.md`（全文作 system prompt 的最后兜底）。
+- 规则文件可带企业微信推送配置：`wecom_webhook_url`（群机器人地址）与 `wecom_score_threshold`（评分阈值）。评审总分**低于**阈值时向该群推送提醒（缺省继承 `default.yaml` 的阈值；没有 webhook URL 则不推送）。
+
+## 企业微信推送
+
+评审回写 GitLab 成功后，按仓库规则推送企微：
+
+- 从汇总评论文本解析总分（正则 `总分[:：]\s*(\d+)分?`，多批次取最低分）。
+- `wecom_score_threshold` 语义：总分**低于**阈值才推送（低分提醒团队关注）；无阈值时不按分数过滤。
+- 消息为企微 markdown 格式（标题 + MR/分支/评分 + 评审正文），超过 4096 字节自动截断。
+- 推送失败只记日志，不影响已完成的评审回写。
 
 ## 日志
 

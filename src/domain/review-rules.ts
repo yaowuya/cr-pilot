@@ -12,11 +12,44 @@ export interface RuleSet {
   systemPrompt: string;
   /** 含 `{diffs_text}` / `{commits_text}` 占位符的模板。 */
   userPrompt: string;
+  /** 企业微信群机器人 webhook URL；缺失表示该仓库不推送企微。 */
+  wecomWebhookUrl?: string;
+  /** 企微推送评分阈值：总分低于该值才推送；缺失表示不按分数过滤。 */
+  wecomScoreThreshold?: number;
 }
 
 /** 目录级规则集：按 GitLab 项目全名匹配仓库规则，逐级回落到默认。 */
 export interface ReviewRules {
   resolve(repositoryFullName?: string): RuleSet;
+}
+
+/**
+ * 解析评审文本中的总分（纯函数）。
+ *
+ * 与参考项目 `parse_review_score` 对齐：匹配 `总分[:：]<空格><数字>分?` 的所有出现，
+ * 取最小值（多批评审拼接后可能出现多个总分，最低分最保守）。无匹配返回 0，
+ * 由调用方决定是否跳过按分数的推送。
+ */
+export function parseReviewScore(reviewText: string): number {
+  const matches = reviewText.matchAll(/总分[:：]\s*(\d+)\s*分?/g);
+  let lowest: number | undefined;
+  for (const match of matches) {
+    const score = Number(match[1]);
+    if (lowest === undefined || score < lowest) lowest = score;
+  }
+  return lowest ?? 0;
+}
+
+/**
+ * 按评分阈值决定是否推送企微消息（纯函数）。
+ *
+ * 语义与规则注释、参考项目一致：总分**低于**阈值才推送（低分提醒关注）；
+ * 阈值为 undefined 时不按分数过滤（始终推送）。分数缺失（0）且配置了阈值时
+ * 视为低分推送，保证「没解析出分数」不会被静默吞掉。
+ */
+export function shouldNotifyByScore(score: number, threshold: number | undefined): boolean {
+  if (threshold === undefined) return true;
+  return score < threshold;
 }
 
 /** 归一化仓库键：去空白并转小写，让斜杠路径与短项目名匹配都稳定。 */

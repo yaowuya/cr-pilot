@@ -213,3 +213,94 @@ test("汇总输出带代码块包裹时，回写前剥离围栏", async () => {
   assert.ok(!client.notes[0].includes("```"), "回写正文不应包含代码块围栏");
   assert.match(client.notes[0], /^## 问题清单/);
 });
+
+test("评分低于阈值且配置 webhook 时推送企微", async () => {
+  const client = fakeClient();
+  const sent: string[] = [];
+  const wecomNotifier = {
+    send: async (_url: string, markdown: string) => {
+      sent.push(markdown);
+    },
+  };
+  const wecomRules = {
+    resolve: () => ({
+      systemPrompt: "SYS",
+      userPrompt: "评：{diffs_text}",
+      wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t",
+      wecomScoreThreshold: 70,
+    }),
+  } as ReviewRules;
+  const pipeline = createReviewPipeline({
+    client,
+    rules: wecomRules,
+    reviewer: {
+      // 汇总返回带总分的低分评审。
+      review: async ({ systemPrompt }) => ({
+        text: systemPrompt.includes("合并") ? "## 问题清单\n- [严重] x\n\n总分:65分" : "批评论",
+        model: "m",
+      }),
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    wecomNotifier,
+  });
+  await pipeline.run(task);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /代码评审提醒/);
+  assert.match(sent[0], /65 分/);
+});
+
+test("评分不低于阈值时不推送企微", async () => {
+  const client = fakeClient();
+  const sent: string[] = [];
+  const wecomRules = {
+    resolve: () => ({
+      systemPrompt: "SYS",
+      userPrompt: "评：{diffs_text}",
+      wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t",
+      wecomScoreThreshold: 70,
+    }),
+  } as ReviewRules;
+  const pipeline = createReviewPipeline({
+    client,
+    rules: wecomRules,
+    reviewer: {
+      review: async ({ systemPrompt }) => ({
+        text: systemPrompt.includes("合并") ? "总分:85分" : "批评论",
+        model: "m",
+      }),
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    wecomNotifier: { send: async (_url, markdown) => { sent.push(markdown); } },
+  });
+  await pipeline.run(task);
+  assert.equal(sent.length, 0);
+});
+
+test("企微推送失败不影响评审回写", async () => {
+  const client = fakeClient();
+  const wecomRules = {
+    resolve: () => ({
+      systemPrompt: "SYS",
+      userPrompt: "评：{diffs_text}",
+      wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t",
+      wecomScoreThreshold: 70,
+    }),
+  } as ReviewRules;
+  const pipeline = createReviewPipeline({
+    client,
+    rules: wecomRules,
+    reviewer: {
+      review: async ({ systemPrompt }) => ({
+        text: systemPrompt.includes("合并") ? "总分:60分" : "批评论",
+        model: "m",
+      }),
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    wecomNotifier: { send: async () => { throw new Error("网络错误"); } },
+  });
+  await assert.doesNotReject(() => pipeline.run(task));
+  assert.equal(client.notes.length, 1);
+});

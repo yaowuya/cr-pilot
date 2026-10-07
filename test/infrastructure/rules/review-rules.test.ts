@@ -28,6 +28,26 @@ async function withRulesDir(files: Record<string, string>, run: (dir: string) =>
 
 const REPO_RULE = "repository: team/app\ncode_review_prompt:\n  system_prompt: \"仓库系统提示\"\n  user_prompt: \"仓库用户提示 {diffs_text}\"\n";
 
+test("规则文件读取 wecom_webhook_url 与 wecom_score_threshold", async () => {
+  const rule = "repository: team/app\nwecom_webhook_url: \"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=repo\"\nwecom_score_threshold: 70\ncode_review_prompt:\n  system_prompt: \"S\"\n  user_prompt: \"{diffs_text}\"\n";
+  await withRulesDir({ "team__app.yaml": rule }, async (dir) => {
+    const rules = await loadReviewRules(dir, "fallback-md");
+    const set = rules.resolve("team/app");
+    assert.equal(set.wecomWebhookUrl, "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=repo");
+    assert.equal(set.wecomScoreThreshold, 70);
+  });
+});
+
+test("wecom 字段仓库缺失时继承 default", async () => {
+  const defaultRule = "code_review_prompt:\n  system_prompt: \"默认\"\n  user_prompt: \"{diffs_text}\"\nwecom_score_threshold: 80\n";
+  await withRulesDir({ "default.yaml": defaultRule, "team__app.yaml": REPO_RULE }, async (dir) => {
+    const rules = await loadReviewRules(dir, "fallback-md");
+    const set = rules.resolve("team/app");
+    assert.equal(set.wecomScoreThreshold, 80);
+    assert.equal(set.wecomWebhookUrl, undefined);
+  });
+});
+
 test("仓库规则命中时优先于 default", async () => {
   await withRulesDir({ "default.yaml": DEFAULT_YAML, "team__app.yaml": REPO_RULE }, async (dir) => {
     const rules = await loadReviewRules(dir, "fallback-md");

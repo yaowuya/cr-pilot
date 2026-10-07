@@ -69,6 +69,14 @@ export interface GitlabClient {
 }
 
 /**
+ * 企业微信通知端口：把 Markdown 消息发到群机器人。
+ * 由 infrastructure/wecom 实现；webhookUrl 由规则集按仓库解析后由调用方注入。
+ */
+export interface WecomNotifier {
+  send(webhookUrl: string, markdown: string): Promise<void>;
+}
+
+/**
  * 从 webhook 派生 GitLab 实例地址（纯函数，domain 层）。
  *
  * 优先级：`X-Gitlab-Instance` 请求头 > payload `repository.homepage` 的 origin

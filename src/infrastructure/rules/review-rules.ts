@@ -86,7 +86,14 @@ export async function loadReviewRules(
       if (repositoryFullName) {
         const matched = repositoryRules.get(normalizeRepositoryKey(repositoryFullName))
           ?? repositoryRules.get(normalizeRepositoryKey(shortRepositoryName(repositoryFullName)));
-        if (matched) return matched;
+        if (matched) {
+          // wecom 字段逐级继承：仓库规则缺失时回落到 default（与参考项目一致）。
+          return {
+            ...matched,
+            wecomWebhookUrl: matched.wecomWebhookUrl ?? defaultRule?.wecomWebhookUrl,
+            wecomScoreThreshold: matched.wecomScoreThreshold ?? defaultRule?.wecomScoreThreshold,
+          };
+        }
       }
       if (defaultRule) return defaultRule;
       return { systemPrompt: fallbackSystemPrompt, userPrompt: FALLBACK_USER_PROMPT };
@@ -108,7 +115,26 @@ async function loadRuleFile(
   const systemPrompt = renderStyleTemplate(readString(block, "system_prompt"), style);
   const userPrompt = renderStyleTemplate(readString(block, "user_prompt"), style);
   if (!systemPrompt || !userPrompt) return null;
-  return { repository: readString(root, "repository") || undefined, rule: { systemPrompt, userPrompt } };
+  return {
+    repository: readString(root, "repository") || undefined,
+    rule: {
+      systemPrompt,
+      userPrompt,
+      wecomWebhookUrl: readString(root, "wecom_webhook_url") || undefined,
+      wecomScoreThreshold: readNumber(root, "wecom_score_threshold"),
+    },
+  };
+}
+
+/** 读取非负整数；缺失或非法返回 undefined（调用方按「未配置」处理）。 */
+function readNumber(source: Record<string, unknown>, key: string): number | undefined {
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return undefined;
 }
 
 /** 读取字符串字段并去空白；非字符串一律按缺失处理。 */
