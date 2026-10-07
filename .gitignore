@@ -7,6 +7,10 @@ node_modules/
 # Local runtime secrets; commit .env.example instead.
 .env
 
+# pi 运行时在 PI_CODING_AGENT_DIR 下生成的凭证与缓存（可能含密钥），只保留静态配置
+pi-agent/auth.json
+pi-agent/models-store.json
+
 # Per-repository review rules may contain team secrets (wecom tokens, thresholds).
 # Only the global default.yaml is committed; drop real repo rules in locally.
 prompts/rules/*.yaml
