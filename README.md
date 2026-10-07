@@ -112,6 +112,19 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 npm start
 ```
 
+## Docker 部署
+
+```bash
+# 1. 准备 .env：cp .env.example .env，填入 LLMGW_API_KEY（pi 模型密钥）
+# 2. 构建并启动
+docker compose up -d --build
+
+# 健康检查
+curl http://localhost:5001/health   # → {"status":"ok"}
+```
+
+**pi 凭证闭环**：镜像内置 `pi-agent/models.json` + `settings.json`（`PI_CODING_AGENT_DIR=/app/pi-agent`），其中 `apiKey` 用 `$LLMGW_API_KEY` 环境变量插值；`docker-compose.yml` 把宿主机 `.env` 挂载为 `/app/.env:ro`，应用启动时自动加载。全部配置（含模型密钥）只在一个 `.env` 文件里维护，不依赖宿主机 `~/.pi/agent` 挂载。
+
 ## 配置 GitLab webhook
 
 1. GitLab 项目 → Settings → Webhooks → URL 填 `http://<host>:5001/review/webhook`。

@@ -1,0 +1,34 @@
+services:
+  cr-pilot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cr-pilot
+    # 宿主机 5001 → 容器 5001；如需只内网访问可去掉 ports，改用 network_mode: host
+    ports:
+      - "5001:5001"
+
+    # 环境变量闭环：所有配置（含 pi 模型密钥 LLMGW_API_KEY）统一放在 .env，
+    # 挂载进容器由应用在启动时加载；容器内不再散落任何密钥。
+    # HOST / PORT / PI_CODING_AGENT_DIR 由镜像内 ENV 固定，无需在此重复。
+    volumes:
+      # 环境变量与密钥（宿主机 .env → 容器 /app/.env，只读）
+      - ./.env:/app/.env:ro
+      # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）
+      - ./prompts:/app/prompts:ro
+
+    # 生产环境推荐：异常退出自动重启
+    restart: unless-stopped
+
+    # 如需访问宿主机网络（如宿主机跑 GitLab），可改为 network_mode: host
+    # network_mode: host
+
+    # 健康检查：容器启动后每 30s 探测 /health 端点
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+# 无需额外网络/卷声明；默认 bridge 网络即可

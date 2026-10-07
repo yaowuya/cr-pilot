@@ -1,0 +1,20 @@
+{
+  "providers": {
+    "llmgw": {
+      "baseUrl": "https://llmgw.cwoa.net/v1",
+      "api": "openai-responses",
+      "apiKey": "$LLMGW_API_KEY",
+      "models": [
+        {
+          "id": "gpt-5.6-terra",
+          "name": "gpt-5.6-terra",
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 32000,
+          "reasoning": false,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

@@ -32,6 +32,10 @@ export function createApp(deps: AppDeps): Express {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
 
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok" });
+  });
+
   app.post("/review/webhook", (req, res) => {
     const receivedAt = Date.now();
     const body: unknown = req.body;
