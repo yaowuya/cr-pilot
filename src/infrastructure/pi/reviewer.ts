@@ -144,12 +144,17 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
 
 /** 默认会话工厂：按已核实的 SDK 签名装配一次隔离的 pi 会话。 */
 async function createRealSession(options: { systemPrompt: string; cwd: string }): Promise<PiSessionLike> {
+  const agentDir = getAgentDir();
   const loader = new DefaultResourceLoader(
-    buildLoaderOptions({ prompt: options.systemPrompt, cwd: options.cwd, agentDir: getAgentDir() }),
+    buildLoaderOptions({ prompt: options.systemPrompt, cwd: options.cwd, agentDir }),
   );
   await loader.reload();
+  // agentDir 必须显式传给 createAgentSession：SDK 只有拿到 agentDir 才会读取该
+  // 目录的 models.json / auth.json（否则走内置 catalog，容器的 $LLMGW_API_KEY
+  // 插值配置不生效，评审报 No API key found）。
   const { session } = await createAgentSession({
     cwd: options.cwd,
+    agentDir,
     resourceLoader: loader,
     sessionManager: SessionManager.inMemory(),
     // "all" 关闭内置、扩展与自定义工具；字符串枚举而非布尔值是 SDK 的实际签名。
