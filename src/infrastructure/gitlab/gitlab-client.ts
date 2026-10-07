@@ -95,11 +95,11 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
           return changes;
         }
         if (attempt < MAX_RETRIES) {
-          logger.warn("GitLab changes 为空，稍后重试", { attempt, projectId, iid });
+          logger.warn("GitLab changes 为空，稍后重试", { 重试次数: attempt, 项目ID: projectId, MR编号: iid });
           await delay(retryDelayMs);
         }
       }
-      logger.warn("GitLab changes 重试后仍为空", { projectId, iid });
+      logger.warn("GitLab changes 重试后仍为空", { 项目ID: projectId, MR编号: iid });
       return [];
     },
 
@@ -118,7 +118,7 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body }),
       });
-      logger.info("评论已回写 GitLab", { projectId, iid });
+      logger.info("评论已回写 GitLab", { 项目ID: projectId, MR编号: iid });
     },
   };
 }

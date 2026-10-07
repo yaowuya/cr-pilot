@@ -107,9 +107,9 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
       }
       const userMessage = buildUserMessage(code, context);
       logger.debug("创建 pi 会话", {
-        cwd: workspace,
-        systemPromptChars: systemPrompt.length,
-        userMessageChars: userMessage.length,
+        工作目录: workspace,
+        系统提示字数: systemPrompt.length,
+        用户消息字数: userMessage.length,
       });
       const session = await sessionFactory({ systemPrompt, cwd: workspace });
       let disposed = false;
@@ -125,14 +125,14 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
       };
       signal.addEventListener("abort", onAbort, { once: true });
       try {
-        logger.debug("送入 pi 评审", { userMessageChars: userMessage.length });
+        logger.debug("送入 pi 评审", { 用户消息字数: userMessage.length });
         await session.prompt(userMessage);
         if (signal.aborted) {
           throw signal.reason ?? new Error("评审已中断");
         }
         const text = session.getLastAssistantText()?.trim() ?? "";
         if (!text) throw new EmptyReviewError("pi 返回了空评审文本");
-        logger.debug("pi 已返回", { reviewChars: text.length, model: session.model?.id ?? "unknown" });
+        logger.debug("pi 已返回", { 评审字数: text.length, 模型: session.model?.id ?? "unknown" });
         return { text, model: session.model?.id ?? "unknown" };
       } finally {
         signal.removeEventListener("abort", onAbort);

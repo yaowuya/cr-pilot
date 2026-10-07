@@ -47,7 +47,7 @@ export function createApp(deps: AppDeps): Express {
     const payload = body as Record<string, unknown>;
 
     if (payload.object_kind !== "merge_request") {
-      logger.warn("不支持的事件类型", { status: 400, objectKind: String(payload.object_kind ?? "") });
+      logger.warn("不支持的事件类型", { 状态码: 400, 事件类型: String(payload.object_kind ?? "") });
       res.status(400).json({ error: `仅支持 merge_request 事件，收到：${String(payload.object_kind ?? "无")}` });
       return;
     }
@@ -73,10 +73,10 @@ export function createApp(deps: AppDeps): Express {
 
     deps.enqueue(task);
     logger.info("MR 任务已入队", {
-      projectId: task.projectId,
-      iid: task.iid,
-      fullName: task.fullName,
-      totalMs: Date.now() - receivedAt,
+      项目ID: task.projectId,
+      MR编号: task.iid,
+      项目全名: task.fullName,
+      处理耗时毫秒: Date.now() - receivedAt,
     });
     res.json({ message: `merge_request !${task.iid} 已进入评审队列` });
   });

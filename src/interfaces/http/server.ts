@@ -30,16 +30,16 @@ export function startServer(config: AppConfig, deps: ServerDeps, logger: Logger)
   const server = createServer(app);
   return new Promise((resolve, reject) => {
     server.once("error", (error) => {
-      logger.error("监听失败", { host: config.host, port: config.port, message: error.message });
+      logger.error("监听失败", { 监听地址: config.host, 端口: config.port, 错误: error.message });
       reject(error);
     });
     server.once("listening", () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : config.port;
-      logger.info("服务已开始监听", { url: `http://${config.host}:${port}/review/webhook` });
+      logger.info("服务已开始监听", { 地址: `http://${config.host}:${port}/review/webhook` });
       resolve(server);
     });
-    logger.info("正在监听端口", { host: config.host, port: config.port });
+    logger.info("正在监听端口", { 监听地址: config.host, 端口: config.port });
     server.listen(config.port, config.host);
   });
 }

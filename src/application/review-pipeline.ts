@@ -42,7 +42,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return {
     async run(task) {
-      logger.info("管线开始处理 MR", { projectId: task.projectId, iid: task.iid, fullName: task.fullName });
+      logger.info("管线开始处理 MR", { 项目ID: task.projectId, MR编号: task.iid, 项目全名: task.fullName });
       const startedAt = Date.now();
 
       let changes: Change[];
@@ -52,23 +52,23 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         commits = await client.getMergeRequestCommits(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
       } catch (error) {
         logger.error("拉取 MR 变更失败，任务结束", {
-          projectId: task.projectId,
-          iid: task.iid,
-          message: error instanceof Error ? error.message : String(error),
+          项目ID: task.projectId,
+          MR编号: task.iid,
+          错误: error instanceof Error ? error.message : String(error),
         });
         return;
       }
       logger.info("已拉取 MR 变更", {
-        projectId: task.projectId,
-        iid: task.iid,
-        changeCount: changes.length,
-        commitCount: commits.length,
+        项目ID: task.projectId,
+        MR编号: task.iid,
+        变更文件数: changes.length,
+        提交数: commits.length,
       });
 
       const ruleSet: RuleSet = rules.resolve(task.fullName);
       const commitsText = commits.map((commit) => `${commit.id.slice(0, 8)} ${commit.message.split("\n")[0] ?? ""}`).join("\n");
       const batches = splitChangesIntoBatches(changes, batchMaxTokens, estimateTokens(ruleSet.userPrompt) + estimateTokens(commitsText));
-      logger.info("分批完成", { projectId: task.projectId, iid: task.iid, batchCount: batches.length });
+      logger.info("分批完成", { 项目ID: task.projectId, MR编号: task.iid, 批次数: batches.length });
 
       const batchResults: string[] = [];
       for (const [index, batch] of batches.entries()) {
@@ -85,18 +85,18 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           });
           batchResults.push(result.text);
           logger.info("单批评审完成", {
-            projectId: task.projectId,
-            iid: task.iid,
-            batch: `${index + 1}/${batches.length}`,
-            reviewChars: result.text.length,
-            durationMs: Date.now() - batchStartedAt,
+            项目ID: task.projectId,
+            MR编号: task.iid,
+            批次: `${index + 1}/${batches.length}`,
+            评审字数: result.text.length,
+            耗时毫秒: Date.now() - batchStartedAt,
           });
         } catch (error) {
           logger.error("单批评审失败，任务结束", {
-            projectId: task.projectId,
-            iid: task.iid,
-            batch: `${index + 1}/${batches.length}`,
-            message: error instanceof Error ? error.message : String(error),
+            项目ID: task.projectId,
+            MR编号: task.iid,
+            批次: `${index + 1}/${batches.length}`,
+            错误: error instanceof Error ? error.message : String(error),
           });
           return;
         }
@@ -113,16 +113,16 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         });
         finalComment = stripMarkdownFences(summary.text.trim());
         logger.info("汇总完成", {
-          projectId: task.projectId,
-          iid: task.iid,
-          finalChars: finalComment.length,
-          durationMs: Date.now() - summaryStartedAt,
+          项目ID: task.projectId,
+          MR编号: task.iid,
+          最终字数: finalComment.length,
+          耗时毫秒: Date.now() - summaryStartedAt,
         });
       } catch (error) {
         logger.error("汇总失败，任务结束", {
-          projectId: task.projectId,
-          iid: task.iid,
-          message: error instanceof Error ? error.message : String(error),
+          项目ID: task.projectId,
+          MR编号: task.iid,
+          错误: error instanceof Error ? error.message : String(error),
         });
         return;
       }
@@ -131,9 +131,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         await client.postMergeRequestNote(task.projectId, task.iid, finalComment, task.gitlabUrl, task.gitlabToken);
       } catch (error) {
         logger.error("回写评论失败，任务结束", {
-          projectId: task.projectId,
-          iid: task.iid,
-          message: error instanceof Error ? error.message : String(error),
+          项目ID: task.projectId,
+          MR编号: task.iid,
+          错误: error instanceof Error ? error.message : String(error),
         });
         return;
       }
@@ -156,25 +156,25 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           } catch (error) {
             // 企微推送失败不影响已完成的评审回写，只记日志。
             logger.error("企业微信推送失败", {
-              projectId: task.projectId,
-              iid: task.iid,
-              message: error instanceof Error ? error.message : String(error),
+              项目ID: task.projectId,
+              MR编号: task.iid,
+              错误: error instanceof Error ? error.message : String(error),
             });
           }
         } else {
           logger.info("评分未低于企微阈值，跳过推送", {
-            projectId: task.projectId,
-            iid: task.iid,
-            score,
-            threshold: ruleSet.wecomScoreThreshold,
+            项目ID: task.projectId,
+            MR编号: task.iid,
+            评分: score,
+            阈值: ruleSet.wecomScoreThreshold,
           });
         }
       }
 
       logger.info("管线完成", {
-        projectId: task.projectId,
-        iid: task.iid,
-        totalMs: Date.now() - startedAt,
+        项目ID: task.projectId,
+        MR编号: task.iid,
+        总耗时毫秒: Date.now() - startedAt,
       });
     },
   };

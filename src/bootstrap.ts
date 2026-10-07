@@ -19,21 +19,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const config = loadConfig();
   const logger = config.logFile ? createFileLogger(config.logLevel, config.logFile) : createConsoleLogger(config.logLevel);
   // 启动横幅先打印生效配置：排障时第一步就是确认进程实际用了哪套配置。
-  logger.info("cr-pilot 正在启动", { node: process.version, logLevel: config.logLevel });
+  logger.info("cr-pilot 正在启动", { Node版本: process.version, 日志级别: config.logLevel });
   logger.info("生效配置", {
-    host: config.host,
-    port: config.port,
-    gitlabUrl: config.gitlabUrl,
-    promptPath: config.promptPath,
-    timeoutMs: config.timeoutMs,
-    batchMaxTokens: config.batchMaxTokens,
-    rulesDir: config.rulesDir,
-    reviewStyle: config.reviewStyle,
-    queueConcurrency: config.queueConcurrency,
-    logFile: config.logFile,
+    监听地址: config.host,
+    端口: config.port,
+    GitLab地址: config.gitlabUrl,
+    Prompt路径: config.promptPath,
+    评审超时毫秒: config.timeoutMs,
+    单批Token预算: config.batchMaxTokens,
+    规则目录: config.rulesDir,
+    评审风格: config.reviewStyle,
+    队列并发数: config.queueConcurrency,
+    日志文件: config.logFile,
     // 只确认是否配置，绝不打印密钥值。容器内 pi 通过 models.json 的
     // $LLMGW_API_KEY 插值取密钥；为空时评审会报 No API key found。
-    llmgwKeySet: Boolean(process.env.LLMGW_API_KEY),
+    模型密钥已配置: Boolean(process.env.LLMGW_API_KEY),
   });
   if (!process.env.LLMGW_API_KEY) {
     logger.warn("LLMGW_API_KEY 未配置：pi 评审将报 No API key found，请在 .env 中填写模型密钥");

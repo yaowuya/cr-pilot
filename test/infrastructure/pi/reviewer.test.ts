@@ -93,7 +93,7 @@ test("createPiReviewer 在 debug 级别记录会话生命周期", async () => {
   const text = lines.join("\n");
   assert.match(text, /创建 pi 会话/);
   assert.match(text, /会话已释放/);
-  assert.match(text, /systemPromptChars=1/);
-  assert.match(text, /userMessageChars=\d+/);
+  assert.match(text, /系统提示字数=1/);
+  assert.match(text, /用户消息字数=\d+/);
   assert.doesNotMatch(text, /CODE/, "用户消息正文不应写入日志");
 });
