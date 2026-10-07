@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task frontend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task frontend-003: 后台骨架与评审记录页**
+- [x] **Task frontend-003: 后台骨架与评审记录页**
 
 **Files:**
 - Create: `web/src/layouts/AdminLayout.vue`、`web/src/views/ReviewsView.vue`
@@ -72,7 +72,7 @@ git add web/src/layouts web/src/views/ReviewsView.vue web/e2e .fp-execute/e2e/fr
 git commit -m "feat: 后台骨架与评审记录页，含统计、筛选与分页"
 ```
 
-- [ ] **Task frontend-004: prompt 管理页**
+- [x] **Task frontend-004: prompt 管理页**
 
 **Files:**
 - Create: `web/src/components/PromptEditor.vue`、`web/src/views/PromptsView.vue`
@@ -143,7 +143,7 @@ git add web/src/components web/src/views/PromptsView.vue web/e2e .fp-execute/e2e
 git commit -m "feat: prompt 管理页，含双栏编辑器与按需加载正文"
 ```
 
-- [ ] **Task frontend-005: 环境变量管理页**
+- [x] **Task frontend-005: 环境变量管理页**
 
 **Files:**
 - Create: `web/src/views/ConfigView.vue`
@@ -208,7 +208,7 @@ git add web/src/views/ConfigView.vue web/e2e .fp-execute/e2e/frontend-005
 git commit -m "feat: 环境变量管理页，含密钥掩码与需重启标注"
 ```
 
-- [ ] **Task frontend-006: 管理员账号管理页**
+- [x] **Task frontend-006: 管理员账号管理页**
 
 **Files:**
 - Create: `web/src/views/AdminsView.vue`

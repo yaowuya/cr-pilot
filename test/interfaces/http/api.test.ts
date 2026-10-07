@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
@@ -402,5 +402,24 @@ test("未构建前端时跳过静态托管，API 仍可用", async () => {
   await withServer(app, async (base) => {
     assert.equal((await authed(base, token, "/api/reviews")).status, 200);
     assert.equal((await fetch(`${base}/reviews`)).status, 404, "没有产物时不提供 SPA fallback");
+  });
+});
+
+test("相对产物路径也能托管（sendFile 需要绝对路径）", async () => {
+  // 回归：曾用相对路径调 res.sendFile 导致 500「path must be absolute」。
+  // 生产配置 WEB_DIST_DIR 就是相对路径，必须确保它可用。
+  const relativeDir = join("web", "dist");
+  if (!existsSync(join(process.cwd(), relativeDir, "index.html"))) {
+    // 未构建前端时跳过（CI 或纯后端开发环境）。
+    return;
+  }
+  const { app, token } = buildHarness({ distDir: relativeDir });
+  await withServer(app, async (base) => {
+    const page = await fetch(`${base}/reviews`);
+    assert.equal(page.status, 200, "相对路径必须能正常返回 index.html");
+    assert.match(await page.text(), /<div id="app">/);
+    // 静态资源与 API 隔离同时成立
+    assert.equal((await authed(base, token, "/api/reviews")).status, 200);
+    assert.match((await fetch(`${base}/api/not-exist`)).headers.get("content-type") ?? "", /application\/json/);
   });
 });

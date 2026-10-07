@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task backend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task backend-017: 认证路由**
+- [x] **Task backend-017: 认证路由**
 
 **Files:**
 - Create: `src/interfaces/http/api/auth.ts`
@@ -74,7 +74,7 @@ git add src/interfaces/http/api/auth.ts test/interfaces/http/api.test.ts
 git commit -m "feat: 新增登录、登出与当前管理员接口"
 ```
 
-- [ ] **Task backend-018: 管理员账号管理路由**
+- [x] **Task backend-018: 管理员账号管理路由**
 
 **Files:**
 - Create: `src/interfaces/http/api/admins.ts`
@@ -141,7 +141,7 @@ git add src/interfaces/http/api/admins.ts test/interfaces/http/api.test.ts
 git commit -m "feat: 新增管理员账号增删接口与删除约束"
 ```
 
-- [ ] **Task backend-019: 评审记录查询与统计路由**
+- [x] **Task backend-019: 评审记录查询与统计路由**
 
 **Files:**
 - Create: `src/interfaces/http/api/reviews.ts`
@@ -201,7 +201,7 @@ git add src/interfaces/http/api/reviews.ts test/interfaces/http/api.test.ts
 git commit -m "feat: 新增评审记录查询与统计接口"
 ```
 
-- [ ] **Task backend-020: 环境变量管理路由**
+- [x] **Task backend-020: 环境变量管理路由**
 
 **Files:**
 - Create: `src/interfaces/http/api/config.ts`
@@ -259,7 +259,7 @@ git add src/interfaces/http/api/config.ts test/interfaces/http/api.test.ts
 git commit -m "feat: 新增环境变量管理接口，密钥掩码与需重启标注"
 ```
 
-- [ ] **Task backend-021: prompt 管理路由与规则来源切换**
+- [x] **Task backend-021: prompt 管理路由与规则来源切换**
 
 **Files:**
 - Create: `src/interfaces/http/api/prompts.ts`
@@ -335,7 +335,7 @@ git add src/interfaces/http/api/prompts.ts src/infrastructure/rules/review-rules
 git commit -m "feat: 新增 prompt 管理接口，规则来源改为数据库优先并回落 yaml"
 ```
 
-- [ ] **Task backend-022: 静态资源托管与 SPA fallback**
+- [x] **Task backend-022: 静态资源托管与 SPA fallback**
 
 **Files:**
 - Create: `src/interfaces/http/static-assets.ts`
@@ -407,7 +407,7 @@ git add src/interfaces/http/static-assets.ts src/interfaces/http/app.ts test/int
 git commit -m "feat: 托管前端静态资源与 SPA fallback，隔离 API 前缀"
 ```
 
-- [ ] **Task backend-023: 组合根装配与部署配置**
+- [x] **Task backend-023: 组合根装配与部署配置**
 
 **Files:**
 - Modify: `src/bootstrap.ts:20-75`

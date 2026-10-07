@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task frontend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task frontend-001: Vite 工程骨架与构建配置**
+- [x] **Task frontend-001: Vite 工程骨架与构建配置**
 
 **Files:**
 - Create: `web/package.json`、`web/vite.config.ts`、`web/tsconfig.json`、`web/index.html`、`web/src/main.ts`、`web/src/App.vue`
@@ -82,7 +82,7 @@ git add web/ package.json
 git commit -m "feat: 新增 Vite + Vue3 + Element Plus 前端工程骨架"
 ```
 
-- [ ] **Task frontend-002: API 客户端、登录页与路由守卫**
+- [x] **Task frontend-002: API 客户端、登录页与路由守卫**
 
 **Files:**
 - Create: `web/src/api/client.ts`、`web/src/stores/auth.ts`、`web/src/router/index.ts`、`web/src/views/LoginView.vue`

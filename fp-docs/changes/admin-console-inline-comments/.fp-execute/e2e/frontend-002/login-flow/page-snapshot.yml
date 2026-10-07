@@ -1,0 +1,16 @@
+- generic [ref=f1e4]:
+  - generic [ref=f1e5]: cr-pilot 管理控制台
+  - generic [ref=f1e8]:
+    - generic [ref=f1e9]:
+      - generic [ref=f1e10]: "*用户名"
+      - textbox "*用户名" [ref=f1e14]:
+        - /placeholder: 用户名
+        - text: admin
+    - generic [ref=f1e15]:
+      - generic [ref=f1e16]: "*密码"
+      - generic [ref=f1e19]:
+        - textbox "*密码" [ref=f1e20]:
+          - /placeholder: 密码
+          - text: admin-password
+        - generic [ref=f1e28] [cursor=pointer]
+    - button "登录" [ref=f1e23] [cursor=pointer]

@@ -7,6 +7,19 @@ node_modules/
 # Local runtime secrets; commit .env.example instead.
 .env
 
+# SQLite 数据库与 WAL 附属文件：运行期数据，不入库
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# 前端依赖与构建产物：由 npm run build:frontend 产出，镜像构建时重新生成
+web/node_modules/
+web/dist/
+
+# playwright-cli 的临时快照、截图与控制台日志
+.playwright-cli/
+
 # pi 运行时在 PI_CODING_AGENT_DIR 下生成的凭证与缓存（可能含密钥），只保留静态配置
 pi-agent/auth.json
 pi-agent/models-store.json

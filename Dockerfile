@@ -10,7 +10,20 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # ------------------------------------------------------------
-# 2. builder 阶段：复制源码与配置（无需编译，Node 22 原生跑 TS）
+# 2. frontend 阶段：构建管理前端（产物为静态文件，运行期不需要 Node）
+# ------------------------------------------------------------
+FROM node:22-alpine AS frontend
+WORKDIR /app/web
+
+# 只复制前端依赖声明，利用层缓存：仅改源码时不重装依赖
+COPY web/package.json web/package-lock.json* ./
+RUN npm install --no-audit --no-fund
+
+COPY web/ ./
+RUN npm run build
+
+# ------------------------------------------------------------
+# 3. builder 阶段：复制源码与配置（无需编译，Node 22 原生跑 TS）
 # ------------------------------------------------------------
 FROM node:22-alpine AS builder
 WORKDIR /app
@@ -25,7 +38,7 @@ COPY prompts ./prompts
 COPY pi-agent ./pi-agent
 
 # ------------------------------------------------------------
-# 3. runner 阶段：最小运行镜像，非 root 用户
+# 4. runner 阶段：最小运行镜像，非 root 用户
 # ------------------------------------------------------------
 FROM node:22-alpine AS runner
 WORKDIR /app
@@ -36,6 +49,8 @@ ENV PORT=5001
 # pi 凭证闭环：配置目录固定在镜像内的 /app/pi-agent（models.json 用
 # $LLMGW_API_KEY 环境变量插值取密钥），密钥经挂载的 .env 注入，不依赖宿主机。
 ENV PI_CODING_AGENT_DIR=/app/pi-agent
+# 数据库默认路径指向持久卷挂载点（compose 把 /data/cr-pilot 挂到 /app/data）。
+ENV DB_PATH=/app/data/cr-pilot.db
 
 # 把 node_modules、源码、配置从 builder 拷入
 COPY --from=builder /app/node_modules ./node_modules
@@ -46,6 +61,12 @@ COPY --from=builder /app/prompts ./prompts
 # COPY --chown 在拷贝时直接设属主，避免额外的 chown RUN 层。
 COPY --chown=node:node --from=builder /app/pi-agent ./pi-agent
 COPY --from=builder /app/package.json ./
+# 前端构建产物：Express 静态托管 web/dist（见 src/bootstrap.ts 的 WEB_DIST_DIR）。
+# 目录必须对 node 用户可读；用 --chown 一并设好属主，避免运行时权限问题。
+COPY --chown=node:node --from=frontend /app/web/dist ./web/dist
+
+# 数据目录：容器内默认挂载点，预建并授权，避免首次启动因无写权限失败
+RUN mkdir -p /app/data && chown -R node:node /app/data
 
 # 创建非 root 用户并切换（Alpine 自带 node 用户 uid=1000）
 USER node

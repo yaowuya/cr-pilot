@@ -6,7 +6,7 @@
  * 前端按 JSON 解析时拿到一堆标签，错误信息完全丢失。
  */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import express, { type RequestHandler } from "express";
 import type { Logger } from "../../shared/logger.ts";
 
@@ -27,11 +27,15 @@ export interface StaticAssetsDeps {
  * 未构建前端时服务仍应正常提供 API 与 webhook。
  */
 export function createStaticAssets(deps: StaticAssetsDeps): RequestHandler[] {
-  const indexFile = join(deps.distDir, "index.html");
+  // 必须转成绝对路径：`res.sendFile` 拒绝相对路径（会直接抛错而不是返回 404），
+  // 而本项目的工作目录在本地与容器内不同，相对路径也不适合作为运行期依赖。
+  const root = resolve(deps.distDir);
+  const indexFile = join(root, "index.html");
   if (!existsSync(indexFile)) {
-    deps.logger.info("未找到前端构建产物，跳过静态资源托管", { 目录: deps.distDir });
+    deps.logger.info("未找到前端构建产物，跳过静态资源托管", { 目录: root });
     return [];
   }
+  deps.logger.info("已启用前端静态资源托管", { 目录: root });
 
   const fallback: RequestHandler = (req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -46,5 +50,5 @@ export function createStaticAssets(deps: StaticAssetsDeps): RequestHandler[] {
     res.sendFile(indexFile);
   };
 
-  return [express.static(deps.distDir, { index: false }), fallback];
+  return [express.static(root, { index: false }), fallback];
 }

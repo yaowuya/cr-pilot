@@ -10,7 +10,10 @@
   "scripts": {
     "start": "node src/bootstrap.ts",
     "test": "node --test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && npm --prefix web run typecheck",
+    "build:frontend": "npm --prefix web run build",
+    "dev:frontend": "npm --prefix web run dev",
+    "import:prompts": "node scripts/import-prompts.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.4",
