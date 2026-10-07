@@ -67,7 +67,13 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       },
     );
     if (!response.ok) {
-      throw new GitlabApiError(`GitLab API ${path} 返回 ${response.status}`, response.status);
+      // 把响应体带进错误消息：GitLab 的 403 往往在 body 里写明了拒绝原因
+      // （如 token 无写权限、MR 状态不允许评论等），只看状态码无法定位。
+      const detail = await response.text().catch(() => "");
+      throw new GitlabApiError(
+        `GitLab API ${path} 返回 ${response.status}${detail ? `：${detail.slice(0, 300)}` : ""}`,
+        response.status,
+      );
     }
     return (await response.json()) as T;
   };

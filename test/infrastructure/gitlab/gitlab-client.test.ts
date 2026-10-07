@@ -6,7 +6,12 @@ import { createSilentLogger } from "../../../src/shared/logger.ts";
 type FetchFn = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 function jsonResponse(status: number, body: unknown): Response {
-  return { status, ok: status >= 200 && status < 300, json: async () => body } as Response;
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    json: async () => body,
+    text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
+  } as Response;
 }
 
 function trackFetch(respond: (url: string) => Response | Promise<Response>): { calls: { url: string; init: RequestInit }[]; fetchFn: FetchFn } {
