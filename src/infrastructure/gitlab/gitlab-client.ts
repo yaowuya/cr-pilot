@@ -56,9 +56,10 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     );
   }
 
-  const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
+  const request = async <T>(gitlabUrl: string, path: string, init: RequestInit = {}): Promise<T> => {
+    const base = (gitlabUrl || baseUrl).replace(/\/+$/, "");
     const response = await fetchFn(
-      `${baseUrl}${path}`,
+      `${base}${path}`,
       {
         ...init,
         headers: { "PRIVATE-TOKEN": options.token, ...(init.headers ?? {}) },
@@ -72,10 +73,10 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
   };
 
   return {
-    async getMergeRequestChanges(projectId, iid) {
+    async getMergeRequestChanges(projectId, iid, gitlabUrl) {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/changes?access_raw_diffs=true`;
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
-        const payload = await request<{ changes?: Array<{ diff?: string; new_path?: string; old_path?: string }> }>(path);
+        const payload = await request<{ changes?: Array<{ diff?: string; new_path?: string; old_path?: string }> }>(gitlabUrl ?? "", path);
         const changes = (payload.changes ?? [])
           .filter((change) => typeof change.diff === "string")
           .map((change) => ({
@@ -95,17 +96,17 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       return [];
     },
 
-    async getMergeRequestCommits(projectId, iid) {
+    async getMergeRequestCommits(projectId, iid, gitlabUrl) {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/commits`;
-      const payload = await request<Array<{ id?: string; message?: string }>>(path);
+      const payload = await request<Array<{ id?: string; message?: string }>>(gitlabUrl ?? "", path);
       return payload
         .filter((commit) => typeof commit.id === "string")
         .map((commit) => ({ id: commit.id ?? "", message: commit.message ?? "" }));
     },
 
-    async postMergeRequestNote(projectId, iid, body) {
+    async postMergeRequestNote(projectId, iid, body, gitlabUrl) {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/notes`;
-      await request(path, {
+      await request(gitlabUrl ?? "", path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body }),

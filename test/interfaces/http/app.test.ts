@@ -104,6 +104,27 @@ test("merge_request 事件入队并返回 200，携带正确任务字段", async
   assert.equal(enqueued[0].targetBranch, "main");
 });
 
+test("gitlabUrl 从 X-Gitlab-Instance 请求头派生", async () => {
+  const { deps, enqueued } = makeDeps();
+  await withApp(async (base) => {
+    const response = await post(base, mergeRequestPayload(), { "x-gitlab-instance": "https://code.cwoa.net" });
+    assert.equal(response.status, 200);
+  }, deps);
+  assert.equal(enqueued[0].gitlabUrl, "https://code.cwoa.net");
+});
+
+test("无 X-Gitlab-Instance 时从 repository.homepage 派生 gitlabUrl", async () => {
+  const { deps, enqueued } = makeDeps();
+  const payload = mergeRequestPayload({
+    repository: { homepage: "https://code.cwoa.net/team/app" },
+  });
+  await withApp(async (base) => {
+    const response = await post(base, payload);
+    assert.equal(response.status, 200);
+  }, deps);
+  assert.equal(enqueued[0].gitlabUrl, "https://code.cwoa.net");
+});
+
 test("非 merge_request 事件返回 400，不入队", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {

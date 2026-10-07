@@ -29,6 +29,8 @@ export interface MergeRequestTask {
   fullName: string;
   sourceBranch: string;
   targetBranch: string;
+  /** 该事件来源的 GitLab 实例地址（webhook 派生）；缺省时客户端回落到全局配置。 */
+  gitlabUrl?: string;
 }
 
 /** 一次评审的输入。systemPrompt 是 prompt 文件全文，code 是待评审内容。 */
@@ -56,9 +58,32 @@ export interface Reviewer {
 /**
  * GitLab 集成端口：拉取 MR 变更与提交、回写评论。
  * 由 infrastructure/gitlab 实现；application 层只依赖本端口。
+ *
+ * `gitlabUrl` 参数是任务级实例地址（来自 webhook），实现方应优先使用它，
+ * 为空时回落到构造时的全局配置。
  */
 export interface GitlabClient {
-  getMergeRequestChanges(projectId: number, iid: number): Promise<Change[]>;
-  getMergeRequestCommits(projectId: number, iid: number): Promise<Commit[]>;
-  postMergeRequestNote(projectId: number, iid: number, body: string): Promise<void>;
+  getMergeRequestChanges(projectId: number, iid: number, gitlabUrl?: string): Promise<Change[]>;
+  getMergeRequestCommits(projectId: number, iid: number, gitlabUrl?: string): Promise<Commit[]>;
+  postMergeRequestNote(projectId: number, iid: number, body: string, gitlabUrl?: string): Promise<void>;
+}
+
+/**
+ * 从 webhook 派生 GitLab 实例地址（纯函数，domain 层）。
+ *
+ * 优先级：`X-Gitlab-Instance` 请求头 > payload `repository.homepage` 的 origin
+ * 部分。都缺失时返回空串——现代 GitLab 的 webhook 一定带 `X-Gitlab-Instance`，
+ * 这里只取 origin（scheme://host[:port]），丢弃路径部分。
+ */
+export function deriveGitlabInstanceUrl(
+  instanceHeader: string | undefined,
+  homepage: string | undefined,
+): string {
+  const candidate = instanceHeader?.trim() || homepage?.trim() || "";
+  try {
+    const url = new URL(candidate);
+    return url.origin;
+  } catch {
+    return "";
+  }
 }

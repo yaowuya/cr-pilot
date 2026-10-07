@@ -48,7 +48,8 @@ export function createApp(deps: AppDeps): Express {
       return;
     }
 
-    const task = parseMergeRequestTask(payload);
+    const instanceHeader = req.headers["x-gitlab-instance"];
+    const task = parseMergeRequestTask(payload, typeof instanceHeader === "string" ? instanceHeader : undefined);
     if (!task) {
       logger.warn("merge_request payload 缺少关键字段", { status: 400 });
       res.status(400).json({ error: "merge_request payload 缺少 project 或 object_attributes 信息" });

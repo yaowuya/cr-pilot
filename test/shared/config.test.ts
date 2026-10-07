@@ -2,17 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadConfig } from "../../src/shared/config.ts";
 
-/** 两个必填 GitLab 配置的合法值，供各用例复用。 */
-const GITLAB_REQUIRED = { GITLAB_URL: "https://gitlab.example.com", GITLAB_TOKEN: "t" };
+/** 唯一必填 GitLab 配置（GITLAB_URL 现在可选，从 webhook 派生）。 */
+const GITLAB_REQUIRED = { GITLAB_TOKEN: "t" };
 
-test("loadConfig 默认端口为 5001，缺失必填 GitLab 配置时快速失败", () => {
-  assert.throws(() => loadConfig({}), /GITLAB_URL/);
-  assert.throws(() => loadConfig({ GITLAB_URL: "https://x" }), /GITLAB_TOKEN/);
+test("loadConfig 默认端口为 5001，缺失 GITLAB_TOKEN 时快速失败", () => {
+  assert.throws(() => loadConfig({}), /GITLAB_TOKEN/);
   assert.equal(loadConfig(GITLAB_REQUIRED).port, 5001);
 });
 
+test("loadConfig 未配置 GITLAB_URL 时为空串（从 webhook 派生）", () => {
+  assert.equal(loadConfig(GITLAB_REQUIRED).gitlabUrl, "");
+  assert.equal(loadConfig({ GITLAB_TOKEN: "t", GITLAB_URL: "" }).gitlabUrl, "");
+});
+
 test("loadConfig 在无环境变量时返回默认值", () => {
-  assert.deepEqual(loadConfig(GITLAB_REQUIRED), {
+  assert.deepEqual(loadConfig({ GITLAB_URL: "https://gitlab.example.com", GITLAB_TOKEN: "t" }), {
     port: 5001,
     host: "127.0.0.1",
     promptPath: "prompts/review.md",

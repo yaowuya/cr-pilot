@@ -92,8 +92,8 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | --- | --- | --- |
 | `PORT` | `5001` | 监听端口 |
 | `HOST` | `127.0.0.1` | 监听地址 |
-| `GITLAB_URL` | 无（必填） | GitLab 实例地址，如 `https://code.cwoa.net` |
 | `GITLAB_TOKEN` | 无（必填） | 访问令牌（拉 diff、回写评论），只从环境变量读取 |
+| `GITLAB_URL` | 无（可选） | GitLab 实例地址。缺省时从 webhook 派生：优先 `X-Gitlab-Instance` 请求头，其次 payload `repository.homepage` 的 origin；显式配置可覆盖派生值，并兜底老版本 GitLab |
 | `GITLAB_INSECURE_TLS` | `0` | 为 `1` 时跳过 GitLab TLS 证书校验（内网自签名） |
 | `GITLAB_API_TIMEOUT` | `15000` | GitLab API 单次请求超时毫秒数 |
 | `REVIEW_BATCH_MAX_TOKENS` | `6000` | 单批评审 token 预算 |
@@ -102,7 +102,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
 
-`GITLAB_URL`、`GITLAB_TOKEN` 缺失时启动直接报错——服务「启动成功但每次拉取失败」比「起不来」更难排查。
+`GITLAB_TOKEN` 缺失时启动直接报错——服务「启动成功但每次评审都拉取失败」比「起不来」更难排查。`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。
 
 本地开发可用 `.env`（复制 `.env.example`），启动时自动加载；已存在的同名环境变量优先。
 
