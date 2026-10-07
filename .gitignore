@@ -7,6 +7,12 @@ node_modules/
 # Local runtime secrets; commit .env.example instead.
 .env
 
+# Per-repository review rules may contain team secrets (wecom tokens, thresholds).
+# Only the global default.yaml is committed; drop real repo rules in locally.
+prompts/rules/*.yaml
+prompts/rules/*.yml
+!prompts/rules/default.yaml
+
 # Skills under .agent are shared code and are committed. Everything else in .agent
 # is local state and stays out of the repository.
 .agent/*
