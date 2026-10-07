@@ -54,6 +54,9 @@ export function startServer(config: AppConfig, deps: ServerDeps, logger: Logger)
 // 仅在直接执行本文件时启动服务。测试会导入本模块，因此必须有这层判定，
 // 否则一次 import 就会占用端口并留下一个不会退出的进程。
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  // 先加载项目根目录的 .env（存在才加载，不覆盖已有环境变量），再读取配置：
+  // 本地开发把密钥放在 .env（已 gitignore），部署时用真实环境变量注入。
+  loadEnvFileIfPresent(".env");
   const config = loadConfig();
   const logger = createConsoleLogger(config.logLevel);
   // 启动横幅先打印生效配置：排障时第一步就是确认进程实际用了哪套配置。
@@ -98,5 +101,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } catch (error) {
     logger.error("服务启动失败", { message: error instanceof Error ? error.message : String(error) });
     process.exitCode = 1;
+  }
+}
+
+/**
+ * 加载 .env 文件（Node 22 内置 `process.loadEnvFile`，键值写进 process.env，
+ * 已存在的同名环境变量优先）。文件不存在时静默跳过：部署环境不需要 .env，
+ * 测试也从不经过直接执行入口。
+ */
+function loadEnvFileIfPresent(path: string): void {
+  try {
+    process.loadEnvFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      // 文件存在但格式非法（如重复键）时抛错而不是静默继续：配置错误越早暴露越好。
+      throw error;
+    }
   }
 }

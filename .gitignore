@@ -4,6 +4,9 @@ node_modules/
 .apifox/
 .mcp.json
 
+# Local runtime secrets; commit .env.example instead.
+.env
+
 # Skills under .agent are shared code and are committed. Everything else in .agent
 # is local state and stays out of the repository.
 .agent/*
