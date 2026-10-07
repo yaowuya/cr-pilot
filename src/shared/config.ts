@@ -28,6 +28,19 @@ export interface AppConfig {
   reviewStyle: string;
   /** 后台队列并发数：同时处理的 MR 任务上限。 */
   queueConcurrency: number;
+  /** SQLite 数据库文件路径。容器部署时挂在持久卷下。 */
+  dbPath: string;
+  /** 首次启动时创建的首个管理员用户名；账号已存在时不生效。 */
+  adminUsername: string;
+  /** 首次启动时创建的首个管理员密码；账号已存在时不生效。 */
+  adminPassword: string;
+  /**
+   * 令牌与密码盐的部署盐，来自 `AUTH_SALT`。
+   *
+   * 不入库：数据库被单独取走时，哈希无法用已知字典直接比对。为空时启动会告警
+   * ——空盐会让令牌可预测。
+   */
+  authSalt: string;
 }
 
 const DEFAULT_PORT = 5001;
@@ -40,6 +53,8 @@ const DEFAULT_RULES_DIR = "prompts/rules";
 const DEFAULT_REVIEW_STYLE = "professional";
 const DEFAULT_QUEUE_CONCURRENCY = 5;
 const DEFAULT_LOG_FILE = "";
+/** 数据库默认路径：容器内解析到 WORKDIR 下的 data 目录（挂持久卷）。 */
+const DEFAULT_DB_PATH = "./data/cr-pilot.db";
 
 /**
  * 读取服务配置。
@@ -65,7 +80,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     rulesDir: env.REVIEW_RULES_DIR?.trim() || DEFAULT_RULES_DIR,
     reviewStyle: env.REVIEW_STYLE?.trim() || DEFAULT_REVIEW_STYLE,
     queueConcurrency: readPositiveInt(env, "QUEUE_CONCURRENCY", DEFAULT_QUEUE_CONCURRENCY),
+    dbPath: env.DB_PATH?.trim() || DEFAULT_DB_PATH,
+    adminUsername: env.ADMIN_USERNAME?.trim() || "",
+    adminPassword: env.ADMIN_PASSWORD?.trim() || "",
+    authSalt: env.AUTH_SALT?.trim() || "",
   };
+}
+
+/**
+ * 把数据库中的配置覆盖写入环境变量（P-005「启动时 DB 优先」）。
+ *
+ * 调用顺序必须是「先应用覆盖，再 loadConfig」：loadConfig 读取的是进程环境变量
+ * 快照，覆盖写晚了就不生效。空串覆盖视为清空——不写入环境变量，保留进程原有值，
+ * 与页面「清空该覆盖」的语义一致。
+ */
+export function applyConfigOverrides(env: NodeJS.ProcessEnv, overrides: Record<string, string>): void {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== "") env[key] = value;
+  }
 }
 
 /** 规范化实例 URL：去空白与尾部斜杠；空值返回空串（表示「从 webhook 派生」）。 */

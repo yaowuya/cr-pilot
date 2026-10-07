@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task backend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task backend-005: 评审明细仓储**
+- [x] **Task backend-005: 评审明细仓储**
 
 **Files:**
 - Create: `src/domain/review-record.ts`
@@ -121,7 +121,7 @@ git add src/domain/review-record.ts src/infrastructure/sqlite/review-record-repo
 git commit -m "feat: 新增评审明细仓储，统计用 SQL 实时聚合且忽略空分数"
 ```
 
-- [ ] **Task backend-006: 管理员仓储**
+- [x] **Task backend-006: 管理员仓储**
 
 **Files:**
 - Create: `src/domain/admin.ts`
@@ -217,7 +217,7 @@ git add src/domain/admin.ts src/infrastructure/sqlite/admin-repo.ts test/infrast
 git commit -m "feat: 新增管理员仓储与首个账号引导"
 ```
 
-- [ ] **Task backend-007: 配置覆盖仓储**
+- [x] **Task backend-007: 配置覆盖仓储**
 
 **Files:**
 - Create: `src/domain/runtime-config.ts`
@@ -315,7 +315,7 @@ git add src/domain/runtime-config.ts src/infrastructure/sqlite/config-repo.ts te
 git commit -m "feat: 新增配置覆盖仓储与需重启键清单"
 ```
 
-- [ ] **Task backend-008: 评审 prompt 仓储**
+- [x] **Task backend-008: 评审 prompt 仓储**
 
 **Files:**
 - Create: `src/domain/review-prompt.ts`

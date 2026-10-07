@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig } from "../../src/shared/config.ts";
+import { applyConfigOverrides, loadConfig } from "../../src/shared/config.ts";
 
 // 全部 GitLab 配置均可选：GITLAB_URL 从 webhook 派生，GITLAB_TOKEN 随 webhook
 // 请求头携带（对齐参考项目），不再需要任何必填环境变量。
@@ -30,7 +30,38 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     rulesDir: "prompts/rules",
     reviewStyle: "professional",
     queueConcurrency: 5,
+    dbPath: "./data/cr-pilot.db",
+    adminUsername: "",
+    adminPassword: "",
+    authSalt: "",
   });
+});
+
+test("loadConfig 读取数据库、初始管理员与部署盐配置", () => {
+  const config = loadConfig({
+    DB_PATH: "/var/lib/cr-pilot/db.sqlite",
+    ADMIN_USERNAME: "root",
+    ADMIN_PASSWORD: "initial-pw",
+    AUTH_SALT: "deploy-salt",
+  });
+  assert.equal(config.dbPath, "/var/lib/cr-pilot/db.sqlite");
+  assert.equal(config.adminUsername, "root");
+  assert.equal(config.adminPassword, "initial-pw");
+  assert.equal(config.authSalt, "deploy-salt");
+});
+
+test("applyConfigOverrides 让数据库覆盖值优先于环境变量", () => {
+  const env: NodeJS.ProcessEnv = { QUEUE_CONCURRENCY: "2", REVIEW_TIMEOUT_MS: "1000" };
+  applyConfigOverrides(env, { QUEUE_CONCURRENCY: "9" });
+  assert.equal(env.QUEUE_CONCURRENCY, "9");
+  assert.equal(loadConfig(env).queueConcurrency, 9, "loadConfig 必须读到覆盖后的值");
+  assert.equal(env.REVIEW_TIMEOUT_MS, "1000", "未覆盖的键保持原值");
+});
+
+test("applyConfigOverrides 空串表示清空覆盖、保留原环境变量", () => {
+  const env: NodeJS.ProcessEnv = { LOG_FILE: "/app/logs/cr-pilot.log" };
+  applyConfigOverrides(env, { LOG_FILE: "" });
+  assert.equal(env.LOG_FILE, "/app/logs/cr-pilot.log", "空串不得写入空值");
 });
 
 test("loadConfig 忽略不再支持的 GITLAB_TOKEN 与 GITLAB_WEBHOOK_SECRET", () => {

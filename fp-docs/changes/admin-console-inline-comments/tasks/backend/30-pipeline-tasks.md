@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task backend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task backend-009: 评审记录写入编排**
+- [x] **Task backend-009: 评审记录写入编排**
 
 **Files:**
 - Modify: `src/application/review-pipeline.ts:17-27`（PipelineDeps）、`src/application/review-pipeline.ts:42-181`（run）
@@ -84,7 +84,7 @@ git add src/application/review-pipeline.ts test/application/review-pipeline.test
 git commit -m "feat: 评审管线写入明细记录，失败路径同样落库"
 ```
 
-- [ ] **Task backend-010: 结构化解析接入与 prompt 改按需读库**
+- [x] **Task backend-010: 结构化解析接入与 prompt 改按需读库**
 
 **Files:**
 - Modify: `src/application/review-pipeline.ts`
@@ -158,7 +158,7 @@ git add src/application/review-pipeline.ts test/application/review-pipeline.test
 git commit -m "feat: 评审 prompt 改为按需读数据库，未命中回落 yaml"
 ```
 
-- [ ] **Task backend-011: 行内评论发布编排与汇总去重**
+- [x] **Task backend-011: 行内评论发布编排与汇总去重**
 
 **Files:**
 - Modify: `src/application/review-pipeline.ts`
@@ -252,7 +252,7 @@ git add src/application/review-pipeline.ts test/application/review-pipeline.test
 git commit -m "feat: 行内评论发布编排，含幂等 marker、行号校验与降级"
 ```
 
-- [ ] **Task backend-012: 新增配置项**
+- [x] **Task backend-012: 新增配置项**
 
 **Files:**
 - Modify: `src/shared/config.ts:24-31`（AppConfig）、`src/shared/config.ts:33-42`（默认常量）、`src/shared/config.ts:53-69`（loadConfig）

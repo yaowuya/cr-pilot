@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task backend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task backend-013: prompt 仓储与记录仓储的端口边界复核**
+- [x] **Task backend-013: prompt 仓储与记录仓储的端口边界复核**
 
 **Files:**
 - Modify: `src/domain/review-record.ts`（补 `ReviewRecordWriter` 别名）
@@ -47,7 +47,7 @@ git add src/application/review-pipeline.ts
 git commit -m "refactor: 收窄管线记录写入依赖到 insert 方法"
 ```
 
-- [ ] **Task backend-014: Bearer 鉴权中间件**
+- [x] **Task backend-014: Bearer 鉴权中间件**
 
 **Files:**
 - Create: `src/interfaces/http/auth-middleware.ts`
@@ -253,7 +253,7 @@ git add src/domain/review-task.ts src/infrastructure/gitlab/gitlab-client.ts tes
 git commit -m "feat: GitLab 客户端新增版本查询与行内评论发布回读"
 ```
 
-- [ ] **Task backend-016: 行内评论发布的失败降级与发布后校验**
+- [x] **Task backend-016: 行内评论发布的失败降级与发布后校验**
 
 **Files:**
 - Modify: `src/application/review-pipeline.ts`

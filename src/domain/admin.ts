@@ -23,4 +23,6 @@ export interface AdminRepository {
   /** 仅在表为空时创建首个账号（D-011 的引导语义）；重复调用无副作用。 */
   ensureInitialAdmin(username: string, password: string): void;
   count(): number;
+  /** 校验用户名与密码；不匹配返回 undefined。供认证路由使用。 */
+  authenticate(username: string, password: string): AdminUser | undefined;
 }

@@ -1,4 +1,4 @@
-import express, { type Express, type NextFunction, type Request, type Response } from "express";
+import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import type { Logger } from "../../shared/logger.ts";
 import type { MergeRequestTask } from "../../domain/review-task.ts";
 import { parseMergeRequestTask } from "./webhook-parser.ts";
@@ -15,6 +15,19 @@ export interface AppDeps {
   logger: Logger;
   /** 把 MR 任务转成后台队列任务的入口。 */
   enqueue: WebhookEnqueue;
+  /**
+   * 管理 API 路由：键为挂载路径（如 `/api/reviews`），值为对应 Router。
+   *
+   * 用映射而不是逐个可选字段：新增一组路由只改组合根，不必改本文件的签名。
+   * 全部路由挂在鉴权中间件之后。
+   */
+  apiRoutes?: Record<string, RequestHandler>;
+  /** 管理 API 的鉴权中间件（登录路由自行放行，不挂在这里）。 */
+  authMiddleware?: RequestHandler;
+  /** 免鉴权的管理路由（登录），挂载在鉴权中间件之前。 */
+  publicApiRoutes?: Record<string, RequestHandler>;
+  /** 前端静态资源中间件，按顺序挂载在业务路由之后、404 之前。 */
+  staticAssets?: RequestHandler[];
 }
 
 /**
@@ -26,6 +39,9 @@ export interface AppDeps {
  * 来源校验（内网隔离、网关白名单等）由部署层负责：一个 GitLab 实例可以有多个
  * 项目，每个项目在 GitLab 侧配置的 Secret token 各不相同，单实例无法用一份全局
  * secret 校验所有来源，因此本路由不做 `X-Gitlab-Token` 比对。
+ *
+ * 管理 API 用 Bearer 令牌鉴权；webhook 路由保持原有的 `X-Gitlab-Token` 语义不变，
+ * 两者互不影响。
  */
 export function createApp(deps: AppDeps): Express {
   const { logger } = deps;
@@ -80,6 +96,25 @@ export function createApp(deps: AppDeps): Express {
     });
     res.json({ message: `merge_request !${task.iid} 已进入评审队列` });
   });
+
+  // 免鉴权管理路由（登录）挂在鉴权之前；其余管理路由统一要求有效令牌。
+  for (const [path, router] of Object.entries(deps.publicApiRoutes ?? {})) {
+    app.use(path, router);
+  }
+  if (deps.authMiddleware) {
+    const authed = deps.apiRoutes ?? {};
+    if (Object.keys(authed).length > 0) {
+      app.use("/api", deps.authMiddleware);
+    }
+    for (const [path, router] of Object.entries(authed)) {
+      app.use(path, router);
+    }
+  }
+
+  // 静态资源与 SPA fallback：必须在业务路由之后，否则会抢占 /api 前缀。
+  for (const middleware of deps.staticAssets ?? []) {
+    app.use(middleware);
+  }
 
   app.use((req, res) => {
     logger.debug("未命中任何路由", { method: req.method, path: req.path });

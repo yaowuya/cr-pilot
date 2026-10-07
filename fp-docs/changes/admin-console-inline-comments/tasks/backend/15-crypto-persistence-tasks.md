@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task backend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task backend-003: 密码哈希与令牌纯函数**
+- [x] **Task backend-003: 密码哈希与令牌纯函数**
 
 **Files:**
 - Create: `src/shared/crypto.ts`
@@ -121,7 +121,7 @@ git add src/shared/crypto.ts test/shared/crypto.test.ts
 git commit -m "feat: 新增 scrypt 密码哈希与无状态令牌派生"
 ```
 
-- [ ] **Task backend-004: SQLite 连接、建表与 PRAGMA**
+- [x] **Task backend-004: SQLite 连接、建表与 PRAGMA**
 
 **Files:**
 - Create: `src/infrastructure/sqlite/database.ts`

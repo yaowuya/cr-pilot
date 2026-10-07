@@ -4,9 +4,10 @@ import type { AppConfig } from "../../shared/config.ts";
 import type { Logger } from "../../shared/logger.ts";
 import type { TaskQueue } from "../../shared/queue.ts";
 import type { ReviewPipeline } from "../../application/review-pipeline.ts";
+import type { AppDeps } from "./app.ts";
 
-/** `startServer` 的装配依赖：webhook 路由所需的队列、入队与管线。 */
-export interface ServerDeps {
+/** `startServer` 的装配依赖：webhook 路由所需的队列、入队与管线，以及管理 API。 */
+export interface ServerDeps extends Partial<Pick<AppDeps, "apiRoutes" | "publicApiRoutes" | "authMiddleware" | "staticAssets">> {
   queue: TaskQueue;
   pipeline: ReviewPipeline;
   logger: Logger;
@@ -26,6 +27,10 @@ export function startServer(config: AppConfig, deps: ServerDeps, logger: Logger)
     enqueue: (task) => {
       queue.push(() => pipeline.run(task));
     },
+    apiRoutes: deps.apiRoutes,
+    publicApiRoutes: deps.publicApiRoutes,
+    authMiddleware: deps.authMiddleware,
+    staticAssets: deps.staticAssets,
   });
   const server = createServer(app);
   return new Promise((resolve, reject) => {

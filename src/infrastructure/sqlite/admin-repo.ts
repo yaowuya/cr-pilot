@@ -31,10 +31,7 @@ function isUniqueViolation(error: unknown): boolean {
  * `deploymentSalt` 由环境变量提供、不写入数据库：它参与盐派生，使数据库被单独
  * 取走时哈希无法直接用已知字典比对。
  */
-export function createAdminRepository(db: DatabaseSync, deploymentSalt: string): AdminRepository & {
-  /** 校验用户名与密码是否匹配；供认证路由使用，不对外暴露哈希。 */
-  authenticate(username: string, password: string): AdminUser | undefined;
-} {
+export function createAdminRepository(db: DatabaseSync, deploymentSalt: string): AdminRepository {
   return {
     create(username, password) {
       const trimmed = username.trim();

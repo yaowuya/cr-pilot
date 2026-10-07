@@ -59,22 +59,21 @@ CREATE TABLE IF NOT EXISTS review_prompts (
 let warningSuppressed = false;
 
 /**
- * 静默 `node:sqlite` 的实验特性警告。
+ * SQLite 实验特性警告的处理结论：**不拦截**。
  *
- * 该警告由 Node 在首次导入模块时输出，内容固定。只拦截这一条而不是清空全部
- * warning 监听：清空会连内存泄漏、弃用 API 等真正需要关注的警告一起吞掉。
+ * `node:sqlite` 在首次导入时输出 `ExperimentalWarning`，而该警告由 Node 在导入
+ * 阶段直接写入 stderr：注册 `process.on("warning")` 监听无法阻止它（实测仍打印，
+ * 反而会多打一行）。唯一能静默的方式是覆盖 `process.emitWarning`，但那会连带
+ * 影响其他模块的警告，代价大于收益。
+ *
+ * 因此保留警告，并按 `D-003` 登记的验证要求执行：升级 Node 前单独验证
+ * `DatabaseSync` 行为，而不是把警告藏起来。
+ *
+ * 这里保留一个常量记录该结论，避免后人重复尝试拦截。
  */
-function suppressSqliteExperimentalWarning(): void {
-  if (warningSuppressed) return;
-  warningSuppressed = true;
-  process.on("warning", (warning) => {
-    if (warning.name === "ExperimentalWarning" && /SQLite is an experimental feature/.test(warning.message)) {
-      return;
-    }
-    // 其他警告交回默认行为：写入 stderr，保持原有可见性。
-    process.stderr.write(`${warning.name}: ${warning.message}\n`);
-  });
-}
+const SQLITE_EXPERIMENTAL_NOTE = "node:sqlite 为实验特性：升级 Node 前需验证 DatabaseSync 行为";
+
+export { SQLITE_EXPERIMENTAL_NOTE };
 
 /**
  * 打开 SQLite 连接并完成一次性初始化（PRAGMA 与建表）。
@@ -87,7 +86,6 @@ function suppressSqliteExperimentalWarning(): void {
  * 已由部署文档约束。
  */
 export function openDatabase(path: string): DatabaseSync {
-  suppressSqliteExperimentalWarning();
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA busy_timeout = 5000");

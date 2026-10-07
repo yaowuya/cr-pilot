@@ -24,6 +24,10 @@ services:
       - ./prompts:/app/prompts:ro,z
       # 日志目录（宿主机 /data/logs/cr-pilot → 容器 /app/logs，应用按 LOG_FILE 写入）
       - /data/logs/cr-pilot:/app/logs
+      # SQLite 数据目录（宿主机 /data/cr-pilot → 容器 /app/data）。
+      # 必须落在本地盘：WAL 模式不支持网络文件系统。
+      # 首次部署需建目录并授权：sudo mkdir -p /data/cr-pilot && sudo chown 1000:1000 /data/cr-pilot
+      - /data/cr-pilot:/app/data
 
     # 生产环境推荐：异常退出自动重启
     restart: unless-stopped
