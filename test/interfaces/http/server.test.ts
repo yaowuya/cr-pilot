@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createLogger } from "../src/logger.ts";
-import { createTaskQueue } from "../src/queue.ts";
-import { createReviewPipeline } from "../src/pipeline.ts";
-import { startServer, type ServerDeps } from "../src/server.ts";
-import type { GitlabClient } from "../src/gitlab-client.ts";
-import type { ReviewRules } from "../src/rules.ts";
-import { createSilentLogger } from "../src/logger.ts";
+import { createLogger } from "../../../src/shared/logger.ts";
+import { createTaskQueue } from "../../../src/shared/queue.ts";
+import { createReviewPipeline } from "../../../src/application/review-pipeline.ts";
+import { startServer, type ServerDeps } from "../../../src/interfaces/http/server.ts";
+import type { GitlabClient } from "../../../src/domain/review-task.ts";
+import type { ReviewRules } from "../../../src/infrastructure/rules/review-rules.ts";
+import { createSilentLogger } from "../../../src/shared/logger.ts";
 
 const config = {
   port: 0,

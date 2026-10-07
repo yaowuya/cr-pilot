@@ -1,20 +1,7 @@
-import { createSilentLogger, type Logger } from "./logger.ts";
+import { createSilentLogger, type Logger } from "../../shared/logger.ts";
+import type { Change, Commit, GitlabClient } from "../../domain/review-task.ts";
 
-/** GitLab API 返回的单个文件变更。字段名与 GitLab `/changes` 响应一致。 */
-export interface Change {
-  /** 变更后的文件路径。 */
-  newPath: string;
-  /** 变更前的文件路径。 */
-  oldPath: string;
-  /** 该文件的 unified diff 文本。 */
-  diff: string;
-}
-
-/** GitLab API 返回的单条提交摘要。 */
-export interface Commit {
-  id: string;
-  message: string;
-}
+export type { Change, Commit, GitlabClient };
 
 /** GitLab API 调用失败。`status` 是 HTTP 状态码，调用方据此区分鉴权与网络问题。 */
 export class GitlabApiError extends Error {
@@ -25,13 +12,6 @@ export class GitlabApiError extends Error {
     super(message);
     this.status = status;
   }
-}
-
-/** GitLab API 客户端的最小面：拉取 MR 变更与提交、回写评论。 */
-export interface GitlabClient {
-  getMergeRequestChanges(projectId: number, iid: number): Promise<Change[]>;
-  getMergeRequestCommits(projectId: number, iid: number): Promise<Commit[]>;
-  postMergeRequestNote(projectId: number, iid: number, body: string): Promise<void>;
 }
 
 interface CreateGitlabClientOptions {
@@ -55,10 +35,10 @@ const MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 10000;
 
 /**
- * 创建 GitLab API 客户端。
+ * 创建 GitLab API 客户端（实现 domain 的 `GitlabClient` 端口）。
  *
- * 用全局 fetch（undici）而不是新增 HTTP 依赖；`insecureTls` 通过 undici `Agent`
- * 关闭证书校验实现。undici 是 pi SDK 的传递依赖，可解析但不提升为直接依赖。
+ * 用全局 fetch（undici）而不是新增 HTTP 依赖。undici 是 pi SDK 的传递依赖，
+ * 可解析但不提升为直接依赖。
  */
 export function createGitlabClient(options: CreateGitlabClientOptions): GitlabClient {
   const { logger } = options;

@@ -1,18 +1,11 @@
-import type { Change, Commit, GitlabClient } from "./gitlab-client.ts";
-import { createSilentLogger, type Logger } from "./logger.ts";
-import { renderUserPrompt, type ReviewRules, type RuleSet } from "./rules.ts";
-import type { Reviewer } from "./reviewer.ts";
+import { createSilentLogger, type Logger } from "../shared/logger.ts";
+import { estimateTokens, splitChangesIntoBatches } from "../domain/change.ts";
+import { renderUserPrompt, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
+import type { Change, Commit, GitlabClient, MergeRequestTask, Reviewer } from "../domain/review-task.ts";
 
-/** 一个待处理的 MR 任务：webhook 分派后进入队列。 */
-export interface MergeRequestTask {
-  projectId: number;
-  iid: number;
-  fullName: string;
-  sourceBranch: string;
-  targetBranch: string;
-}
+export type { MergeRequestTask };
 
-/** 评审管线：编排「拉取 → 分批 → 逐批评审 → 汇总 → 回写」。 */
+/** 评审管线（application 用例端口）：webhook 入队任务的实际执行体。 */
 export interface ReviewPipeline {
   run(task: MergeRequestTask): Promise<void>;
 }
@@ -34,11 +27,13 @@ const DEFAULT_TIMEOUT_MS = 120000;
 const SUMMARY_SUFFIX = "\n\n你之前分批评审了同一变更的各部分。下面按批序给出各批评审结果，请把它们合并成一份最终评论：去重、按严重程度排序、保留各条问题的位置与证据、合并评分并给出总分。输出结构与格式完全遵循上述规则的要求；只输出纯 Markdown 评论正文，不要用 ``` 代码块包裹，不要加任何前言或后缀。";
 
 /**
- * 创建评审管线。
+ * 创建评审管线（application 用例编排）。
  *
- * 每个批次与最后的汇总各建一个独立 pi 会话（复用 `createPiReviewer` 的单会话
- * 语义）。失败语义：拉取失败、单批失败、汇总失败都记日志并结束任务，不回写；
- * 只有全部批次与汇总成功才回写一条 MR 评论。日志不记录正文与 token。
+ * 编排「拉取 → 分批 → 逐批评审 → 汇总 → 回写」，依赖 domain 端口（Reviewer /
+ * GitlabClient / ReviewRules）与 domain 纯函数（分批、渲染、围栏清理），不触碰
+ * 任何 IO 细节。每个批次与最后的汇总各建一个独立 pi 会话（复用 `createPiReviewer`
+ * 的单会话语义）。失败语义：拉取失败、单批失败、汇总失败都记日志并结束任务，
+ * 不回写；只有全部批次与汇总成功才回写一条 MR 评论。日志不记录正文与 token。
  */
 export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   const { client, rules, reviewer, logger, batchMaxTokens } = deps;
@@ -68,7 +63,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         commitCount: commits.length,
       });
 
-      const ruleSet = rules.resolve(task.fullName);
+      const ruleSet: RuleSet = rules.resolve(task.fullName);
       const commitsText = commits.map((commit) => `${commit.id.slice(0, 8)} ${commit.message.split("\n")[0] ?? ""}`).join("\n");
       const batches = splitChangesIntoBatches(changes, batchMaxTokens, estimateTokens(ruleSet.userPrompt) + estimateTokens(commitsText));
       logger.info("分批完成", { projectId: task.projectId, iid: task.iid, batchCount: batches.length });
@@ -147,125 +142,4 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       });
     },
   };
-}
-
-/**
- * 去掉模型偶尔输出的 ```markdown / ``` 代码块包裹。
- *
- * GitLab 会把代码块包裹的正文渲染成代码块而不是 Markdown，参考项目的
- * `_strip_markdown` 有同样的清理逻辑。只有首尾成对出现围栏时才剥离；
- * 输出本身是纯 Markdown 时原样返回。
- */
-export function stripMarkdownFences(text: string): string {
-  const trimmed = text.trim();
-  const opening = trimmed.match(/^```(?:markdown|md)?\s*(?:\r?\n|$)/);
-  if (!opening) return trimmed;
-  const inner = trimmed.slice(opening[0].length);
-  const closing = inner.lastIndexOf("```");
-  return closing >= 0 ? inner.slice(0, closing).trim() : inner.trim();
-}
-
-/**
- * 估算文本 token 数：按字符数/4 向上取整。
- *
- * 有意偏保守：代码约 3-4 字符/token，按 4 估算会让批次偏小而不是偏大，
- * 保证任何单批都不会超过模型上下文。内网模型词表未知，精确 tokenizer 收益
- * 有限，见 design 决策 D-005。
- */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
-/** 单批 token 预算的安全系数：只使用预算的 85%，为估算误差与 prompt 开销留余量。 */
-const BATCH_THRESHOLD_RATIO = 0.85;
-
-/**
- * 把变更列表按 token 预算拆成多批。
- *
- * 规则：整文件塞得下就整文件装箱；单个文件超预算时按 diff 行拆（保留文件路径
- * 元信息）；单行仍超预算时按字符切。`promptOverheadTokens` 是 system/user prompt
- * 与提交信息占用的预算，先扣除再装箱。
- */
-export function splitChangesIntoBatches(
-  changes: Change[],
-  maxTokens: number,
-  promptOverheadTokens: number,
-): Change[][] {
-  const threshold = Math.floor(maxTokens * BATCH_THRESHOLD_RATIO) - promptOverheadTokens;
-  if (threshold <= 0) {
-    // 预算连 prompt 都装不下：每个文件单列一批，由调用方在评审时暴露问题。
-    return changes.map((change) => [change]);
-  }
-
-  const units: Change[] = [];
-  for (const change of changes) {
-    if (estimateTokens(change.diff) <= threshold) {
-      units.push(change);
-      continue;
-    }
-    for (const part of splitByDiffLines(change, threshold)) {
-      units.push(part);
-    }
-  }
-
-  const batches: Change[][] = [];
-  let current: Change[] = [];
-  let currentTokens = 0;
-  for (const unit of units) {
-    const unitTokens = estimateTokens(unit.diff);
-    if (current.length > 0 && currentTokens + unitTokens > threshold) {
-      batches.push(current);
-      current = [];
-      currentTokens = 0;
-    }
-    current.push(unit);
-    currentTokens += unitTokens;
-  }
-  if (current.length > 0) {
-    batches.push(current);
-  }
-  return batches;
-}
-
-/** 把单个超预算文件按 diff 行拆成多个保留元信息的 Change。 */
-function splitByDiffLines(change: Change, threshold: number): Change[] {
-  const lines = change.diff.split("\n");
-  const parts: Change[] = [];
-  let current: string[] = [];
-  let currentTokens = 0;
-  const flush = (): void => {
-    if (current.length === 0) return;
-    parts.push({ ...change, diff: current.join("\n") });
-    current = [];
-    currentTokens = 0;
-  };
-  for (const line of lines) {
-    const lineTokens = estimateTokens(line);
-    if (lineTokens > threshold) {
-      flush();
-      for (const chunk of splitByCharacters(line, threshold)) {
-        parts.push({ ...change, diff: chunk });
-      }
-      continue;
-    }
-    if (currentTokens + lineTokens > threshold) {
-      flush();
-    }
-    current.push(line);
-    currentTokens += lineTokens;
-  }
-  flush();
-  return parts.length > 0 ? parts : [{ ...change }];
-}
-
-/** 把单行超预算的文本按字符切块，每块不超过阈值。 */
-function splitByCharacters(line: string, threshold: number): string[] {
-  const chunks: string[] = [];
-  let remaining = line;
-  while (remaining.length > 0) {
-    const take = Math.max(threshold * 4, 1);
-    chunks.push(remaining.slice(0, take));
-    remaining = remaining.slice(take);
-  }
-  return chunks;
 }

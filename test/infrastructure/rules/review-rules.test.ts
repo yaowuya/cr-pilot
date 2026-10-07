@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadReviewRules, renderUserPrompt, renderStyleTemplate } from "../src/rules.ts";
+import { loadReviewRules, renderUserPrompt, renderStyleTemplate } from "../../../src/infrastructure/rules/review-rules.ts";
 
 const DEFAULT_YAML = `
 code_review_prompt:

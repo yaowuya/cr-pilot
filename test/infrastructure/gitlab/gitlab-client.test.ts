@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createGitlabClient, GitlabApiError, type Change } from "../src/gitlab-client.ts";
-import { createSilentLogger } from "../src/logger.ts";
+import { createGitlabClient, GitlabApiError, type Change } from "../../../src/infrastructure/gitlab/gitlab-client.ts";
+import { createSilentLogger } from "../../../src/shared/logger.ts";
 
 type FetchFn = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 

@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createReviewPipeline, estimateTokens, splitChangesIntoBatches, stripMarkdownFences, type MergeRequestTask } from "../src/pipeline.ts";
-import type { Change } from "../src/gitlab-client.ts";
-import type { GitlabClient } from "../src/gitlab-client.ts";
-import { createSilentLogger } from "../src/logger.ts";
-import type { ReviewRules } from "../src/rules.ts";
-import type { Reviewer } from "../src/reviewer.ts";
+import { createReviewPipeline, type MergeRequestTask } from "../../src/application/review-pipeline.ts";
+import { estimateTokens, splitChangesIntoBatches } from "../../src/domain/change.ts";
+import { stripMarkdownFences } from "../../src/domain/review-rules.ts";
+import type { Change } from "../../src/domain/review-task.ts";
+import type { GitlabClient } from "../../src/domain/review-task.ts";
+import { createSilentLogger } from "../../src/shared/logger.ts";
+import type { ReviewRules } from "../../src/infrastructure/rules/review-rules.ts";
+import type { Reviewer } from "../../src/infrastructure/pi/reviewer.ts";
 
 function change(diff: string, newPath = "a.ts"): Change {
   return { newPath, oldPath: newPath, diff };

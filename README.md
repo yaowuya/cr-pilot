@@ -2,6 +2,35 @@
 
 pi 驱动的 GitLab 代码评审服务。GitLab MR webhook 触发后，服务在后台拉取变更、按仓库自定义 prompt 分批评审、汇总成一份评论并回写到 MR。
 
+## 代码架构
+
+采用分层架构（依赖只指向内层，外层的具体实现通过端口注入内层用例）：
+
+```text
+src/
+├── bootstrap.ts                 # 组合根：装配全部依赖并启动
+├── interfaces/http/             # 表现层（≈ MVC 的 Controller）
+│   ├── app.ts                   #   Express 路由：校验事件类型、入队、立即响应
+│   ├── webhook-parser.ts        #   payload → MergeRequestTask（纯 DTO 映射）
+│   └── server.ts                #   startServer：装配并监听端口
+├── application/                 # 应用层（≈ MVC 的 Service，用例编排）
+│   └── review-pipeline.ts       #   拉取 → 分批 → 逐批评审 → 汇总 → 回写
+├── domain/                      # 领域层（纯业务规则与端口，零 IO）
+│   ├── review-task.ts           #   MergeRequestTask/Change/Commit 模型 + Reviewer/GitlabClient 端口
+│   ├── change.ts                #   token 估算与分批拆分（纯函数）
+│   └── review-rules.ts          #   规则匹配与 prompt 渲染（纯函数）
+├── infrastructure/              # 基础设施层（实现 domain 端口，≈ Repository/Adapter）
+│   ├── gitlab/gitlab-client.ts  #   GitLab API 客户端
+│   ├── pi/reviewer.ts           #   pi SDK 评审执行者
+│   └── rules/review-rules.ts    #   YAML 规则目录读取
+└── shared/                      # 横切共享（配置、日志、队列）
+    ├── config.ts
+    ├── logger.ts
+    └── queue.ts
+```
+
+依赖方向：`interfaces → application → domain`；`infrastructure` 实现 `domain` 端口并由组合根注入。`domain` 不依赖任何外层，全部纯函数可离线测试。
+
 ## 环境要求
 
 - Node.js 22.19.0 或更高版本（pi SDK 的 `engines` 下限，也是原生 TypeScript 类型剥离所需版本）。

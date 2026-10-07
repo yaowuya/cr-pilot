@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, rmSync } from "node:fs";
-import { createLogger } from "../src/logger.ts";
+import { createLogger } from "../../../src/shared/logger.ts";
 import {
   buildLoaderOptions,
   buildUserMessage,
@@ -9,7 +9,7 @@ import {
   createPiReviewer,
   EmptyReviewError,
   type PiSessionLike,
-} from "../src/reviewer.ts";
+} from "../../../src/infrastructure/pi/reviewer.ts";
 
 function fakeSession(text: string | undefined) {
   let disposeCount = 0;

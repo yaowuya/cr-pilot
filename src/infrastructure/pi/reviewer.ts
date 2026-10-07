@@ -2,7 +2,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
-import { createSilentLogger, type Logger } from "./logger.ts";
+import { createSilentLogger, type Logger } from "../../shared/logger.ts";
+import type { ReviewInput, ReviewResult, Reviewer } from "../../domain/review-task.ts";
+
+// 领域端口类型由 domain 持有，这里重导出保持既有导入路径兼容。
+export type { ReviewInput, ReviewResult, Reviewer };
 
 /**
  * 资源加载选项类型。
@@ -62,20 +66,6 @@ export function buildLoaderOptions(input: {
   };
 }
 
-/** 一次评审的输入。systemPrompt 是 prompt 文件全文，code 是待评审内容。 */
-export interface ReviewInput {
-  systemPrompt: string;
-  code: string;
-  context?: string;
-  signal: AbortSignal;
-}
-
-/** 评审结果。model 取自实际会话，便于调用方确认真正生效的模型。 */
-export interface ReviewResult {
-  text: string;
-  model: string;
-}
-
 /**
  * pi 返回了空评审文本。
  *
@@ -83,11 +73,6 @@ export interface ReviewResult {
  */
 export class EmptyReviewError extends Error {
   override readonly name = "EmptyReviewError";
-}
-
-/** 评审执行者。实现方负责创建与释放 pi 会话；超时由调用方按信号状态判定。 */
-export interface Reviewer {
-  review(input: ReviewInput): Promise<ReviewResult>;
 }
 
 /** 组装用户消息。不使用代码围栏，避免 diff 里出现反引号时截断内容。 */

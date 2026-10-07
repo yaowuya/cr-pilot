@@ -1,10 +1,11 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
-import type { Logger } from "./logger.ts";
-import type { MergeRequestTask } from "./pipeline.ts";
+import type { Logger } from "../../shared/logger.ts";
+import type { MergeRequestTask } from "../../domain/review-task.ts";
+import { parseMergeRequestTask } from "./webhook-parser.ts";
 
 /**
  * webhook 入队动作：把解析出的 MR 任务安排进后台队列。
- * 由 `server.ts` 注入（内部绑定 queue 与 pipeline），让路由不依赖具体实现。
+ * 由组合根（bootstrap）注入（内部绑定 queue 与 pipeline），让路由不依赖具体实现。
  */
 export type WebhookEnqueue = (task: MergeRequestTask) => void;
 
@@ -17,7 +18,7 @@ export interface AppDeps {
 }
 
 /**
- * 创建 Express 应用。不含监听逻辑，便于测试用随机端口启动。
+ * 创建 Express 应用（HTTP 表现层）。不含监听逻辑，便于测试用随机端口启动。
  *
  * 本路由只做一件事：按事件类型分派并立即响应。拉取、评审、汇总、回写全部在
  * 后台队列中完成。日志不记录 payload 正文，只记录事件类型与 MR 标识。
@@ -79,44 +80,6 @@ export function createApp(deps: AppDeps): Express {
   });
 
   return app;
-}
-
-/**
- * 从 GitLab merge_request payload 提取任务字段。
- * `project_id` 优先取顶层，缺失回退 `project.id`；任一关键字段缺失返回 null。
- */
-function parseMergeRequestTask(payload: Record<string, unknown>): MergeRequestTask | null {
-  const project = isRecord(payload.project) ? payload.project : {};
-  const attributes = isRecord(payload.object_attributes) ? payload.object_attributes : {};
-
-  const projectId = readNumber(payload.project_id) ?? readNumber(project.id);
-  const iid = readNumber(attributes.iid);
-  const fullName = readString(project, "path_with_namespace");
-  if (projectId === undefined || iid === undefined || !fullName) return null;
-
-  return {
-    projectId,
-    iid,
-    fullName,
-    sourceBranch: readString(attributes, "source_branch"),
-    targetBranch: readString(attributes, "target_branch"),
-  };
-}
-
-/** 判定非 null、非数组的对象，用于安全读取未知 JSON 结构。 */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** 读取数字字段；非数字按缺失处理。 */
-function readNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-/** 读取字符串字段并去空白；非字符串一律按缺失处理。 */
-function readString(source: Record<string, unknown>, key: string): string {
-  const value = source[key];
-  return typeof value === "string" ? value.trim() : "";
 }
 
 /** 读取 body-parser 给出的 4xx 状态码；其他情况一律按 500 处理。 */

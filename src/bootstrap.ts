@@ -1,55 +1,15 @@
-import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { createApp } from "./app.ts";
-import { loadConfig, type AppConfig } from "./config.ts";
-import { createGitlabClient } from "./gitlab-client.ts";
-import { createConsoleLogger, type Logger } from "./logger.ts";
-import { createReviewPipeline, type ReviewPipeline } from "./pipeline.ts";
-import { createTaskQueue, type TaskQueue } from "./queue.ts";
-import { createPiReviewer } from "./reviewer.ts";
-import { loadReviewRules } from "./rules.ts";
 import { readFile } from "node:fs/promises";
+import { createConsoleLogger } from "./shared/logger.ts";
+import { loadConfig } from "./shared/config.ts";
+import { createTaskQueue } from "./shared/queue.ts";
+import { createGitlabClient } from "./infrastructure/gitlab/gitlab-client.ts";
+import { createPiReviewer } from "./infrastructure/pi/reviewer.ts";
+import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
+import { createReviewPipeline } from "./application/review-pipeline.ts";
+import { startServer } from "./interfaces/http/server.ts";
 
-/** `startServer` 的装配依赖：webhook 路由所需的队列、入队与管线。 */
-export interface ServerDeps {
-  queue: TaskQueue;
-  pipeline: ReviewPipeline;
-  logger: Logger;
-}
-
-/**
- * 装配应用并监听端口。
- *
- * 显式创建 http server 并在 `listen()` 之前挂好事件监听：`app.listen(port, host, cb)`
- * 的回调并不对应 `listening` 事件，端口被占用时它会先于 `error` 触发，导致启动失败
- * 被当成成功。这里只认 `listening` 与 `error` 两个事件，启动错误以 reject 抛出。
- */
-export function startServer(config: AppConfig, deps: ServerDeps, logger: Logger): Promise<Server> {
-  const { queue, pipeline } = deps;
-  const app = createApp({
-    logger,
-    enqueue: (task) => {
-      queue.push(() => pipeline.run(task));
-    },
-  });
-  const server = createServer(app);
-  return new Promise((resolve, reject) => {
-    server.once("error", (error) => {
-      logger.error("监听失败", { host: config.host, port: config.port, message: error.message });
-      reject(error);
-    });
-    server.once("listening", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : config.port;
-      logger.info("服务已开始监听", { url: `http://${config.host}:${port}/review/webhook` });
-      resolve(server);
-    });
-    logger.info("正在监听端口", { host: config.host, port: config.port });
-    server.listen(config.port, config.host);
-  });
-}
-
-// 仅在直接执行本文件时启动服务。测试会导入本模块，因此必须有这层判定，
+// 仅在直接执行本文件时启动服务。测试会导入各模块，因此必须有这层判定，
 // 否则一次 import 就会占用端口并留下一个不会退出的进程。
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   // 先加载项目根目录的 .env（存在才加载，不覆盖已有环境变量），再读取配置：
@@ -72,6 +32,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     reviewStyle: config.reviewStyle,
   });
   try {
+    // 组合根：把基础设施适配器实现注入到应用用例，再把用例注入 HTTP 路由。
     const queue = createTaskQueue(logger);
     const client = createGitlabClient({
       url: config.gitlabUrl,

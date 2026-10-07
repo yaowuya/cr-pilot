@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createLogger, createSilentLogger, parseLogLevel, type LogLevel } from "../src/logger.ts";
+import { createLogger, createSilentLogger, parseLogLevel, type LogLevel } from "../../src/shared/logger.ts";
 
 /** 收集日志行，避免测试改写全局输出流。 */
 function collector(level: LogLevel): { lines: string[]; kinds: string[]; logger: ReturnType<typeof createLogger> } {

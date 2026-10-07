@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { Express } from "express";
-import { createApp, type AppDeps, type WebhookEnqueue } from "../src/app.ts";
-import { createSilentLogger } from "../src/logger.ts";
-import type { MergeRequestTask } from "../src/pipeline.ts";
+import { createApp, type AppDeps, type WebhookEnqueue } from "../../../src/interfaces/http/app.ts";
+import { createSilentLogger } from "../../../src/shared/logger.ts";
+import type { MergeRequestTask } from "../../../src/domain/review-task.ts";
 
 /**
  * Fetch 规范定义了一组禁用端口，undici 会直接拒绝连接并报 `bad port`。

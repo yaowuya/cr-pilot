@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig } from "../../src/shared/config.ts";
 
 /** 两个必填 GitLab 配置的合法值，供各用例复用。 */
 const GITLAB_REQUIRED = { GITLAB_URL: "https://gitlab.example.com", GITLAB_TOKEN: "t" };
