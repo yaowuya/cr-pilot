@@ -45,6 +45,13 @@ export interface MergeRequestTask {
   fullName: string;
   sourceBranch: string;
   targetBranch: string;
+  /**
+   * 提交人显示名，取自 webhook payload 的 `user.name`。
+   *
+   * 缺失时为空串：评审记录是统计维度之一，但提交人不是评审的必需输入，
+   * 因此不因缺失而拒绝请求。
+   */
+  committerName?: string;
   /** 该事件来源的 GitLab 实例地址（webhook 派生）；缺省时客户端回落到全局配置。 */
   gitlabUrl?: string;
   /** 该事件携带的 GitLab 访问令牌（webhook 请求头 X-Gitlab-Token）。 */
