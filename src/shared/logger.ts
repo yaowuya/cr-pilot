@@ -98,15 +98,24 @@ export function createFileLogger(level: LogLevel, filePath: string): Logger {
   let ready = true;
   try {
     mkdirSync(dirname(filePath), { recursive: true });
-  } catch {
+  } catch (error) {
+    // 目录创建失败（通常是没有父目录写权限）：降级为控制台并在 stderr 提示一次，
+    // 让挂载/权限问题启动时立即可见。
     ready = false;
+    process.stderr.write(`[WARN] 日志目录不可写，仅输出到控制台：${dirname(filePath)}（${error instanceof Error ? error.message : String(error)}）\n`);
   }
+  let warned = false;
   const emit: LogSink = (line, kind) => {
     if (ready) {
       try {
         appendFileSync(filePath, `${line}\n`);
       } catch {
-        // 文件写入失败静默降级：日志不阻塞业务流程。
+        // 文件写入失败：只降级为控制台输出，并在 stderr 报一次错，
+        // 让权限/挂载问题在启动时立即可见而不是静默丢日志。
+        if (!warned) {
+          warned = true;
+          process.stderr.write(`[WARN] 日志文件写入失败，仅输出到控制台：${filePath}（请检查目录权限或挂载）\n`);
+        }
       }
     }
     // 同时保留控制台输出，便于 docker logs 与本地调试。
