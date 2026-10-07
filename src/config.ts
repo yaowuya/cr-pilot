@@ -16,8 +16,6 @@ export interface AppConfig {
   gitlabUrl: string;
   /** GitLab 访问令牌：拉取变更与回写评论。必填，只从环境变量读取。 */
   gitlabToken: string;
-  /** webhook 来源校验 secret，与 GitLab 配置的 Secret Token 一致。必填。 */
-  gitlabWebhookSecret: string;
   /** 为 true 时跳过 GitLab TLS 证书校验，仅用于内网自签名场景。 */
   gitlabInsecureTls: boolean;
   /** GitLab API 单次请求超时毫秒数。 */
@@ -39,7 +37,7 @@ const DEFAULT_RULES_DIR = "prompts/rules";
 /**
  * 读取服务配置。
  *
- * 非法值与缺失的必填项直接抛出，而不是回退默认：GitLab 三项配置缺失时服务
+ * 非法值与缺失的必填项直接抛出，而不是回退默认：GitLab 两项配置缺失时服务
  * 会「启动成功但每次评审都拉取失败」，启动即失败更容易排查。返回的 URL 会
  * 去掉尾部斜杠，客户端拼接路径时不需要再做规范化。
  */
@@ -53,7 +51,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     logLevel: parseLogLevel(env.LOG_LEVEL),
     gitlabUrl,
     gitlabToken: requireNonEmpty(env, "GITLAB_TOKEN"),
-    gitlabWebhookSecret: requireNonEmpty(env, "GITLAB_WEBHOOK_SECRET"),
     gitlabInsecureTls: readBooleanFlag(env, "GITLAB_INSECURE_TLS"),
     gitlabApiTimeoutMs: readPositiveInt(env, "GITLAB_API_TIMEOUT", DEFAULT_GITLAB_API_TIMEOUT_MS),
     batchMaxTokens: readPositiveInt(env, "REVIEW_BATCH_MAX_TOKENS", DEFAULT_BATCH_MAX_TOKENS),

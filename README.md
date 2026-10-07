@@ -65,7 +65,6 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `GITLAB_URL` | 无（必填） | GitLab 实例地址，如 `https://code.cwoa.net` |
 | `GITLAB_TOKEN` | 无（必填） | 访问令牌（拉 diff、回写评论），只从环境变量读取 |
-| `GITLAB_WEBHOOK_SECRET` | 无（必填） | webhook 来源校验 secret，与 GitLab 的 Secret Token 一致 |
 | `GITLAB_INSECURE_TLS` | `0` | 为 `1` 时跳过 GitLab TLS 证书校验（内网自签名） |
 | `GITLAB_API_TIMEOUT` | `15000` | GitLab API 单次请求超时毫秒数 |
 | `REVIEW_BATCH_MAX_TOKENS` | `6000` | 单批评审 token 预算 |
@@ -73,7 +72,9 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `REVIEW_RULES_DIR` | `prompts/rules` | 仓库规则目录 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
 
-`GITLAB_URL`、`GITLAB_TOKEN`、`GITLAB_WEBHOOK_SECRET` 缺失时启动直接报错——服务「启动成功但每次拉取失败」比「起不来」更难排查。
+`GITLAB_URL`、`GITLAB_TOKEN` 缺失时启动直接报错——服务「启动成功但每次拉取失败」比「起不来」更难排查。
+
+本地开发可用 `.env`（复制 `.env.example`），启动时自动加载；已存在的同名环境变量优先。
 
 ## 运行
 
@@ -84,8 +85,8 @@ npm start
 ## 配置 GitLab webhook
 
 1. GitLab 项目 → Settings → Webhooks → URL 填 `http://<host>:5001/review/webhook`。
-2. **Secret token** 填一个随机值，与 `GITLAB_WEBHOOK_SECRET` 一致。
-3. 勾选 **Merge request events** 触发器（本服务只处理 `merge_request`，`push` 事件会返回 400）。
+2. 勾选 **Merge request events** 触发器（本服务只处理 `merge_request`，`push` 事件会返回 400）。
+3. **来源校验**：本服务不校验 `X-Gitlab-Token` / Secret token——一个 GitLab 实例有多个项目，每个项目的 Secret token 各不相同，单实例无法用一份全局 secret 校验所有来源。来源保护由部署层负责（内网隔离、网关白名单等）。
 
 服务收到事件后立即返回 200，真正的评审在后台串行队列中执行：拉取变更 → 分批评审 → 汇总 → 回写一条 MR 评论。
 

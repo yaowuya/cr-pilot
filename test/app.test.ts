@@ -34,8 +34,6 @@ async function listenOnFetchablePort(app: Express): Promise<{ server: Server; po
   throw new Error("连续 20 次都分配到 fetch 不可用的端口");
 }
 
-const SECRET = "webhook-secret";
-
 /** 构造一个合法的 GitLab merge_request payload。 */
 function mergeRequestPayload(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -59,7 +57,7 @@ function makeDeps(): { deps: AppDeps; enqueued: MergeRequestTask[] } {
     enqueued.push(task);
   };
   return {
-    deps: { webhookSecret: SECRET, logger: createSilentLogger(), enqueue },
+    deps: { logger: createSilentLogger(), enqueue },
     enqueued,
   };
 }
@@ -73,25 +71,29 @@ async function withApp(run: (base: string) => Promise<void>, deps: AppDeps): Pro
   }
 }
 
-function post(base: string, body: unknown, token?: string): Promise<Response> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
-  if (token !== undefined) headers["x-gitlab-token"] = token;
-  return fetch(`${base}/review/webhook`, { method: "POST", headers, body: JSON.stringify(body) });
+function post(base: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  return fetch(`${base}/review/webhook`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
 }
 
-test("secret 缺失或不匹配返回 401，不入队", async () => {
+test("不校验 X-Gitlab-Token：无该头也入队并返回 200", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {
-    assert.equal((await post(base, mergeRequestPayload())).status, 401);
-    assert.equal((await post(base, mergeRequestPayload(), "wrong")).status, 401);
+    // 来源校验由部署层负责（多项目各自配置 secret，单实例无法用全局 secret 校验），
+    // 因此这里既不带 X-Gitlab-Token 也任意携带一个值，都应正常入队。
+    assert.equal((await post(base, mergeRequestPayload())).status, 200);
+    assert.equal((await post(base, mergeRequestPayload(), { "x-gitlab-token": "anything" })).status, 200);
   }, deps);
-  assert.equal(enqueued.length, 0);
+  assert.equal(enqueued.length, 2);
 });
 
-test("secret 匹配时 merge_request 入队并返回 200", async () => {
+test("merge_request 事件入队并返回 200，携带正确任务字段", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {
-    const response = await post(base, mergeRequestPayload(), SECRET);
+    const response = await post(base, mergeRequestPayload(), { "x-gitlab-token": "any-value" });
     assert.equal(response.status, 200);
   }, deps);
   assert.equal(enqueued.length, 1);
@@ -105,7 +107,7 @@ test("secret 匹配时 merge_request 入队并返回 200", async () => {
 test("非 merge_request 事件返回 400，不入队", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {
-    assert.equal((await post(base, { object_kind: "push" }, SECRET)).status, 400);
+    assert.equal((await post(base, { object_kind: "push" })).status, 400);
   }, deps);
   assert.equal(enqueued.length, 0);
 });
@@ -114,7 +116,7 @@ test("project_id 缺失时回退 project.id", async () => {
   const { deps, enqueued } = makeDeps();
   const payload = mergeRequestPayload({ project_id: undefined, project: { id: 99, path_with_namespace: "team/app" } });
   await withApp(async (base) => {
-    assert.equal((await post(base, payload, SECRET)).status, 200);
+    assert.equal((await post(base, payload)).status, 200);
   }, deps);
   assert.equal(enqueued[0].projectId, 99);
 });
@@ -122,11 +124,7 @@ test("project_id 缺失时回退 project.id", async () => {
 test("旧纯代码请求不再支持", async () => {
   const { deps, enqueued } = makeDeps();
   await withApp(async (base) => {
-    const response = await fetch(`${base}/review/webhook`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-gitlab-token": SECRET },
-      body: JSON.stringify({ code: "const a = 1;" }),
-    });
+    const response = await post(base, { code: "const a = 1;" });
     // 没有 object_kind 的 JSON 对象 → 400（不是评审，也不是入队）
     assert.equal(response.status, 400);
   }, deps);

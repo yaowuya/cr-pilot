@@ -16,7 +16,6 @@ const config = {
   logLevel: "info" as const,
   gitlabUrl: "https://gitlab.example.com",
   gitlabToken: "t",
-  gitlabWebhookSecret: "s",
   gitlabInsecureTls: false,
   gitlabApiTimeoutMs: 1000,
   batchMaxTokens: 6000,
@@ -41,7 +40,7 @@ function makeDeps(logger: ReturnType<typeof createLogger>): ServerDeps {
     logger: createSilentLogger(),
     batchMaxTokens: 6000,
   });
-  return { queue, webhookSecret: "s", pipeline, logger };
+  return { queue, pipeline, logger };
 }
 
 test("startServer 装配后监听并可关闭，打印监听日志", async () => {

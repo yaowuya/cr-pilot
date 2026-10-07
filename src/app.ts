@@ -10,8 +10,6 @@ export type WebhookEnqueue = (task: MergeRequestTask) => void;
 
 /** 应用依赖。全部显式注入，接口层测试无需触碰真实模型与 GitLab。 */
 export interface AppDeps {
-  /** webhook 来源校验 secret，与 GitLab 配置的 Secret Token 一致。 */
-  webhookSecret: string;
   /** 日志记录器。 */
   logger: Logger;
   /** 把 MR 任务转成后台队列任务的入口。 */
@@ -21,8 +19,12 @@ export interface AppDeps {
 /**
  * 创建 Express 应用。不含监听逻辑，便于测试用随机端口启动。
  *
- * 本路由只做两件事：校验来源、分派事件并立即响应。拉取、评审、汇总、回写
- * 全部在后台队列中完成。日志不记录 payload 正文，只记录事件类型与 MR 标识。
+ * 本路由只做一件事：按事件类型分派并立即响应。拉取、评审、汇总、回写全部在
+ * 后台队列中完成。日志不记录 payload 正文，只记录事件类型与 MR 标识。
+ *
+ * 来源校验（内网隔离、网关白名单等）由部署层负责：一个 GitLab 实例可以有多个
+ * 项目，每个项目在 GitLab 侧配置的 Secret token 各不相同，单实例无法用一份全局
+ * secret 校验所有来源，因此本路由不做 `X-Gitlab-Token` 比对。
  */
 export function createApp(deps: AppDeps): Express {
   const { logger } = deps;
@@ -31,13 +33,6 @@ export function createApp(deps: AppDeps): Express {
 
   app.post("/review/webhook", (req, res) => {
     const receivedAt = Date.now();
-    const token = req.headers["x-gitlab-token"];
-    if (typeof token !== "string" || token !== deps.webhookSecret) {
-      logger.warn("webhook 来源校验失败", { status: 401 });
-      res.status(401).json({ error: "webhook 来源校验失败" });
-      return;
-    }
-
     const body: unknown = req.body;
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       logger.warn("webhook payload 不是对象", { status: 400 });

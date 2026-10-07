@@ -2,13 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadConfig } from "../src/config.ts";
 
-/** 三个必填 GitLab 配置的合法值，供各用例复用。 */
-const GITLAB_REQUIRED = { GITLAB_URL: "https://gitlab.example.com", GITLAB_TOKEN: "t", GITLAB_WEBHOOK_SECRET: "s" };
+/** 两个必填 GitLab 配置的合法值，供各用例复用。 */
+const GITLAB_REQUIRED = { GITLAB_URL: "https://gitlab.example.com", GITLAB_TOKEN: "t" };
 
 test("loadConfig 默认端口为 5001，缺失必填 GitLab 配置时快速失败", () => {
   assert.throws(() => loadConfig({}), /GITLAB_URL/);
   assert.throws(() => loadConfig({ GITLAB_URL: "https://x" }), /GITLAB_TOKEN/);
-  assert.throws(() => loadConfig({ GITLAB_URL: "https://x", GITLAB_TOKEN: "t" }), /GITLAB_WEBHOOK_SECRET/);
   assert.equal(loadConfig(GITLAB_REQUIRED).port, 5001);
 });
 
@@ -21,12 +20,18 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     logLevel: "info",
     gitlabUrl: "https://gitlab.example.com",
     gitlabToken: "t",
-    gitlabWebhookSecret: "s",
     gitlabInsecureTls: false,
     gitlabApiTimeoutMs: 15000,
     batchMaxTokens: 6000,
     rulesDir: "prompts/rules",
   });
+});
+
+test("loadConfig 忽略不再支持的 GITLAB_WEBHOOK_SECRET", () => {
+  // 多项目场景下各项目 secret 不同，单一全局 secret 没有意义，配置已移除。
+  // 遗留的 GITLAB_WEBHOOK_SECRET 环境变量被忽略，不参与配置。
+  const config = loadConfig({ ...GITLAB_REQUIRED, GITLAB_WEBHOOK_SECRET: "legacy" });
+  assert.equal("gitlabWebhookSecret" in config, false);
 });
 
 test("loadConfig 采用环境变量覆盖", () => {

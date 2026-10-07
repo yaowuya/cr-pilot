@@ -13,7 +13,6 @@ import { readFile } from "node:fs/promises";
 /** `startServer` 的装配依赖：webhook 路由所需的队列、入队与管线。 */
 export interface ServerDeps {
   queue: TaskQueue;
-  webhookSecret: string;
   pipeline: ReviewPipeline;
   logger: Logger;
 }
@@ -26,9 +25,8 @@ export interface ServerDeps {
  * 被当成成功。这里只认 `listening` 与 `error` 两个事件，启动错误以 reject 抛出。
  */
 export function startServer(config: AppConfig, deps: ServerDeps, logger: Logger): Promise<Server> {
-  const { queue, webhookSecret, pipeline } = deps;
+  const { queue, pipeline } = deps;
   const app = createApp({
-    webhookSecret,
     logger,
     enqueue: (task) => {
       queue.push(() => pipeline.run(task));
@@ -60,14 +58,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const config = loadConfig();
   const logger = createConsoleLogger(config.logLevel);
   // 启动横幅先打印生效配置：排障时第一步就是确认进程实际用了哪套配置。
-  // GitLab token 与 webhook secret 只确认是否配置，绝不打印值。
+  // GitLab token 只确认是否配置，绝不打印值。
   logger.info("cr-pilot 正在启动", { node: process.version, logLevel: config.logLevel });
   logger.info("生效配置", {
     host: config.host,
     port: config.port,
     gitlabUrl: config.gitlabUrl,
     gitlabTokenSet: config.gitlabToken.length > 0,
-    webhookSecretSet: config.gitlabWebhookSecret.length > 0,
     promptPath: config.promptPath,
     timeoutMs: config.timeoutMs,
     batchMaxTokens: config.batchMaxTokens,
@@ -95,7 +92,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     });
     await startServer(
       config,
-      { queue, webhookSecret: config.gitlabWebhookSecret, pipeline, logger },
+      { queue, pipeline, logger },
       logger,
     );
   } catch (error) {
