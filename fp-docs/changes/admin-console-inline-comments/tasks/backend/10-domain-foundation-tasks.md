@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED FLOW: Use `fp-execute` to implement this plan task-by-task. Only task markers use checkbox (`- [ ] **Task backend-NNN: ...**`) syntax for tracking; substeps are plain ordered instructions.
 
-- [ ] **Task backend-001: diff 行号解析纯函数**
+- [x] **Task backend-001: diff 行号解析纯函数**
 
 **Files:**
 - Create: `src/domain/inline-comment.ts`
@@ -129,7 +129,7 @@ git add src/domain/inline-comment.ts test/domain/inline-comment.test.ts
 git commit -m "feat: 新增 diff 行号解析纯函数，支撑行内评论锚点校验"
 ```
 
-- [ ] **Task backend-002: AI 输出 JSON 解析、marker 与 position 构造**
+- [x] **Task backend-002: AI 输出 JSON 解析、marker 与 position 构造**
 
 **Files:**
 - Modify: `src/domain/inline-comment.ts`

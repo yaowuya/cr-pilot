@@ -10,10 +10,10 @@
 | `parseReviewJson(text: string): ParsedReview \| null` | `backend-002` | 返回 `{reviewedHeadSha, summaryBody, findings:[{id,severity,path,body,lineKey,line}]}`；校验失败返回 `null` | `backend-016` | `test/domain/inline-comment.test.ts` JSON 解析 |
 | `buildMarker(headSha: string, itemId: string): string` | `backend-002` | 返回 `<!-- marker:{headSha}:{itemId} -->` | `backend-016` | `test/domain/inline-comment.test.ts` marker |
 | `buildPosition(input): DiscussionPosition` | `backend-002` | 返回 `{position_type:"text", base_sha, start_sha, head_sha, old_path, new_path, new_line\|old_line}` | `backend-015`, `backend-016` | `test/domain/inline-comment.test.ts` position |
-| `hashPassword(plain: string, salt: string): string` | `backend-003` | 返回 `scrypt$<saltHex>$<hashHex>` | `backend-007` | `test/shared/crypto.test.ts` 哈希 |
-| `verifyPassword(plain: string, salt: string, stored: string): boolean` | `backend-003` | 定长比较，返回布尔 | `backend-019` | `test/shared/crypto.test.ts` 校验 |
+| `hashPassword(plain: string, username: string, deploymentSalt: string): string` | `backend-003` | 返回 `scrypt$<saltHex>$<hashHex>`；saltHex = SHA256(用户名 + 部署盐) | `backend-006` | `test/shared/crypto.test.ts` 哈希 |
+| `verifyPassword(plain: string, stored: string): boolean` | `backend-003` | 从哈希串内嵌的 saltHex 取盐并定长比较；无需传用户名或部署盐 | `backend-017` | `test/shared/crypto.test.ts` 校验 |
 | `generateToken(): string` | `backend-003` | 返回 32 字节随机串的 hex | `test/shared/crypto.test.ts` | `test/shared/crypto.test.ts` 令牌 |
-| `deriveToken(username: string, salt: string): string` | `backend-003` | 由用户名与盐派生确定性令牌 | `backend-014`, `backend-019` | `test/shared/crypto.test.ts` 派生 |
+| `deriveToken(username: string, deploymentSalt: string): string` | `backend-003` | 由用户名与部署盐派生确定性令牌 | `backend-014`, `backend-017` | `test/shared/crypto.test.ts` 派生 |
 | `openDatabase(path: string): DatabaseSync` | `backend-004` | 打开连接、设置 WAL/busy_timeout、建四表 | `backend-005`~`backend-008`, `backend-020` | `test/infrastructure/sqlite/database.test.ts` |
 | `createReviewRecordRepository(db): ReviewRecordRepository` | `backend-005` | `insert` / `getList` / `getStats` 三个同步方法 | `backend-013`, `backend-020` | `test/infrastructure/sqlite/review-record-repo.test.ts` |
 | `createAdminRepository(db, salt): AdminRepository` | `backend-006` | `create` / `list` / `delete` / `findByUsername` / `ensureInitialAdmin` / `count` | `backend-014`, `backend-018`, `backend-020` | `test/infrastructure/sqlite/admin-repo.test.ts` |

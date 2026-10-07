@@ -136,7 +136,7 @@ git add src/interfaces/http/auth-middleware.ts test/interfaces/http/api.test.ts
 git commit -m "feat: 新增 Bearer 令牌鉴权中间件"
 ```
 
-- [ ] **Task backend-015: GitLab 版本与行内评论客户端**
+- [x] **Task backend-015: GitLab 版本与行内评论客户端**
 
 **Files:**
 - Modify: `src/domain/review-task.ts:60-71`（GitlabClient 端口）
