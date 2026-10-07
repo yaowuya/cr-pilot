@@ -41,13 +41,11 @@ ENV PI_CODING_AGENT_DIR=/app/pi-agent
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/prompts ./prompts
-COPY --from=builder /app/pi-agent ./pi-agent
-COPY --from=builder /app/package.json ./
-
 # pi-agent 目录必须对运行用户可写：pi SDK 首次评审时会写入缓存/状态文件
 # （如 models-store.json），只读会导致 internal error → No API key found。
-# node:22-alpine 自带 node 用户 uid=1000，chown 给它。
-RUN chown -R node:node /app/pi-agent
+# COPY --chown 在拷贝时直接设属主，避免额外的 chown RUN 层。
+COPY --chown=node:node --from=builder /app/pi-agent ./pi-agent
+COPY --from=builder /app/package.json ./
 
 # 创建非 root 用户并切换（Alpine 自带 node 用户 uid=1000）
 USER node
