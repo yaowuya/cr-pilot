@@ -119,3 +119,93 @@ test("insecureTls 为真且未配置全局信任时给出告警", async () => {
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /NODE_TLS_REJECT_UNAUTHORIZED/);
 });
+
+// ============ backend-015：versions 与 discussions ============
+
+test("getMergeRequestVersions 取最新 diff version 的三个 SHA", async () => {
+  const { calls, fetchFn } = trackFetch(() =>
+    jsonResponse(200, [
+      { base_commit_sha: "b", start_commit_sha: "s", head_commit_sha: "h" },
+      { base_commit_sha: "old-b", start_commit_sha: "old-s", head_commit_sha: "old-h" },
+    ]),
+  );
+  const client = makeClient(fetchFn);
+  const refs = await client.getMergeRequestVersions(42, 7, "https://gitlab.example.com", "TASK-TOKEN");
+  assert.deepEqual(refs, { baseSha: "b", startSha: "s", headSha: "h" });
+  assert.ok(calls[0].url.endsWith("/api/v4/projects/42/merge_requests/7/versions"));
+  assert.equal((calls[0].init.headers as Record<string, string>)["PRIVATE-TOKEN"], "TASK-TOKEN");
+});
+
+test("versions 为空或字段缺失时抛出可读错误", async () => {
+  const { fetchFn } = trackFetch(() => jsonResponse(200, []));
+  const client = makeClient(fetchFn);
+  await assert.rejects(() => client.getMergeRequestVersions(1, 1), /没有 diff 版本/);
+  const { fetchFn: partial } = trackFetch(() => jsonResponse(200, [{ base_commit_sha: "b" }]));
+  await assert.rejects(() => makeClient(partial).getMergeRequestVersions(1, 1), /没有 diff 版本/);
+});
+
+test("postDiscussion 发送 body 与 position 并解析返回", async () => {
+  const { calls, fetchFn } = trackFetch(() => jsonResponse(201, { id: "d1", notes: [{ id: 9, body: "b", position: { new_line: 3 } }] }));
+  const client = makeClient(fetchFn);
+  const created = await client.postDiscussion(
+    42,
+    7,
+    "body",
+    { position_type: "text", base_sha: "b", start_sha: "s", head_sha: "h", old_path: "a.ts", new_path: "a.ts", new_line: 3 },
+    "https://gitlab.example.com",
+    "T",
+  );
+  const sent = JSON.parse(String(calls[0].init.body));
+  assert.equal(sent.position.new_line, 3);
+  assert.equal(sent.body, "body");
+  assert.ok(calls[0].url.endsWith("/api/v4/projects/42/merge_requests/7/discussions"));
+  assert.equal(created.id, "d1");
+  assert.equal(created.notes[0].id, 9);
+});
+
+test("getDiscussions 按 x-next-page 翻页合并", async () => {
+  let page = 0;
+  const fetchFn: FetchFn = async () => {
+    page += 1;
+    const response = jsonResponse(200, [{ id: `d${page}`, notes: [] }]);
+    Object.defineProperty(response, "headers", {
+      value: { get: (name: string) => (name.toLowerCase() === "x-next-page" && page === 1 ? "2" : "") },
+    });
+    return response;
+  };
+  const client = makeClient(fetchFn);
+  const all = await client.getDiscussions(1, 1);
+  assert.equal(all.length, 2);
+  assert.deepEqual(all.map((d) => d.id), ["d1", "d2"]);
+});
+
+test("getDiscussions 单页时只请求一次", async () => {
+  const { calls, fetchFn } = trackFetch(() => {
+    const response = jsonResponse(200, [{ id: "d1", notes: [] }]);
+    Object.defineProperty(response, "headers", { value: { get: () => "" } });
+    return response;
+  });
+  const client = makeClient(fetchFn);
+  const all = await client.getDiscussions(1, 1);
+  assert.equal(all.length, 1);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /per_page=100&page=1/);
+});
+
+test("postDiscussion 失败时抛出带响应体的 GitlabApiError", async () => {
+  const { fetchFn } = trackFetch(() => jsonResponse(400, { message: "position is invalid" }));
+  const client = makeClient(fetchFn);
+  await assert.rejects(
+    () =>
+      client.postDiscussion(1, 1, "b", {
+        position_type: "text",
+        base_sha: "b",
+        start_sha: "s",
+        head_sha: "h",
+        old_path: "a",
+        new_path: "a",
+        new_line: 1,
+      }),
+    (error: unknown) => error instanceof GitlabApiError && error.status === 400,
+  );
+});

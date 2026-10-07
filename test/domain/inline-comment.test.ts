@@ -124,5 +124,5 @@ test("buildPosition 在 old_line 锚点时不带 new_line", () => {
     line: 3,
   });
   assert.equal("new_line" in position, false);
-  assert.equal(position.old_line, 3);
+  assert.equal("old_line" in position ? position.old_line : undefined, 3);
 });

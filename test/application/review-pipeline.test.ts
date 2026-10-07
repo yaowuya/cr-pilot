@@ -85,6 +85,11 @@ function fakeClient(overrides: Partial<GitlabClient> = {}): FakeClient {
     postMergeRequestNote: async (_p, _i, body) => {
       notes.push(body);
     },
+    // 默认给出行内评论相关方法的可用替身：既有用例不关心行内评论，缺省实现让
+    // 管线走「全部 finding 降级进汇总」的路径（版本查询返回空 SHA 会整体降级）。
+    getMergeRequestVersions: async () => ({ baseSha: "b", startSha: "s", headSha: "h" }),
+    postDiscussion: async () => ({ id: "d", notes: [] }),
+    getDiscussions: async () => [],
     ...overrides,
     notes,
   };

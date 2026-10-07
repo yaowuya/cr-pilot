@@ -7,6 +7,8 @@
  */
 import type { DiscussionPosition } from "./inline-comment.ts";
 
+export type { DiscussionPosition };
+
 /** GitLab API 返回的单个文件变更。字段名与 GitLab `/changes` 响应一致。 */
 export interface Change {
   /** 变更后的文件路径。 */
