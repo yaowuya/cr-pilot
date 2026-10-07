@@ -5,6 +5,7 @@
  * 的端口（port）。领域层不依赖任何外层（HTTP / 应用 / 基础设施），所有实现
  * 由 infrastructure 层注入，编排由 application 层完成。
  */
+import type { DiscussionPosition } from "./inline-comment.ts";
 
 /** GitLab API 返回的单个文件变更。字段名与 GitLab `/changes` 响应一致。 */
 export interface Change {
@@ -20,6 +21,19 @@ export interface Change {
 export interface Commit {
   id: string;
   message: string;
+}
+
+/** MR 最新 diff version 的三个 SHA。GitLab position 必需，缺任一项评论无法定位。 */
+export interface DiffRefs {
+  baseSha: string;
+  startSha: string;
+  headSha: string;
+}
+
+/** Discussions API 的行内讨论；notes[].position 用于发布后回读校验。 */
+export interface Discussion {
+  id: string;
+  notes: { id: number; body: string; position?: Record<string, unknown> }[];
 }
 
 /** 一个待处理的 MR 任务：webhook 分派后进入队列。 */
@@ -68,6 +82,24 @@ export interface GitlabClient {
   getMergeRequestChanges(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Change[]>;
   getMergeRequestCommits(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Commit[]>;
   postMergeRequestNote(projectId: number, iid: number, body: string, gitlabUrl?: string, gitlabToken?: string): Promise<void>;
+  /**
+   * 取 MR 最新 diff version 的三个 SHA。
+   *
+   * GitLab 行内评论的 position 必须携带这三个值，而它们属于版本信息、不应由模型输出，
+   * 因此由服务端拉取（对齐参考实现 `gitlab_mr_review.py:131-142`）。
+   */
+  getMergeRequestVersions(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<DiffRefs>;
+  /** 发布一条行内讨论（带 position）。 */
+  postDiscussion(
+    projectId: number,
+    iid: number,
+    body: string,
+    position: DiscussionPosition,
+    gitlabUrl?: string,
+    gitlabToken?: string,
+  ): Promise<Discussion>;
+  /** 拉取该 MR 的全部讨论，用于幂等判重与发布后校验。 */
+  getDiscussions(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Discussion[]>;
 }
 
 /**
