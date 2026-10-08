@@ -104,16 +104,21 @@ function selectStyleBranch(inner: string, style: string, firstStyle: string): st
 /**
  * 渲染 user prompt 模板。
  *
- * 只替换 `{diffs_text}` 与 `{commits_text}` 两个占位符；未知占位符原样保留，
- * 让模板里的笔误在评审结果中可见而不是被静默吞掉。
+ * 只替换 `{diffs_text}`、`{commits_text}` 与 `{head_sha}` 三个占位符；未知占位符
+ * 原样保留，让模板里的笔误在评审结果中可见而不是被静默吞掉。
+ *
+ * `{head_sha}` 必须由服务端注入：AI 输出的结构化块要求回显 `reviewed_head_sha`，
+ * 而模型无法自行得知当前 MR 的 head 提交，不给它这个值就永远无法通过校验，
+ * 行内评论会全部降级进汇总评论。
  */
 export function renderUserPrompt(
   template: string,
-  vars: { diffsText: string; commitsText: string },
+  vars: { diffsText: string; commitsText: string; headSha?: string },
 ): string {
   return template
     .replaceAll("{diffs_text}", vars.diffsText)
-    .replaceAll("{commits_text}", vars.commitsText);
+    .replaceAll("{commits_text}", vars.commitsText)
+    .replaceAll("{head_sha}", vars.headSha ?? "");
 }
 
 /**

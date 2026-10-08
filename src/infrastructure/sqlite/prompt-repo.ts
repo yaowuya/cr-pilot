@@ -172,7 +172,16 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
           skipped += 1;
           continue;
         }
-        const parsed = parseRuleFileContent(content, "professional");
+        let parsed;
+        try {
+          // 单个文件的 YAML 非法只跳过该文件：readdirSync 顺序不定，若让解析
+          // 异常向上抛，前面已成功导入的文件既无法回滚、{imported, skipped}
+          // 也永远拿不到，接口只能返回 500 且不可重试。
+          parsed = parseRuleFileContent(content, "professional");
+        } catch {
+          skipped += 1;
+          continue;
+        }
         if (!parsed) {
           skipped += 1;
           continue;

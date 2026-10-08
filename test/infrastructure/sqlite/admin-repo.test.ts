@@ -67,3 +67,27 @@ test("换部署盐创建的账号哈希不同但都能各自校验", () => {
   assert.ok(second.authenticate("beta", "pw"));
   db.close();
 });
+
+test("authenticate 对不存在的账号也执行等成本 scrypt（防时序枚举）", () => {
+  const db = openDatabase(":memory:");
+  const repo = createAdminRepository(db, "fixed-salt");
+  repo.create("admin", "s3cret");
+  // 不存在账号必须与错误密码耗时同量级：二者都跑一次 scrypt。
+  // 单次 scrypt 约 60ms，若提前返回会快几个数量级，攻击者可据此枚举用户名。
+  const started = process.hrtime.bigint();
+  repo.authenticate("nobody", "whatever");
+  const missingMs = Number(process.hrtime.bigint() - started) / 1e6;
+
+  const started2 = process.hrtime.bigint();
+  repo.authenticate("admin", "wrong-password");
+  const wrongMs = Number(process.hrtime.bigint() - started2) / 1e6;
+
+  // 两者都应落在 scrypt 成本量级（>10ms），且差异不超过一个数量级。
+  assert.ok(missingMs > 10, `不存在账号耗时 ${missingMs.toFixed(1)}ms，说明没有执行 scrypt`);
+  assert.ok(wrongMs > 10, `错误密码耗时 ${wrongMs.toFixed(1)}ms`);
+  assert.ok(
+    missingMs < wrongMs * 10 && wrongMs < missingMs * 10,
+    `耗时差过大：不存在=${missingMs.toFixed(1)}ms 错误密码=${wrongMs.toFixed(1)}ms`,
+  );
+  db.close();
+});

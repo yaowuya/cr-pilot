@@ -58,6 +58,8 @@ export interface ConfigItem {
   masked: boolean;
   restartRequired: boolean;
   overridden: boolean;
+  /** 为 true 时页面只读展示（启动引导类键，如 DB_PATH）。 */
+  readOnly: boolean;
 }
 
 /** 管理员账号（不含任何密码字段）。 */

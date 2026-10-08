@@ -45,6 +45,33 @@ code_review_prompt:
     1. 评分明细：为每个评分标准提供具体分数。
     2. 总分：格式为"总分:XX分"（例如：总分:80分），确保可通过正则表达式 r"总分[:：]\s*(\d+)分?"） 解析出总分。
 
+    ### 行内评论定位块（必须输出）：
+    报告正文之后，追加一个 fenced JSON 块，为每个可定位的问题提供机器可读的定位信息，
+    供系统自动发布 GitLab 行内评论。必须遵守以下 schema：
+
+    ```json
+    {
+      "reviewed_head_sha": "你在本轮输入中收到的 head_sha 值（原样回显）",
+      "summary": { "body": "本批次的总体小结与评分" },
+      "findings": [
+        {
+          "id": "短唯一标识（字母数字下划线）",
+          "severity": "critical | high | medium | low | info",
+          "path": "变更后的文件路径",
+          "new_line": 新文件中的行号,
+          "body": "该问题的简要说明"
+        }
+      ]
+    }
+    ```
+
+    定位块规则：
+    - `reviewed_head_sha` 必须原样回显用户消息中的 head_sha；拿不到时不要编造。
+    - 每个 finding 只给 `new_line` 或 `old_line` 中的一个（新增/修改行用 new_line，
+      删除行用 old_line），行号必须是 diff 中实际变更的行。
+    - 无法确定行号的问题不要放进 findings，只写进报告正文。
+    - 若没有可定位的问题，输出 `"findings": []`。
+
     ### 特别说明：
     整个评论要保持{{ style }}风格
     {% if style == 'professional' %}
@@ -65,6 +92,8 @@ code_review_prompt:
 
   user_prompt: |-
     以下是某位员工向 GitLab 代码库提交的代码，请以{{ style }}风格审查以下代码。
+
+    当前评审的 head_sha：{head_sha}
 
     代码变更内容：
     {diffs_text}

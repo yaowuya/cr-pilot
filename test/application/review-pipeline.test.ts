@@ -667,3 +667,76 @@ test("old_line 锚点使用 removed 行号集", async () => {
   assert.equal(posted.length, 1);
   assert.equal(posted[0].position.old_line, 2, "old_line 必须用原文件行号");
 });
+
+// ============ 终审修复：C-1 汇总去重 与 H-5 head_sha 注入 ============
+
+test("已成功发行内评论的 finding 从汇总评论中剔除，不重复出现", async () => {
+  const { client, posted, notes } = inlineClient({ diff: twoAddedLines });
+  // 汇总评论正文含已发布 finding 的正文（符合 SUMMARY_SUFFIX「保留各条问题的位置与证据」）
+  const summaryText = ["## 问题清单", "", "已发布的问题描述文字", "", "总分：80 分"].join("\n");
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(
+      JSON.stringify({
+        reviewed_head_sha: headSha,
+        summary: { body: "总分：80 分" },
+        findings: [{ id: "f1", severity: "high", path: "a.ts", new_line: 1, body: "已发布的问题描述文字" }],
+      }),
+      summaryText,
+    ),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+  assert.equal(posted.length, 1, "该条应成功发行内评论");
+  assert.equal(notes.length, 1);
+  assert.doesNotMatch(notes[0], /已发布的问题描述文字/, "已发行内评论的条目不得再出现在汇总评论中");
+  assert.match(notes[0], /总分：80 分/, "剔除后必须保留总分，否则企微评分会失效");
+  assert.match(notes[0], /## 问题清单/, "只剔除命中行，其余正文保持原样");
+});
+
+test("未发行内评论的 finding 仍保留在汇总评论中", async () => {
+  const { client, notes } = inlineClient({ diff: twoAddedLines });
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(
+      JSON.stringify({
+        reviewed_head_sha: headSha,
+        summary: { body: "总分：80 分" },
+        // 行号 99 越界 → 降级进汇总，不得被剔除
+        findings: [{ id: "f1", severity: "low", path: "a.ts", new_line: 99, body: "越界问题描述" }],
+      }),
+      ["## 问题清单", "", "越界问题描述", "", "总分：80 分"].join("\n"),
+    ),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+  assert.match(notes[0], /越界问题描述/, "降级的 finding 必须保留在汇总中，不能被误剔除");
+});
+
+test("提交给模型的 user prompt 注入当前 head sha", async () => {
+  const seen: string[] = [];
+  const pipeline = createReviewPipeline({
+    // 默认 fakeClient 的 headSha 是占位符 "h"，这里覆盖为 40 位真实形状的 sha，
+    // 以便断言注入值与 parseReviewJson 的要求一致。
+    client: fakeClient({ getMergeRequestVersions: async () => ({ baseSha: "b", startSha: "s", headSha }) }),
+    // 模板带 {head_sha} 占位符
+    rules: { resolve: () => ({ systemPrompt: "SYS", userPrompt: "head={head_sha}\n评：{diffs_text}" }) } as ReviewRules,
+    reviewer: {
+      review: async ({ code }) => {
+        seen.push(code);
+        return { text: "总分：80 分", model: "m" };
+      },
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+  assert.ok(seen.length > 0);
+  // 只断言批次调用：汇总调用（最后一次）的输入是各批结果文本，不需要 head_sha。
+  assert.ok(seen[0].includes(headSha), "批次的 user prompt 必须含 head_sha，否则模型无法回显 reviewed_head_sha");
+  assert.ok(!seen[0].includes("{head_sha}"), "占位符必须被替换而不是原样保留");
+});

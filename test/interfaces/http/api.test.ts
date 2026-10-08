@@ -276,8 +276,10 @@ test("密钥字段掩码返回，更新同步 process.env 并标注需重启项"
       });
       assert.equal(put.status, 200);
       const updated = (await put.json()) as { restartRequired: string[] };
-      assert.deepEqual(updated.restartRequired, ["PORT"], "只有启动期绑定项需重启");
-      assert.equal(process.env.QUEUE_CONCURRENCY, "7", "可热更新项必须同步到进程环境变量");
+      // 两个键都需重启：PORT 是启动期绑定，QUEUE_CONCURRENCY 的队列在构造时
+      // 就按并发数创建了槽位，写 process.env 不会改变已有队列的行为。
+      assert.deepEqual([...updated.restartRequired].sort(), ["PORT", "QUEUE_CONCURRENCY"]);
+      assert.equal(process.env.QUEUE_CONCURRENCY, "7", "覆盖值必须同步到进程环境变量");
       assert.equal(process.env.PORT, "6001");
     });
   } finally {
@@ -285,6 +287,67 @@ test("密钥字段掩码返回，更新同步 process.env 并标注需重启项"
     else process.env.LLMGW_API_KEY = originalKey;
     delete process.env.QUEUE_CONCURRENCY;
     delete process.env.PORT;
+  }
+});
+
+test("配置更新拒绝越权键、只读键与非法取值", async () => {
+  const { app, token } = buildHarness();
+  await withServer(app, async (base) => {
+    // 主机环境变量不属于本服务配置，不得写入覆盖表（否则下次启动会注入 process.env）
+    const foreign = await authed(base, token, "/api/config", {
+      method: "PUT",
+      body: JSON.stringify({ items: [{ key: "PATH", value: "/tmp" }] }),
+    });
+    assert.equal(foreign.status, 400);
+    assert.match((await foreign.json() as { error: string }).error, /不支持修改/);
+
+    // DB_PATH 改动会让开库路径与启动横幅分叉
+    const readOnly = await authed(base, token, "/api/config", {
+      method: "PUT",
+      body: JSON.stringify({ items: [{ key: "DB_PATH", value: "./other.db" }] }),
+    });
+    assert.equal(readOnly.status, 400);
+    assert.match((await readOnly.json() as { error: string }).error, /只读/);
+
+    // 非法取值（非正整数 / 非法枚举）必须在写入前拦下：否则下次启动直接退出
+    const badPort = await authed(base, token, "/api/config", {
+      method: "PUT",
+      body: JSON.stringify({ items: [{ key: "PORT", value: "abc" }] }),
+    });
+    assert.equal(badPort.status, 400);
+    const zeroConcurrency = await authed(base, token, "/api/config", {
+      method: "PUT",
+      body: JSON.stringify({ items: [{ key: "QUEUE_CONCURRENCY", value: "0" }] }),
+    });
+    assert.equal(zeroConcurrency.status, 400);
+    const badLevel = await authed(base, token, "/api/config", {
+      method: "PUT",
+      body: JSON.stringify({ items: [{ key: "LOG_LEVEL", value: "verbose" }] }),
+    });
+    assert.equal(badLevel.status, 400);
+  });
+});
+
+test("配置列表只包含服务自身配置项，不回显主机环境变量", async () => {
+  const { app, token } = buildHarness();
+  const originalConcurrency = process.env.QUEUE_CONCURRENCY;
+  try {
+    // 白名单内的键来自进程环境变量，因此这里临时设置一个以确保它出现在列表中。
+    process.env.QUEUE_CONCURRENCY = "5";
+    await withServer(app, async (base) => {
+      const body = (await (await authed(base, token, "/api/config")).json()) as {
+        items: { key: string; readOnly: boolean }[];
+      };
+      const keys = body.items.map((item) => item.key);
+      for (const foreign of ["PATH", "HOME", "USERPROFILE", "TEMP"]) {
+        assert.equal(keys.includes(foreign), false, `不得把主机环境变量 ${foreign} 当作配置项展示`);
+      }
+      assert.ok(keys.includes("QUEUE_CONCURRENCY"), "应包含本服务的配置项");
+      assert.equal(body.items.find((item) => item.key === "DB_PATH")?.readOnly, true, "DB_PATH 应标记为只读");
+    });
+  } finally {
+    if (originalConcurrency === undefined) delete process.env.QUEUE_CONCURRENCY;
+    else process.env.QUEUE_CONCURRENCY = originalConcurrency;
   }
 });
 

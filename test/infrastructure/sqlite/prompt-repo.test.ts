@@ -123,3 +123,31 @@ test("importFromDir 对不存在目录返回零而不抛错", () => {
   assert.deepEqual(repo.importFromDir(join(tmpdir(), "definitely-missing-crp-dir")), { imported: 0, skipped: 0 });
   db.close();
 });
+
+test("importFromDir 对非法 YAML 只跳过该文件，不中断整个导入", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crp-prompts-"));
+  try {
+    writeFileSync(
+      join(dir, "ok.yaml"),
+      ["repository: group/ok", "code_review_prompt:", "  system_prompt: SYS", "  user_prompt: u {diffs_text}"].join("\n"),
+    );
+    // 非法 YAML：flow 序列缩进错误，会让 yaml 解析器抛异常。
+    writeFileSync(join(dir, "broken.yaml"), "repository: [unclosed\n  bad: [indent");
+    writeFileSync(
+      join(dir, "also-ok.yaml"),
+      ["repository: group/ok2", "code_review_prompt:", "  system_prompt: SYS", "  user_prompt: u {diffs_text}"].join("\n"),
+    );
+
+    const db = openDatabase(":memory:");
+    const repo = createPromptRepository(db);
+    // 关键：异常文件不中断整体导入，前后文件都能正常导入，且返回精确计数。
+    const result = repo.importFromDir(dir);
+    assert.equal(result.imported, 2, "非法 YAML 之外的文件应全部导入");
+    assert.equal(result.skipped, 1, "非法 YAML 应记为跳过而非抛错");
+    assert.ok(repo.resolve("group/ok"));
+    assert.ok(repo.resolve("group/ok2"));
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

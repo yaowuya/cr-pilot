@@ -39,19 +39,37 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // 2) 打开库、把覆盖值写进 process.env（数据库优先）；
   // 3) 第二次才得到最终生效配置。
   // 若合并成一次读取，数据库覆盖将不生效——P-005 的语义会被静默破坏。
-  const bootstrapConfig = loadConfig();
-  const dbFile = bootstrapConfig.dbPath;
-  if (dbFile !== ":memory:") {
-    // 首次启动时 data 目录可能还不存在（容器挂载卷首次创建），提前建好。
-    mkdirSync(dirname(dbFile), { recursive: true });
+  //
+  // 这段必须包在 try 里：覆盖值可能来自管理页面，非法值（如 PORT=abc）会让
+  // loadConfig 抛错。裸抛意味着进程直接退出，而此时日志器还没建好，
+  // 排障者从日志与启动横幅都拿不到任何线索。
+  let dbFile = "";
+  let db: ReturnType<typeof openDatabase> | undefined;
+  let configRepo: ReturnType<typeof createConfigRepository> | undefined;
+  let overrides: Record<string, string> = {};
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    const bootstrapConfig = loadConfig();
+    dbFile = bootstrapConfig.dbPath;
+    if (dbFile !== ":memory:") {
+      // 首次启动时 data 目录可能还不存在（容器挂载卷首次创建），提前建好。
+      mkdirSync(dirname(dbFile), { recursive: true });
+    }
+    db = openDatabase(dbFile);
+    configRepo = createConfigRepository(db);
+    for (const item of configRepo.list()) overrides[item.key] = item.value;
+    applyConfigOverrides(process.env, overrides);
+    config = loadConfig();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(
+      `[FATAL] 配置加载失败：${message}\n` +
+        `数据库：${dbFile || "(未确定)"}\n` +
+        `可能是管理页面写入的覆盖值非法。请检查 .env 与数据库 config_overrides 表，` +
+        `清理非法项后重启（容器内可用 sqlite3 或删除该行）。\n`,
+    );
+    process.exit(1);
   }
-  const db = openDatabase(dbFile);
-  const configRepo = createConfigRepository(db);
-  const overrides: Record<string, string> = {};
-  for (const item of configRepo.list()) overrides[item.key] = item.value;
-  applyConfigOverrides(process.env, overrides);
-
-  const config = loadConfig();
   const logger = config.logFile ? createFileLogger(config.logLevel, config.logFile) : createConsoleLogger(config.logLevel);
   // 启动横幅先打印生效配置：排障时第一步就是确认进程实际用了哪套配置。
   logger.info("cr-pilot 正在启动", { Node版本: process.version, 日志级别: config.logLevel });
@@ -75,10 +93,29 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (!process.env.LLMGW_API_KEY) {
     logger.warn("LLMGW_API_KEY 未配置：pi 评审将报 No API key found，请在 .env 中填写模型密钥");
   }
+  // 空盐时令牌 = 只依赖用户名的公开派生值，任何人都能离线算出 admin 的令牌，
+  // 等于管理 API（配置、账号、评审记录）完全开放。这比「令牌可预测」严重得多，
+  // 因此在启动前直接终止，而不是只告警后继续提供不设防的管理接口。
   if (!config.authSalt) {
-    // 空盐会让令牌可预测：派生值只依赖用户名，任何人都能算出别人的令牌。
-    logger.warn("AUTH_SALT 未配置：管理 API 的令牌可被预测，请在 .env 中设置随机盐");
+    logger.error(
+      "AUTH_SALT 未配置：管理 API 的令牌可被离线伪造，服务拒绝启动。" +
+        "请在 .env 中设置 AUTH_SALT（建议 32 位随机 hex），例如：" +
+        'node -e "console.log(require(\'node:crypto\').randomBytes(32).toString(\'hex\'))"',
+    );
+    process.exitCode = 1;
+  } else {
+    await startApplication({ config, logger, db: db as NonNullable<typeof db>, configRepo: configRepo as NonNullable<typeof configRepo> });
   }
+}
+
+/** 启动应用：装配全部适配器与路由，最后监听端口。 */
+async function startApplication(input: {
+  config: ReturnType<typeof loadConfig>;
+  logger: ReturnType<typeof createConsoleLogger>;
+  db: NonNullable<ReturnType<typeof openDatabase>>;
+  configRepo: NonNullable<ReturnType<typeof createConfigRepository>>;
+}): Promise<void> {
+  const { config, logger, db, configRepo } = input;
   try {
     // 组合根：把基础设施适配器实现注入到应用用例，再把用例注入 HTTP 路由。
     const queue = createTaskQueue(config.queueConcurrency, logger);
@@ -101,11 +138,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const prompts = createPromptRepository(db);
     const records = createReviewRecordRepository(db);
     // 首次启动引导首个管理员（D-011）；已有账号时不覆盖。
-    admins.ensureInitialAdmin(config.adminUsername, config.adminPassword);
-    if (config.adminUsername && admins.count() === 0) {
-      logger.warn("ADMIN_USERNAME 为空：管理 API 无可用账号，请配置后重启");
-    } else if (config.adminUsername) {
-      logger.info("管理员账号已就绪", { 账号数: admins.count() });
+    // 密码为空时跳过：空密码账号无法登录（登录接口要求非空），却会占住
+    // 「表为空」的位置，导致后续再配 ADMIN_PASSWORD 也不会被创建。
+    if (config.adminUsername && config.adminPassword) {
+      admins.ensureInitialAdmin(config.adminUsername, config.adminPassword);
+    }
+    if (admins.count() === 0) {
+      logger.warn("尚无管理员账号：请设置 ADMIN_USERNAME 与 ADMIN_PASSWORD 后重启，否则管理页面无法登录");
+    } else {
+      logger.info("管理员账号已就绪", { 账号数: admins.count(), 引导已启用: Boolean(config.adminUsername && config.adminPassword) });
     }
 
     const pipeline = createReviewPipeline({

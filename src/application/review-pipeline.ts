@@ -52,9 +52,16 @@ const DEFAULT_TIMEOUT_MS = 1200000;
 /** 汇总 prompt 的系统提示后缀，要求模型把各批结果合并成一份最终评论。 */
 const SUMMARY_SUFFIX = "\n\n你之前分批评审了同一变更的各部分。下面按批序给出各批评审结果，请把它们合并成一份最终评论：去重、按严重程度排序、保留各条问题的位置与证据、合并评分并给出总分。每个问题小节必须包含「位置」「问题（有问题的代码块，带语言标记）」「建议（改进后的代码块，带语言标记）」，问题之间用 --- 分隔。输出结构与格式完全遵循上述规则的要求；只输出纯 Markdown 评论正文，不要用 ``` 代码块包裹整个评论，不要加任何前言或后缀。";
 
-/** 一次发布尝试的结果：成功发布的 finding id 与需并入汇总的文本。 */
+/** 一次发布尝试的结果：成功发布的 finding id/正文与需并入汇总的文本。 */
 interface InlinePublishOutcome {
   published: Set<string>;
+  /**
+   * 已成功发行内评论的 finding 正文（原样），用于从汇总评论中剔除重复条目。
+   *
+   * 用正文而不是 id 匹配：汇总评论由模型生成，正文里不会出现 finding 的 `id`，
+   * 但会带上问题描述文字（`SUMMARY_SUFFIX` 要求保留各条问题的证据）。
+   */
+  publishedBodies: Set<string>;
   fallback: string[];
 }
 
@@ -135,6 +142,21 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
 
       const ruleSet = resolveRuleSet(task.fullName);
       const commitsText = commits.map((commit) => `${commit.id.slice(0, 8)} ${commit.message.split("\n")[0] ?? ""}`).join("\n");
+
+      // 先取 diff version 的 head sha：它必须注入 user prompt，AI 才能回显
+      // reviewed_head_sha（模型无法自行得知当前提交）。取不到时保持空串——
+      // 后续行内评论会整体降级进汇总评论，不影响评审与回写。
+      let refs: DiffRefs | undefined;
+      try {
+        refs = await client.getMergeRequestVersions(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
+      } catch (error) {
+        logger.warn("取 diff version 失败，行内评论将全部降级进汇总", {
+          项目ID: task.projectId,
+          MR编号: task.iid,
+          错误: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       const batches = splitChangesIntoBatches(changes, batchMaxTokens, estimateTokens(ruleSet.userPrompt) + estimateTokens(commitsText));
       logger.info("分批完成", { 项目ID: task.projectId, MR编号: task.iid, 批次数: batches.length });
 
@@ -142,7 +164,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       for (const [index, batch] of batches.entries()) {
         const diffsText = batch.map((change) => `diff --git a/${change.oldPath} b/${change.newPath}\n${change.diff}`).join("\n\n");
         // 仓库规则的 user_prompt 是用户消息全文模板：渲染占位符后作为本轮用户消息。
-        const userMessage = renderUserPrompt(ruleSet.userPrompt, { diffsText, commitsText });
+        const userMessage = renderUserPrompt(ruleSet.userPrompt, { diffsText, commitsText, headSha: refs?.headSha });
         const batchStartedAt = Date.now();
         try {
           const result = await reviewer.review({
@@ -199,13 +221,18 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       const inline = await publishInlineComments({
         task,
         changes,
-        batches,
+        refs,
         batchResults,
         logger,
       });
       if (inline.fallback.length > 0) {
-        // 汇总评论需要剔除已成功发行内评论的条目，避免同一问题出现两次。
         finalComment = appendFallback(finalComment, inline.fallback);
+      }
+      // 汇总评论需剔除已成功发行内评论的条目，避免同一问题在 MR 上出现两次
+      // （proposal 变更点 3）。汇总输入含各批 finding 正文，因此按正文匹配剔除；
+      // 匹配不到的条目保持原样，宁可有冗余也不静默删掉模型给出的内容。
+      if (inline.publishedBodies.size > 0) {
+        finalComment = stripPublishedFindings(finalComment, inline.publishedBodies);
       }
 
       let commentUrl: string | null = null;
@@ -300,16 +327,18 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
    * 4. 行号未落在该文件的 added/removed 集合 → 该条并入汇总；
    * 5. 已存在同 marker 的讨论 → 跳过（幂等，不算失败）；
    * 6. 单条发布抛错 → 该条并入汇总，其余继续；
-   * 7. 发布后回读校验不一致 → 记 warn，不重复发布（marker 保证下次跳过）。
+   * 7. 发布后回读校验 → 见 `verifyPublishedPositions`，不一致只记 warn。
    */
   async function publishInlineComments(input: {
     task: MergeRequestTask;
     changes: Change[];
-    batches: Change[][];
+    /** 已取到的 diff version；缺省表示取版本失败，全部降级。 */
+    refs?: DiffRefs;
     batchResults: string[];
     logger: Logger;
   }): Promise<InlinePublishOutcome> {
     const published = new Set<string>();
+    const publishedBodies = new Set<string>();
     const fallback: string[] = [];
     const { task, changes, batchResults } = input;
 
@@ -320,18 +349,11 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       if (parsed) parsedList.push({ review: parsed, source: raw });
       else fallback.push(raw);
     }
-    if (parsedList.length === 0) return { published, fallback };
+    if (parsedList.length === 0) return { published, publishedBodies, fallback };
 
-    let refs: DiffRefs;
-    try {
-      refs = await client.getMergeRequestVersions(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
-    } catch (error) {
-      logger.warn("取 diff version 失败，行内评论全部降级进汇总", {
-        项目ID: task.projectId,
-        MR编号: task.iid,
-        错误: error instanceof Error ? error.message : String(error),
-      });
-      return { published, fallback: fallback.concat(parsedList.map((item) => item.source)) };
+    const refs = input.refs;
+    if (!refs) {
+      return { published, publishedBodies, fallback: fallback.concat(parsedList.map((item) => item.source)) };
     }
 
     // 路径 → 合法行号集合。重命名文件同时以 oldPath 与 newPath 为键，
@@ -393,8 +415,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
 
         const marker = buildMarker(refs.headSha, finding.id);
         if ([...existing].some((body) => body.includes(marker))) {
-          // 已发布过：计入 published（汇总评论不再重复该条），但不重新发布。
+          // 已发布过（webhook 重复触发）：计入 published，使汇总评论不重复该条，但不重新发布。
           published.add(finding.id);
+          publishedBodies.add(finding.body);
           continue;
         }
 
@@ -414,6 +437,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             task.gitlabToken,
           );
           published.add(finding.id);
+          publishedBodies.add(finding.body);
         } catch (error) {
           logger.warn("单条行内评论发布失败，改并入汇总", {
             项目ID: task.projectId,
@@ -425,8 +449,73 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         }
       }
     }
-    return { published, fallback };
+
+    // 发布后回读校验：确认 GitLab 实际记录的锚点与预期一致。GitLab 接受 position
+    // 后仍可能把评论挂到相邻行，只有回读才能发现；不一致只记 warn 不重复发布
+    // （marker 保证下次评审跳过）。
+    await verifyPublishedPositions({ task, refs, logger });
+
+    return { published, publishedBodies, fallback };
   }
+
+  /**
+   * 回读 discussions 并校验已发布评论的锚点行号与路径。
+   *
+   * 校验失败只记 warn：评论已经发出去了，重复发或删除都不如留痕让人工判断。
+   * 该步骤失败（网络问题）不影响评审结果。
+   */
+  async function verifyPublishedPositions(input: { task: MergeRequestTask; refs: DiffRefs; logger: Logger }): Promise<void> {
+    const { task, refs, logger } = input;
+    try {
+      const discussions = await client.getDiscussions(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
+      const markerPrefix = `<!-- marker:${refs.headSha}:`;
+      for (const discussion of discussions) {
+        for (const note of discussion.notes) {
+          if (!note.body.includes(markerPrefix)) continue;
+          const position = note.position;
+          const anchored = position ? (position.new_line ?? position.old_line) : undefined;
+          if (anchored === undefined) {
+            logger.warn("行内评论缺少 position，锚点可能未生效", {
+              项目ID: task.projectId,
+              MR编号: task.iid,
+              discussion: discussion.id,
+            });
+            continue;
+          }
+          if (position?.head_sha !== refs.headSha) {
+            logger.warn("行内评论的 head_sha 与当前评审不一致", {
+              项目ID: task.projectId,
+              MR编号: task.iid,
+              discussion: discussion.id,
+              评论head: String(position?.head_sha ?? ""),
+            });
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn("发布后回读校验失败，跳过校验", {
+        项目ID: task.projectId,
+        MR编号: task.iid,
+        错误: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+/**
+ * 从汇总评论中剔除已成功发行内评论的 finding 正文（proposal 变更点 3）。
+ *
+ * 按正文子串匹配而不是按 id：汇总评论由模型生成，正文里不会出现 finding 的 `id`，
+ * 但会带上问题描述文字。逐行过滤，只删除确实包含已发布正文的行；匹配不到的行
+ * 原样保留——宁可在汇总里留下冗余，也不能因模型改写措辞而误删内容。
+ */
+function stripPublishedFindings(comment: string, publishedBodies: Set<string>): string {
+  const bodies = [...publishedBodies].filter((body) => body.trim().length > 0);
+  if (bodies.length === 0) return comment;
+  const kept = comment.split("\n").filter((line) => !bodies.some((body) => line.includes(body)));
+  const stripped = kept.join("\n");
+  // 全部被剔除（汇总评论只剩已发布条目）时保留原文，避免回写一条空评论。
+  return stripped.trim().length > 0 ? stripped : comment;
 }
 
 /** 把无法定位的 finding 渲染成汇总评论中可读的一段。 */

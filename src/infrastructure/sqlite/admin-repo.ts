@@ -4,8 +4,12 @@
  * 密码哈希委托 shared/crypto，本模块只负责存取与唯一约束的错误转换。
  */
 import type { DatabaseSync } from "node:sqlite";
+import { scryptSync } from "node:crypto";
 import type { AdminRepository, AdminUser } from "../../domain/admin.ts";
 import { hashPassword, verifyPassword } from "../../shared/crypto.ts";
+
+/** 与 shared/crypto 一致的 scrypt 输出长度，用于「账号不存在」时的等成本校验。 */
+const KEY_LENGTH = 16;
 
 interface AdminRow {
   id: number;
@@ -78,7 +82,13 @@ export function createAdminRepository(db: DatabaseSync, deploymentSalt: string):
 
     authenticate(username, password) {
       const row = db.prepare("SELECT * FROM admins WHERE username = ?").get(username.trim()) as unknown as AdminRow | undefined;
-      if (!row) return undefined;
+      if (!row) {
+        // 账号不存在时也跑一次固定成本的 scrypt：否则「不存在账号」比「密码错误」
+        // 快约 6 万倍，攻击者能凭单次请求的耗时枚举有效用户名——与登录接口
+        // 「不区分用户不存在与密码错误」的承诺相悖。校验结果必然失败，直接丢弃。
+        scryptSync("dummy-password", "dummy-salt", KEY_LENGTH);
+        return undefined;
+      }
       return verifyPassword(password, row.password_hash) ? toUser(row) : undefined;
     },
   };

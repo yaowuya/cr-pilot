@@ -14,7 +14,7 @@
       type="info"
       :closable="false"
       class="hint"
-      title="保存后大部分配置立即生效；标记「需重启」的项需重启容器。密钥类字段以掩码显示，保存时会写入你填写的新值。"
+      title="保存后配置写入数据库，标记「需重启」的项在重启容器后生效。密钥类字段不回传真实值，留空表示不修改。"
     />
 
     <el-table v-loading="loading" :data="rows" border>
@@ -23,15 +23,26 @@
         <template #default="{ row }">
           <el-input
             v-model="row.draft"
-            :type="row.masked && !row.revealed ? 'text' : 'text'"
+            :type="row.masked && !row.revealed && row.draft ? 'password' : 'text'"
             :placeholder="row.masked ? '留空表示不修改' : ''"
+            :disabled="row.readOnly"
             @input="row.dirty = true"
-          />
+          >
+            <!-- 密钥项：后端不回传真实值，输入框里只有用户自己刚输入的内容。
+                 该图标仅切换本地可见性，不产生网络请求。 -->
+            <template v-if="row.masked && row.draft" #suffix>
+              <el-icon class="reveal-icon" @click="row.revealed = !row.revealed">
+                <View v-if="!row.revealed" />
+                <Hide v-else />
+              </el-icon>
+            </template>
+          </el-input>
         </template>
       </el-table-column>
-      <el-table-column label="说明" width="140">
+      <el-table-column label="说明" width="160">
         <template #default="{ row }">
           <el-tag v-if="row.masked" type="warning" size="small">密钥</el-tag>
+          <el-tag v-if="row.readOnly" type="info" size="small" class="tag-gap">只读</el-tag>
           <el-tag v-if="row.restartRequired" type="danger" size="small" class="tag-gap">需重启</el-tag>
           <el-tag v-if="row.overridden" type="info" size="small" class="tag-gap">已覆盖</el-tag>
         </template>
@@ -49,6 +60,7 @@
  */
 import { onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { Hide, View } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
 import type { ConfigItem } from "../types.ts";
 
@@ -73,6 +85,7 @@ async function load(): Promise<void> {
     rows.value = result.items.map((item) => ({
       ...item,
       // 非密钥项直接带出当前值供编辑；密钥项留空，防止把掩码写回库。
+      // 只读项也预填当前值但输入框禁用（见模板）。
       draft: item.masked ? "" : item.value,
       dirty: false,
       revealed: false,
@@ -84,9 +97,9 @@ async function load(): Promise<void> {
   }
 }
 
-/** 只提交用户实际改动过且非空的项。 */
+/** 只提交用户实际改动过、非只读且非空的项。 */
 async function onSave(): Promise<void> {
-  const changed = rows.value.filter((row) => row.dirty && row.draft.trim() !== "");
+  const changed = rows.value.filter((row) => row.dirty && !row.readOnly && row.draft.trim() !== "");
   if (changed.length === 0) {
     ElMessage.warning("没有需要保存的修改");
     return;
@@ -99,7 +112,7 @@ async function onSave(): Promise<void> {
     if (result.restartRequired.length > 0) {
       await ElMessageBox.alert(
         `以下配置需要重启容器后才生效：\n${result.restartRequired.join("、")}`,
-        "部分配置需重启",
+        "配置已保存，需重启生效",
         { type: "warning", confirmButtonText: "知道了" },
       );
     } else {
