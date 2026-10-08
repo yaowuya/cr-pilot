@@ -343,12 +343,12 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     const { task, changes, batchResults } = input;
 
     // 没有 reviewJson 时无从判断，全部按「不可定位」处理。
-    const parsedList: { review: ParsedReview; source: string }[] = [];
-    for (const raw of batchResults) {
+    const parsedList: { review: ParsedReview; source: string; batchIndex: number }[] = [];
+    batchResults.forEach((raw, index) => {
       const parsed = parseReviewJson(raw);
-      if (parsed) parsedList.push({ review: parsed, source: raw });
+      if (parsed) parsedList.push({ review: parsed, source: raw, batchIndex: index });
       else fallback.push(raw);
-    }
+    });
     if (parsedList.length === 0) return { published, publishedBodies, fallback };
 
     const refs = input.refs;
@@ -381,7 +381,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       });
     }
 
-    for (const { review, source } of parsedList) {
+    for (const { review, source, batchIndex } of parsedList) {
       // head 不一致说明评审的是旧代码，行号与 diff 都可能已失效。
       if (review.reviewedHeadSha !== refs.headSha) {
         logger.warn("评审 head 与当前 head 不一致，该批评审降级进汇总", {
@@ -395,6 +395,10 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       }
 
       for (const finding of review.findings) {
+        // marker 键带上批次号：parseReviewJson 只在单批内拒绝重复 id，跨批可能
+        // 出现同名 finding。不带批次号会让后一批的同名 finding 命中前一批的
+        // marker 而被误判为「已发布」。
+        const markerId = `${batchIndex}:${finding.id}`;
         const change = changeByPath.get(finding.path);
         const sets = change ? lineSets.get(finding.path) : undefined;
         if (!change || !sets) {
@@ -413,10 +417,10 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           continue;
         }
 
-        const marker = buildMarker(refs.headSha, finding.id);
+        const marker = buildMarker(refs.headSha, markerId);
         if ([...existing].some((body) => body.includes(marker))) {
           // 已发布过（webhook 重复触发）：计入 published，使汇总评论不重复该条，但不重新发布。
-          published.add(finding.id);
+          published.add(markerId);
           publishedBodies.add(finding.body);
           continue;
         }
@@ -436,13 +440,13 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             task.gitlabUrl,
             task.gitlabToken,
           );
-          published.add(finding.id);
+          published.add(markerId);
           publishedBodies.add(finding.body);
         } catch (error) {
           logger.warn("单条行内评论发布失败，改并入汇总", {
             项目ID: task.projectId,
             MR编号: task.iid,
-            finding: finding.id,
+            finding: markerId,
             错误: error instanceof Error ? error.message : String(error),
           });
           fallback.push(renderFallbackFinding(finding));

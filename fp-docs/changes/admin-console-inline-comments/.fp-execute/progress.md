@@ -44,7 +44,7 @@ Base SHA: 4b7b028
 ### 后端集成验证
 
 - `npm run typecheck`：退出码 0
-- `npm test`：167/167 通过
+- `npm test`：176/176 通过（含终审修复后的新增用例；早期阶段记录过 167/168，均为当时快照）
 - 真实启动冒烟测试（`node src/bootstrap.ts`，独立端口与临时库）：
   - 启动横幅显示数据库路径、配置覆盖项数、模型密钥已配置
   - 管理员引导创建成功（账号数=1）
@@ -52,8 +52,27 @@ Base SHA: 4b7b028
   - 未认证 `GET /api/reviews` → 401
   - 登录 → 令牌长度 32、用户名正确
   - 带令牌 `GET /api/reviews` → `{items:[],total:0,page:1,pageSize:20}`
-  - 带令牌 `GET /api/config` → 70 个配置项，其中 3 个密钥类被掩码
+  - 带令牌 `GET /api/config` → 白名单配置项，密钥类被掩码（修复后不再展示主机环境变量）
 - `node scripts/import-prompts.ts`：首跑导入 6 条、跳过 1 条；二跑导入 0 条（幂等验证通过）
+
+### 终审与修复（2026-10-08）
+
+独立终审（fresh reviewer，只读）结论为 FAIL，6 个阻断项全部修复并重新验证：
+
+| 编号 | 问题 | 修复 |
+| --- | --- | --- |
+| C-1 | 已发布行内评论的 finding 仍出现在汇总评论（`published` 集合是死代码） | `stripPublishedFindings` 按正文剔除 + 新增回归测试 |
+| H-1 | 配置「立即生效」是假象（队列/管线/日志器都持有快照） | `RESTART_REQUIRED_KEYS` 按快照判定重写，页面文案改「需重启生效」 |
+| H-2 | 非法覆盖值导致启动裸抛且无日志 | 启动期配置加载包入 try，输出 FATAL 与清理指引 |
+| H-3 | `DB_PATH` 可被页面改写导致开库路径分叉 | 加入 `READ_ONLY_KEYS` 与 `RESTART_REQUIRED_KEYS` |
+| H-4 | 空 `AUTH_SALT` 时令牌可离线伪造 | 拒绝启动（exit 1 + 生成指引） |
+| H-5 | prompt 缺结构化输出约定，行内评论无法生效 | `default.yaml` 增加 JSON 定位块 schema + `{head_sha}` 占位符注入 |
+| M-2 | 登录时序枚举（不存在账号快 6 万倍） | 等成本 scrypt |
+| M-6 | 「发布后校验」注释与实现不符 | 实现 `verifyPublishedPositions` |
+| M-7 | 密钥显示开关不存在 | 实现 reveal 切换 + 只读行 |
+| L-1 | 非法 YAML 中断导入 | 逐文件 try/catch 跳过 |
+| L-2 | 跨批同名 finding 的 marker 冲突 | marker id 加批次前缀 |
+| L-4 | 主机环境变量被暴露为可管理项 | `MANAGEABLE_KEYS` 白名单 |
 
 ## 偏差与决策记录
 
@@ -82,14 +101,16 @@ Base SHA: 4b7b028
 | 命令 | 结果 |
 | --- | --- |
 | `npm run typecheck`（含前端 `vue-tsc`） | 退出码 0 |
-| `npm test` | 168/168 通过 |
+| `npm test` | 176/176 通过 |
 | `npm run build:frontend` | 产出 `web/dist`，构建成功 |
 | `node scripts/import-prompts.ts` | 首跑导入 6 条、二跑 0 条（幂等） |
 | 真实启动冒烟 | 启动、引导管理员、401、登录、记录查询、密钥掩码全部正常 |
+| 空 `AUTH_SALT` 启动 | 实测 exit 1 + 生成指引（H-4） |
+| 非法覆盖值启动 | 实测 FATAL 可读提示 + exit 1（H-2） |
 | 浏览器 E2E（5 case） | 全部 `FRONTEND_E2E_PASS` |
 
 ## Notes
 
-- 后端全部完成后，`web/dist` 尚未构建，启动日志会提示「未找到前端构建产物，跳过静态资源托管」——这是预期行为，前端任务完成后消失。
-- 前端任务（frontend-001~006）尚未开始，其中 5 个 case 为 `interactive`/`business-flow`，需真实浏览器 E2E。
-- 视觉证据按 `D-019` 记为 `CANNOT_VERIFY`（项目无 Figma、无截图、无既有页面）。
+- 前端 E2E 的 Visual 通道按 `D-019` 记 `CANNOT_VERIFY`（项目无 Figma、无截图、无既有页面），依 UI/E2E 契约该状态即视觉通道 `BLOCKED`；交互与业务流程证据由 5 个真实浏览器 case 提供。
+- 评审者（终审）指出覆盖矩阵中「筛选/分页/排序」等条目引用了单元测试证据、前端 E2E 的实际执行方式是 `playwright-cli` 逐条驱动而非 `web/e2e/*.spec.ts`。两者均为记录性偏差：前端行为本身有真实浏览器证据（登录、新建 prompt、配置保存、账号增删均实际操作），但矩阵措辞过度扩展了证据范围。执行期计划中的 `*.spec.ts` 因本机 `playwright-cli`（0.1.19）不支持 spec 文件运行，改用交互命令驱动——已在 `tasks/frontend/90-coverage.md` 外记录本偏差。
+- 进度台账早期记录过 167/168 个测试，均为对应时刻的真实快照；终态为 176/176。

@@ -512,7 +512,8 @@ test("行内评论按 finding 逐条发布并带 marker", async () => {
   await pipeline.run(task);
   assert.equal(posted.length, 1);
   assert.match(posted[0].body, /第二条有问题/);
-  assert.match(posted[0].body, new RegExp(`<!-- marker:${headSha}:f1 -->`));
+  // marker 的 id 带批次前缀（单批时批次号为 0），避免跨批同名 finding 互相误判。
+  assert.match(posted[0].body, new RegExp(`<!-- marker:${headSha}:0:f1 -->`));
   assert.equal(posted[0].position.new_line, 2);
   assert.equal(posted[0].position.position_type, "text");
 });
@@ -565,7 +566,7 @@ test("评审 head 与当前 head 不一致时全部并入汇总", async () => {
 test("已存在同 marker 的讨论时跳过重复发布", async () => {
   const { client, posted, notes } = inlineClient({
     diff: twoAddedLines,
-    existingBodies: [`旧内容\n\n<!-- marker:${headSha}:f1 -->`],
+    existingBodies: [`旧内容\n\n<!-- marker:${headSha}:0:f1 -->`],
   });
   const pipeline = createReviewPipeline({
     client,

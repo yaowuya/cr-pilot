@@ -31,5 +31,5 @@ Progress totals derived from the unique owner checkboxes are read-only roll-ups,
 
 | End | Total | Complete | Remaining |
 | --- | ---: | ---: | ---: |
-| Backend | 23 | 0 | 23 |
-| Frontend | 6 | 0 | 6 |
+| Backend | 23 | 23 | 0 |
+| Frontend | 6 | 6 | 0 |
