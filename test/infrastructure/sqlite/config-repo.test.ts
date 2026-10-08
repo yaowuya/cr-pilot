@@ -35,7 +35,7 @@ test("RESTART_REQUIRED_KEYS 覆盖所有「消费方持有快照」的键", () =
   // 这些键虽然会被写进 process.env，但消费方（队列槽位、管线解构、日志器阈值、
   // 规则渲染）都在构造时固定了值，因此必须标注需重启——否则页面会错误地
   // 提示「已立即生效」。
-  for (const snapshotKey of ["QUEUE_CONCURRENCY", "REVIEW_TIMEOUT_MS", "REVIEW_BATCH_MAX_TOKENS", "LOG_LEVEL", "REVIEW_STYLE", "GITLAB_API_TIMEOUT", "GITLAB_INSECURE_TLS"]) {
+  for (const snapshotKey of ["QUEUE_CONCURRENCY", "REVIEW_TIMEOUT_MS", "REVIEW_BATCH_MAX_TOKENS", "LOG_LEVEL", "REVIEW_STYLE", "GITLAB_API_TIMEOUT", "GITLAB_INSECURE_TLS", "GITLAB_URL", "AUTH_SALT"]) {
     assert.ok(RESTART_REQUIRED_KEYS.has(snapshotKey), `${snapshotKey} 消费方持有快照，必须标注需重启`);
   }
   assert.ok(RESTART_REQUIRED_KEYS.has("DB_PATH"), "DB_PATH 影响开库路径，必须标注需重启");

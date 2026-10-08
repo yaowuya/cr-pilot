@@ -37,6 +37,7 @@ export const RESTART_REQUIRED_KEYS: ReadonlySet<string> = new Set([
   "ADMIN_PASSWORD",
   "LLMGW_API_KEY",
   "DB_PATH",
+  "GITLAB_URL",
   "GITLAB_API_TIMEOUT",
   "GITLAB_INSECURE_TLS",
   "QUEUE_CONCURRENCY",
@@ -44,6 +45,7 @@ export const RESTART_REQUIRED_KEYS: ReadonlySet<string> = new Set([
   "REVIEW_BATCH_MAX_TOKENS",
   "LOG_LEVEL",
   "REVIEW_STYLE",
+  "AUTH_SALT",
 ]);
 
 /**
