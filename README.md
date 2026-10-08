@@ -104,8 +104,8 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。Docker 部署建议 `/app/logs/cr-pilot.log`（compose 已挂载宿主机 `/data/logs/cr-pilot`） |
 | `DB_PATH` | `./data/cr-pilot.db` | SQLite 数据库文件路径。容器内默认 `/app/data/cr-pilot.db`（挂载宿主机 `/data/cr-pilot`）。**必须落在本地盘**：WAL 模式不支持网络文件系统 |
 | `ADMIN_USERNAME` | 空 | 首次启动引导创建的管理员用户名，仅在管理员表为空时生效 |
-| `ADMIN_PASSWORD` | 空 | 首次启动引导创建的管理员密码，仅在管理员表为空时生效 |
-| `AUTH_SALT` | 空 | 令牌与密码盐的部署盐（**建议必填**）。不入库；留空会让管理 API 的令牌可被预测，启动时告警。生成：`node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` |
+| `ADMIN_PASSWORD` | 空 | 首次启动引导创建的管理员密码；留空则跳过创建（空密码无法登录），启动告警 |
+| `AUTH_SALT` | 无（**必填**） | 令牌与密码盐的部署盐。令牌由「用户名 + 此盐」离线派生，留空等于任何人都能算出管理令牌，**服务拒绝启动**。生成：`node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` |
 
 访问令牌随 webhook 请求头 `X-Gitlab-Token` 携带（每个项目独立，对齐参考项目），`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。
 
@@ -113,10 +113,11 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 
 ### 配置生效时机
 
-管理页面的「环境变量」页保存后：
+管理页面的「环境变量」页保存后，配置写入数据库并在**重启容器后生效**（消费方在构造时持有快照，写入 `process.env` 不会让已构造的队列、管线、日志器与 GitLab 客户端重新读取）。页面会明确标注需重启的项；`DB_PATH`、`ADMIN_USERNAME`、`ADMIN_PASSWORD` 为只读，只能通过 `.env` 修改。
 
-- **立即生效**：`REVIEW_TIMEOUT_MS`、`REVIEW_BATCH_MAX_TOKENS`、`QUEUE_CONCURRENCY`、`REVIEW_STYLE`、`GITLAB_API_TIMEOUT`、`GITLAB_INSECURE_TLS`、`LOG_LEVEL`
-- **需重启容器**：`PORT`、`HOST`、`LOG_FILE`、`REVIEW_PROMPT_PATH`、`REVIEW_RULES_DIR`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`LLMGW_API_KEY`（页面会明确标注）
+### prompt 生效时机
+
+与配置不同，prompt 保存在数据库后**下一次评审立即生效**（评审管线每次任务都重新读取），无需重启。
 
 ## Prompt 管理
 
@@ -131,28 +132,29 @@ curl -X POST http://localhost:5001/api/prompts/import -H "Authorization: Bearer 
 ```
 
 匹配优先级：**数据库项目记录 > 数据库 `default` 记录 > `prompts/rules/*.yaml` > `prompts/review.md` 兜底**。
-页面保存后**下一次评审立即生效**，无需重启。
 
 ## 管理控制台
 
 内置管理前端（Vue 3 + Vite + Element Plus），包含五个模块：管理员登录、评审记录与统计、prompt 管理、环境变量管理、管理员账号管理。
 
 - 访问 `http://<host>:5001/` 进入控制台，未登录自动跳转登录页
-- 首次部署需在 `.env` 设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`AUTH_SALT`
+- 首次部署需在 `.env` 设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`AUTH_SALT`（`AUTH_SALT` 必填，留空拒绝启动）
 - 所有管理接口位于 `/api/*`，使用 `Authorization: Bearer <token>`（令牌由登录接口下发，存于浏览器 localStorage）
 - 管理员账号：禁止删除当前登录账号，也禁止删除最后一个管理员
-- **首屏部署检查**：启动日志会显示 prompt 来源与配置覆盖项数；若所有项目都走 yaml 兜底，说明 prompt 尚未导入数据库
+- **首屏部署检查**：启动日志会显示数据库路径与配置覆盖项数；prompt 未导入数据库时会走 yaml 兜底，可用「Prompt 管理 → 从 yaml 导入」补齐
 
 ### 行内评论
 
 评审会为**能精确定位到行**的问题发布 GitLab 行内评论（`/discussions`，带 position），无法定位的问题仍进入汇总评论。保证内容不丢失：
 
+- 结构化输出约定已内置在 `prompts/rules/default.yaml`：模型需回显 `reviewed_head_sha`（服务端把当前 head sha 注入 user prompt 的 `{head_sha}` 占位符）
 - AI 输出按 JSON schema 校验（`new_line` 与 `old_line` 互斥，需 40 位 head sha）
 - 行号必须落在该文件的 diff 变更行上，否则降级进汇总
 - 评审期间的 head 与当前 head 不一致时全部降级进汇总
 - 单条发布失败只影响该条，其余继续；汇总评论会带上「无法定位到行的问题」段落
-- 每条评论带 `<!-- marker:{head_sha}:{id} -->` 幂等标记，webhook 重复触发不会刷屏
-- 需在 `prompts/rules` 的 system prompt 中约定结构化输出块，否则一律走汇总评论
+- 已成功发行内评论的条目会从汇总评论中剔除，避免同一问题出现两次
+- 每条评论带 `<!-- marker:{head_sha}:{批次}:{id} -->` 幂等标记，webhook 重复触发不会刷屏
+- 其他仓库的规则文件需包含与 `default.yaml` 相同的「行内评论定位块」约定，否则该仓库一律走汇总评论
 
 ## 运行
 
