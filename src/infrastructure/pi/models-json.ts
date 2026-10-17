@@ -10,7 +10,7 @@
  * 由 SDK 在请求时从进程环境变量插值。密钥实际存于数据库，启动时导出到环境变量。
  * 这样即使 models.json 被误提交或读到，也不会泄露密钥。
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { LlmProvider } from "../../domain/llm-provider.ts";
 
@@ -83,6 +83,10 @@ export function buildModelsJson(providers: readonly LlmProvider[]): ModelsJson |
 /**
  * 写入 models.json 并返回实际使用的默认模型 id。
  *
+ * 合并语义而非覆盖：文件里已有的其他厂商（手写的 `llmgw` 等）必须保留——
+ * 生产部署依赖仓库里那份手写配置，整体覆盖会让它在首次启动后静默消失。
+ * 数据库里的厂商按 name 覆盖同名项，因此页面管理的那部分始终以数据库为准。
+ *
  * `settings.json` 的 `defaultModel` 只接受裸模型 id（不含 provider 前缀），
  * 因此多个厂商存在同名模型时会冲突——这里优先用全局默认厂商的默认模型，
  * 评审链路另有显式 model 注入，不依赖这个兜底值。
@@ -92,12 +96,17 @@ export function writeModelsJson(options: {
   providers: readonly LlmProvider[];
   defaultProvider?: LlmProvider;
 }): { written: boolean; path: string; defaultModel?: string } {
-  const content = buildModelsJson(options.providers);
+  const generated = buildModelsJson(options.providers);
   const path = join(options.agentDir, "models.json");
-  if (!content) return { written: false, path };
+  if (!generated) return { written: false, path };
+
+  // 先读旧文件并保留未被子配置覆盖的厂商；读取失败（不存在/格式坏）按空处理，
+  // 坏文件会被本次写入修好，不需要报错阻断启动。
+  const existing = readExistingProviders(path);
+  const merged: ModelsJson = { providers: { ...existing, ...generated.providers } };
 
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(content, null, 2)}\n`, "utf8");
+  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
 
   const defaultModel = options.defaultProvider?.defaultModel ?? options.defaultProvider?.models[0];
   if (defaultModel) {
@@ -106,4 +115,29 @@ export function writeModelsJson(options: {
     writeFileSync(settingsPath, `${JSON.stringify({ defaultModel }, null, 2)}\n`, "utf8");
   }
   return { written: true, path, defaultModel };
+}
+
+/**
+ * 读取 models.json 里已有的 providers。
+ *
+ * 任何异常都返回空对象：这个函数的唯一职责是「尽量别丢手写配置」，
+ * 读不到就当没有，绝不能让 models.json 的格式问题阻断服务启动。
+ */
+function readExistingProviders(path: string): Record<string, ModelsJsonProvider> {
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = JSON.parse(raw) as { providers?: unknown };
+    if (!parsed || typeof parsed.providers !== "object" || parsed.providers === null) return {};
+    // 逐项校验形状：只保留看起来像 provider 的条目，避免把垃圾数据合并进新文件。
+    const result: Record<string, ModelsJsonProvider> = {};
+    for (const [name, value] of Object.entries(parsed.providers as Record<string, unknown>)) {
+      const item = value as Partial<ModelsJsonProvider> | null;
+      if (!item || typeof item !== "object") continue;
+      if (typeof item.baseUrl !== "string" || !Array.isArray(item.models)) continue;
+      result[name] = item as ModelsJsonProvider;
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }

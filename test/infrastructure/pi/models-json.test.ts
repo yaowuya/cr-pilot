@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apiKeyEnvName, buildModelsJson, writeModelsJson } from "../../../src/infrastructure/pi/models-json.ts";
@@ -96,4 +96,66 @@ test("多厂商同时写入，互不覆盖", () => {
   assert.ok(result);
   assert.deepEqual(Object.keys(result.providers).sort(), ["deepseek", "openai"]);
   assert.equal(result.providers.openai.api, "openai-responses");
+});
+
+test("writeModelsJson 保留文件里已有的其他厂商，不整体覆盖", () => {
+  // 回归：生产部署依赖仓库里手写的 models.json（llmgw）。早期实现是整体
+  // 覆盖，数据库一旦有厂商就会把这份手写配置静默抹掉。
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
+  try {
+    writeFileSync(
+      join(dir, "models.json"),
+      JSON.stringify({
+        providers: {
+          llmgw: { baseUrl: "https://llmgw.cwoa.net/v1", api: "openai-responses", apiKey: "$LLMGW_API_KEY", models: [{ id: "gpt-5.6-terra" }] },
+        },
+      }),
+      "utf8",
+    );
+    writeModelsJson({ agentDir: dir, providers: [provider({ name: "deepseek" })] });
+
+    const written = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as {
+      providers: Record<string, { apiKey: string }>;
+    };
+    assert.ok(written.providers.llmgw, "手写的 llmgw 配置必须保留");
+    assert.equal(written.providers.llmgw.apiKey, "$LLMGW_API_KEY");
+    assert.ok(written.providers.deepseek, "数据库里的厂商要写进去");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeModelsJson 中数据库厂商覆盖同名手写项", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
+  try {
+    writeFileSync(
+      join(dir, "models.json"),
+      JSON.stringify({
+        providers: { deepseek: { baseUrl: "https://old.example/v1", api: "openai-completions", apiKey: "$OLD", models: [{ id: "old" }] } },
+      }),
+      "utf8",
+    );
+    writeModelsJson({ agentDir: dir, providers: [provider({ name: "deepseek", baseUrl: "https://api.deepseek.com/v1" })] });
+
+    const written = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as {
+      providers: Record<string, { baseUrl: string }>;
+    };
+    assert.equal(written.providers.deepseek.baseUrl, "https://api.deepseek.com/v1", "同名项以数据库为准");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeModelsJson 遇到损坏的旧文件时不抛错", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
+  try {
+    writeFileSync(join(dir, "models.json"), "{ 这不是合法 JSON", "utf8");
+    // 坏文件应被本次写入修好，而不是阻断启动
+    const result = writeModelsJson({ agentDir: dir, providers: [provider()] });
+    assert.equal(result.written, true);
+    const written = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as { providers: Record<string, unknown> };
+    assert.ok(written.providers.deepseek);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
