@@ -25,6 +25,12 @@
 | D-017 | GitLab 客户端在现有 `GitlabClient` 端口上扩展 3 个方法，不新建独立端口 | 参考实现 `gitlab_mr_review.py:128-155`；现有 `src/domain/review-task.ts:60-71` | yes | `user-confirmed` | 方案对比后用户消息「确认方案并授权写入」：与现有三个方法同属 GitLab MR API 调用并共用 request 封装，拆两个端口会导致同一 HTTP 封装实例化两次 |
 | D-018 | SQLite 并发策略：单连接 + WAL + busy_timeout | `node:sqlite` 本地实测；`QUEUE_CONCURRENCY` 默认 5 | yes | `user-confirmed` | 方案对比后用户消息「确认方案并授权写入」：Node 单线程事件循环串行化 JS 侧同步 SQL，WAL + busy_timeout 足以覆盖队列并发 |
 
+| D-019 | prompt 支持多项目关联：新增 `prompt_projects` 关联表，一条 prompt 可关联多个 GitLab 项目，任一命中即生效；`default` 仍为全局兜底不绑定项目 | user answer | yes | `user-confirmed` | 用户消息「项目名称时支持删减的，应该做成下拉框，可删减」 |
+| D-020 | LLM 厂商配置存数据库，页面管理多厂商（URL/Key/Model/协议），保存后生成 `pi-agent/models.json` | user answer | yes | `user-confirmed` | 用户消息「环境变量的配置要分类，一类是llm的配置…支持多个AI厂商」 |
+| D-021 | 模型选择优先级：项目绑定 > prompt 指定厂商 > 全局默认厂商 > models.json 既有配置 | user answer | yes | `user-confirmed` | 用户消息「支持多个AI厂商，比如chatgpt、deepseek」 |
+| D-022 | 环境变量页按用途分组展示；AI 模型类配置迁至独立厂商页，环境变量页只留跳转指引 | user answer | yes | `user-confirmed` | 用户消息「环境变量的配置要分类，一类是llm的配置」 |
+| D-023 | models.json 中密钥写 `$LLM_KEY_<NAME>` 环境变量引用而非明文，密钥存数据库并导出到进程环境变量 | 安全考量 | no | `code-verified` | 文件可能被误提交或读到；引用形式让密钥不落磁盘明文 |
+
 ### 决策 1：行内评论定位方案
 
 - **ID**：`D-004`

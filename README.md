@@ -115,6 +115,10 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 
 管理页面的「环境变量」页保存后，配置写入数据库并在**重启容器后生效**（消费方在构造时持有快照，写入 `process.env` 不会让已构造的队列、管线、日志器与 GitLab 客户端重新读取）。页面会明确标注需重启的项；`DB_PATH`、`ADMIN_USERNAME`、`ADMIN_PASSWORD` 为只读，只能通过 `.env` 修改。
 
+配置项在页面上按用途分组展示：**AI 模型 / GitLab 集成 / 评审行为 / 服务与存储 / 账号与安全**。
+其中 AI 模型的 API 地址、密钥与模型清单**不在环境变量页编辑**——多厂商配置需要成组管理，
+统一收敛到「AI 厂商」页（见下文），环境变量页只保留跳转指引，避免两处都能改造成事实源分叉。
+
 ### prompt 生效时机
 
 与配置不同，prompt 保存在数据库后**下一次评审立即生效**（评审管线每次任务都重新读取），无需重启。
@@ -133,15 +137,42 @@ curl -X POST http://localhost:5001/api/prompts/import -H "Authorization: Bearer 
 
 匹配优先级：**数据库项目记录 > 数据库 `default` 记录 > `prompts/rules/*.yaml` > `prompts/review.md` 兜底**。
 
+### 多项目关联
+
+一条 prompt 可以同时关联多个 GitLab 项目，任一项目命中即使用该 prompt。页面上的「关联项目」是标签式多选框：
+
+- 从下拉选择已有项目，或直接输入新项目名回车添加
+- 点标签上的 `×` 删减关联，保存即生效
+- `default` 是全局兜底，不绑定任何项目
+
+从 yaml 导入时，`repository` 里的逗号串会被拆成多个项目。例如
+`repository: auto-ops,cw-auto-ops,auto-ops-platform` 会生成一条 prompt 关联三个项目，
+导入后仍可在页面上自由增删。
+
+## AI 厂商配置
+
+模型厂商支持配置多个，页面「AI 厂商」页管理（D-021 / D-022）：
+
+- 每个厂商独立配置 **API 地址 / API Key / 协议类型 / 模型清单 / 默认模型**
+- 内置模板：OpenAI、DeepSeek、Anthropic、通义千问、智谱 GLM、月之暗面 Kimi，以及任意 OpenAI 兼容的自定义网关
+- 保存后自动生成 `pi-agent/models.json` 并同步 `settings.json`，下一次评审即生效
+- 密钥以 `$LLM_KEY_<NAME>` 形式写入 models.json，**文件里不落明文**；实际密钥存数据库并导出到进程环境变量
+- 读取接口只回掩码（如 `sk-t****3456`），留空保存表示不修改
+
+模型选择优先级：**项目级绑定 > prompt 上指定的厂商 > 全局默认厂商 > `models.json` 既有配置**。
+
+项目级绑定在「AI 厂商 → 项目级模型绑定」里设置，可把某个项目钉到指定厂商与模型。
+
 ## 管理控制台
 
-内置管理前端（Vue 3 + Vite + Element Plus），包含五个模块：管理员登录、评审记录与统计、prompt 管理、环境变量管理、管理员账号管理。
+内置管理前端（Vue 3 + Vite + Element Plus），包含六个模块：管理员登录、评审记录与统计、prompt 管理、AI 厂商配置、环境变量管理、管理员账号管理。
 
 - 访问 `http://<host>:5001/` 进入控制台，未登录自动跳转登录页
 - 首次部署需在 `.env` 设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`AUTH_SALT`（`AUTH_SALT` 必填，留空拒绝启动）
 - 所有管理接口位于 `/api/*`，使用 `Authorization: Bearer <token>`（令牌由登录接口下发，存于浏览器 localStorage）
 - 管理员账号：禁止删除当前登录账号，也禁止删除最后一个管理员
 - **首屏部署检查**：启动日志会显示数据库路径与配置覆盖项数；prompt 未导入数据库时会走 yaml 兜底，可用「Prompt 管理 → 从 yaml 导入」补齐
+- 支持亮色/暗色主题切换（顶栏月亮图标），偏好存于 localStorage
 
 ### 行内评论
 
