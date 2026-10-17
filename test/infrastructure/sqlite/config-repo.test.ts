@@ -49,10 +49,27 @@ test("READ_ONLY_KEYS 覆盖启动引导类键", () => {
 });
 
 test("isSecretKey 命中常见密钥命名", () => {
-  for (const key of ["LLMGW_API_KEY", "GITLAB_TOKEN", "AUTH_SECRET", "ADMIN_PASSWORD"]) {
+  for (const key of ["LLMGW_API_KEY", "GITLAB_TOKEN", "AUTH_SECRET", "ADMIN_PASSWORD", "AUTH_SALT"]) {
     assert.equal(isSecretKey(key), true, `${key} 应判定为密钥`);
   }
   for (const key of ["PORT", "QUEUE_CONCURRENCY", "LOG_LEVEL", "REVIEW_TIMEOUT_MS"]) {
     assert.equal(isSecretKey(key), false, `${key} 不是密钥`);
   }
+});
+
+test("isSecretKey 不把含 TOKENS 的普通配置误判为密钥", () => {
+  // 回归：REVIEW_BATCH_MAX_TOKENS 含子串 "TOKENS"，用裸子串匹配会把它掩码掉，
+  // 页面就看不到这个数值配置的真实值。
+  assert.equal(isSecretKey("REVIEW_BATCH_MAX_TOKENS"), false, "TOKENS 不是 TOKEN 单词");
+  assert.equal(isSecretKey("MAX_TOKENS"), false);
+  assert.equal(isSecretKey("TOKEN"), true, "独立单词 TOKEN 仍是密钥");
+  assert.equal(isSecretKey("GITLAB_TOKEN"), true);
+});
+
+test("isSecretKey 把 AUTH_SALT 判为密钥", () => {
+  // AUTH_SALT 是 deriveToken(username, salt) 的输入：拿到它就能离线算出任意
+  // 账号的 Bearer 令牌，泄露后果与 API Key 同级，必须在读取接口掩码回显。
+  assert.equal(isSecretKey("AUTH_SALT"), true);
+  assert.equal(isSecretKey("SALT"), true, "独立单词 SALT 也是密钥");
+  assert.equal(isSecretKey("SALTED_PEANUTS"), false, "SALTED 不是 SALT 单词");
 });

@@ -56,9 +56,18 @@ export const RESTART_REQUIRED_KEYS: ReadonlySet<string> = new Set([
  */
 export const READ_ONLY_KEYS: ReadonlySet<string> = new Set(["DB_PATH", "ADMIN_USERNAME", "ADMIN_PASSWORD"]);
 
-/** 判断配置键是否属于密钥类（读取时需掩码）。 */
+/**
+ * 判断配置键是否属于密钥类（读取时需掩码）。
+ *
+ * 按完整单词边界匹配而不是裸子串：`REVIEW_BATCH_MAX_TOKENS` 含 "TOKENS"，
+ * 用子串判断会把一个普通的数值配置当成密钥掩码掉，页面就看不到它的真实值了。
+ * 这里要求关键词作为独立词出现（下划线或串首尾分隔）。
+ *
+ * `SALT` 也算密钥：`AUTH_SALT` 是 `deriveToken(username, salt)` 的输入，
+ * 拿到它就能离线伪造任意账号的 Bearer 令牌，泄露后果与 API Key 同级。
+ */
 export function isSecretKey(key: string): boolean {
-  return /KEY|SECRET|TOKEN|PASSWORD/i.test(key);
+  return /(^|_)(KEY|KEYS|SECRET|SECRETS|TOKEN|PASSWORD|SALT)($|_)/i.test(key);
 }
 
 /** 创建配置覆盖仓储。 */
