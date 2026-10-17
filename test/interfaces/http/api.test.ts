@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
 import { createApp } from "../../../src/interfaces/http/app.ts";
-import { createAuthMiddleware } from "../../../src/interfaces/http/auth-middleware.ts";
+import { createAuthMiddleware, createRequireAdmin } from "../../../src/interfaces/http/auth-middleware.ts";
 import { createAuthRouter } from "../../../src/interfaces/http/api/auth.ts";
 import { createAdminsRouter } from "../../../src/interfaces/http/api/admins.ts";
 import { createConfigRouter } from "../../../src/interfaces/http/api/config.ts";
@@ -29,11 +29,14 @@ interface Harness {
   app: Express;
   token: string;
   dbDir: string;
+  /** 管理员仓储，便于测试里追加普通账号。 */
+  admins: ReturnType<typeof createAdminRepository>;
 }
 
 function buildHarness(options: { distDir?: string; rulesDir?: string } = {}): Harness {
   const db = openDatabase(":memory:");
-  const admins = createAdminRepository(db, AUTH_SALT);
+  // 传入 ADMIN 作为管理员账号：角色由该配置计算（D-024），不存数据库。
+  const admins = createAdminRepository(db, AUTH_SALT, ADMIN);
   admins.ensureInitialAdmin(ADMIN, ADMIN_PASSWORD);
   const config = createConfigRepository(db);
   const prompts = createPromptRepository(db);
@@ -46,7 +49,7 @@ function buildHarness(options: { distDir?: string; rulesDir?: string } = {}): Ha
     publicApiRoutes: { "/api/auth": createAuthRouter({ admins, authSalt: AUTH_SALT, authMiddleware }) },
     authMiddleware,
     apiRoutes: {
-      "/api/admins": createAdminsRouter({ admins }),
+      "/api/admins": createAdminsRouter({ admins, requireAdmin: createRequireAdmin() }),
       "/api/reviews": createReviewsRouter({ records }),
       "/api/config": createConfigRouter({ config }),
       "/api/prompts": createPromptsRouter({ prompts, rulesDir: options.rulesDir ?? "prompts/rules" }),
@@ -54,7 +57,7 @@ function buildHarness(options: { distDir?: string; rulesDir?: string } = {}): Ha
     staticAssets: options.distDir ? createStaticAssets({ distDir: options.distDir, logger: createSilentLogger() }) : [],
   });
 
-  return { app, token: deriveToken(ADMIN, AUTH_SALT), dbDir: "" };
+  return { app, token: deriveToken(ADMIN, AUTH_SALT), dbDir: "", admins };
 }
 
 /** 用 fetch 直接打 Express 应用（监听 0 端口取随机端口）。 */
@@ -121,7 +124,8 @@ test("me 返回当前用户名，logout 返回 ok", async () => {
   await withServer(app, async (base) => {
     const me = await authed(base, token, "/api/auth/me");
     assert.equal(me.status, 200);
-    assert.deepEqual(await me.json(), { username: ADMIN });
+    // isAdmin 随 me 一起返回（D-024）：前端刷新页面时靠它恢复权限状态。
+    assert.deepEqual(await me.json(), { username: ADMIN, isAdmin: true });
     const out = await authed(base, token, "/api/auth/logout", { method: "POST" });
     assert.equal(out.status, 200);
   });
@@ -485,4 +489,107 @@ test("相对产物路径也能托管（sendFile 需要绝对路径）", async ()
     assert.equal((await authed(base, token, "/api/reviews")).status, 200);
     assert.match((await fetch(`${base}/api/not-exist`)).headers.get("content-type") ?? "", /application\/json/);
   });
+});
+
+// ============ D-024：管理员权限 ============
+
+test("登录与 me 返回 isAdmin：仅 ADMIN_USERNAME 指定账号为管理员", async () => {
+  const { app, admins } = buildHarness();
+  // 追加一个普通账号
+  admins.create("normal-user", "normal-password");
+  await withServer(app, async (base) => {
+    const adminLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: ADMIN, password: ADMIN_PASSWORD }),
+    });
+    const adminBody = (await adminLogin.json()) as { isAdmin: boolean };
+    assert.equal(adminBody.isAdmin, true, "引导账号必须是管理员");
+
+    const normalLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "normal-user", password: "normal-password" }),
+    });
+    const normalBody = (await normalLogin.json()) as { isAdmin: boolean; token: string };
+    assert.equal(normalBody.isAdmin, false, "非引导账号不是管理员");
+
+    // me 也必须返回角色：前端刷新页面时靠它恢复权限状态
+    const me = await authed(base, normalBody.token, "/api/auth/me");
+    const meBody = (await me.json()) as { isAdmin: boolean; username: string };
+    assert.equal(meBody.username, "normal-user");
+    assert.equal(meBody.isAdmin, false);
+  });
+});
+
+test("非管理员访问 /api/admins 返回 403", async () => {
+  const { app, admins } = buildHarness();
+  admins.create("normal-user", "normal-password");
+  const normalToken = deriveToken("normal-user", AUTH_SALT);
+  await withServer(app, async (base) => {
+    // 列表
+    const list = await authed(base, normalToken, "/api/admins");
+    assert.equal(list.status, 403);
+    assert.match(((await list.json()) as { error: string }).error, /管理员权限/);
+
+    // 新增
+    const created = await authed(base, normalToken, "/api/admins", {
+      method: "POST",
+      body: JSON.stringify({ username: "hacked", password: "hacked-password" }),
+    });
+    assert.equal(created.status, 403, "非管理员不得新增账号");
+
+    // 删除
+    const removed = await authed(base, normalToken, "/api/admins/1", { method: "DELETE" });
+    assert.equal(removed.status, 403, "非管理员不得删除账号");
+
+    // 确认没被写进去
+    const after = await authed(base, deriveToken(ADMIN, AUTH_SALT), "/api/admins");
+    const list2 = (await after.json()) as { username: string }[];
+    assert.equal(list2.some((item) => item.username === "hacked"), false, "被拒的请求不得产生副作用");
+  });
+});
+
+test("管理员可以正常访问 /api/admins，且列表标注 isAdmin", async () => {
+  const { app, admins, token } = buildHarness();
+  admins.create("normal-user", "normal-password");
+  await withServer(app, async (base) => {
+    const list = await authed(base, token, "/api/admins");
+    assert.equal(list.status, 200);
+    const items = (await list.json()) as { username: string; isAdmin: boolean }[];
+    assert.equal(items.find((item) => item.username === ADMIN)?.isAdmin, true);
+    assert.equal(items.find((item) => item.username === "normal-user")?.isAdmin, false);
+  });
+});
+
+test("非管理员仍可访问其他管理页接口", async () => {
+  const { app, admins } = buildHarness();
+  admins.create("normal-user", "normal-password");
+  const normalToken = deriveToken("normal-user", AUTH_SALT);
+  await withServer(app, async (base) => {
+    // 只有 /api/admins 被限制，其余页面普通账号照常可用（用户选择的范围）。
+    for (const path of ["/api/reviews", "/api/reviews/stats", "/api/config", "/api/prompts"]) {
+      const res = await authed(base, normalToken, path);
+      assert.equal(res.status, 200, `${path} 不应限制普通账号`);
+    }
+  });
+});
+
+test("ADMIN_USERNAME 未配置时无人是管理员", async () => {
+  const db = openDatabase(":memory:");
+  // 不传 adminUsername：模拟漏配 .env
+  const admins = createAdminRepository(db, AUTH_SALT);
+  admins.ensureInitialAdmin(ADMIN, ADMIN_PASSWORD);
+  assert.equal(admins.list()[0].isAdmin, false, "未配置管理员账号时不应有人获得权限");
+  assert.equal(admins.adminUsername, "");
+  db.close();
+});
+
+test("管理员判定忽略大小写与首尾空白", async () => {
+  const db = openDatabase(":memory:");
+  const admins = createAdminRepository(db, AUTH_SALT, "  Admin  ");
+  admins.create("admin", "password-123");
+  // 登录归一化后与配置一致，不应因大小写差异丢掉管理员权限
+  assert.equal(admins.list()[0].isAdmin, true);
+  db.close();
 });

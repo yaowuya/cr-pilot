@@ -18,11 +18,6 @@ interface AdminRow {
   created_at: number;
 }
 
-/** 行转对外视图：不暴露 password_hash。 */
-function toUser(row: AdminRow): AdminUser {
-  return { id: row.id, username: row.username, createdAt: row.created_at };
-}
-
 /** 判断是否为用户名唯一约束冲突。 */
 function isUniqueViolation(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -34,9 +29,31 @@ function isUniqueViolation(error: unknown): boolean {
  *
  * `deploymentSalt` 由环境变量提供、不写入数据库：它参与盐派生，使数据库被单独
  * 取走时哈希无法直接用已知字典比对。
+ *
+ * `adminUsername` 是部署配置 `ADMIN_USERNAME` 指定的管理员账号名（D-024）。
+ * 角色由它计算而非存库：见 domain/admin.ts 的说明。比较时忽略大小写与首尾空白，
+ * 与登录接口的用户名归一化保持一致——否则 `Admin` 登录成功后会被判成非管理员。
  */
-export function createAdminRepository(db: DatabaseSync, deploymentSalt: string): AdminRepository {
+export function createAdminRepository(
+  db: DatabaseSync,
+  deploymentSalt: string,
+  adminUsername = "",
+): AdminRepository {
+  /** 归一化用户名，用于角色比较。 */
+  const normalize = (value: string): string => value.trim().toLowerCase();
+  const adminKey = normalize(adminUsername);
+
+  /** 行转对外视图：不暴露 password_hash，并附上计算出的角色。 */
+  const toUser = (row: AdminRow): AdminUser => ({
+    id: row.id,
+    username: row.username,
+    isAdmin: adminKey !== "" && normalize(row.username) === adminKey,
+    createdAt: row.created_at,
+  });
+
   return {
+    adminUsername: adminUsername.trim(),
+
     create(username, password) {
       const trimmed = username.trim();
       const now = Date.now();
@@ -44,7 +61,7 @@ export function createAdminRepository(db: DatabaseSync, deploymentSalt: string):
         const result = db
           .prepare("INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, ?)")
           .run(trimmed, hashPassword(password, trimmed, deploymentSalt), now);
-        return { id: Number(result.lastInsertRowid), username: trimmed, createdAt: now };
+        return { id: Number(result.lastInsertRowid), username: trimmed, isAdmin: adminKey !== "" && normalize(trimmed) === adminKey, createdAt: now };
       } catch (error) {
         if (isUniqueViolation(error)) {
           // 转换为带业务语义的消息：仓储不引入 HTTP 状态码，由路由层判定 409。

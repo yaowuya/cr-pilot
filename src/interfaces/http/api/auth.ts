@@ -46,7 +46,8 @@ export function createAuthRouter(deps: AuthRouterDeps): Router {
       res.status(401).json(LOGIN_FAILED);
       return;
     }
-    res.json({ token: deriveToken(admin.username, deps.authSalt), username: admin.username });
+    // isAdmin 由仓储按 ADMIN_USERNAME 计算（D-024），前端据此隐藏管理员入口。
+    res.json({ token: deriveToken(admin.username, deps.authSalt), username: admin.username, isAdmin: admin.isAdmin });
   });
 
   router.post("/logout", (_req, res) => {
@@ -56,7 +57,11 @@ export function createAuthRouter(deps: AuthRouterDeps): Router {
   // me 要求有效令牌：它是前端判断本地令牌是否仍可用的唯一依据。
   const meGuards = deps.authMiddleware ? [deps.authMiddleware] : [];
   router.get("/me", ...meGuards, (_req, res) => {
-    res.json({ username: String(res.locals.username ?? "") });
+    res.json({
+      username: String(res.locals.username ?? ""),
+      // 每次 /me 都重新读取角色：改了 ADMIN_USERNAME 重启后，前端刷新即拿到新角色。
+      isAdmin: res.locals.isAdmin === true,
+    });
   });
 
   return router;

@@ -1,24 +1,32 @@
 /**
- * 登录态：令牌与当前管理员。
+ * 登录态：令牌与当前账号。
  *
- * 用模块级单例而不是 Pinia：全局只有两个状态（令牌、用户名），引入状态管理库
- * 的成本大于收益。页面级数据由各页面自己持有。
+ * 用模块级单例而不是 Pinia：全局只有三个状态（令牌、用户名、是否管理员），
+ * 引入状态管理库的成本大于收益。页面级数据由各页面自己持有。
+ *
+ * 角色（D-024）：由后端按 ADMIN_USERNAME 计算并随登录/me 返回，前端只做
+ * 展示层裁剪——真正的门在后端 403。前端隐藏菜单是为了不让普通账号看到
+ * 点了必然失败的入口，而不是安全边界。
  */
 import { ref, type Ref } from "vue";
 import { api, clearToken, getToken, setToken } from "../api/client.ts";
+import type { AuthResult } from "../types.ts";
 
-/** 当前管理员用户名；空串表示未登录。 */
+/** 当前账号用户名；空串表示未登录。 */
 const username: Ref<string> = ref("");
+/** 当前账号是否管理员。未登录时恒为 false。 */
+const isAdmin: Ref<boolean> = ref(false);
 /** 是否已完成一次登录态校验，避免并发路由重复请求 /me。 */
 let verified = false;
 /** 进行中的校验 Promise，供并发调用复用。 */
 let pending: Promise<boolean> | null = null;
 
-/** 登录：成功后写入令牌与用户名。 */
+/** 登录：成功后写入令牌、用户名与角色。 */
 export async function login(input: { username: string; password: string }): Promise<void> {
-  const result = await api.post<{ token: string; username: string }>("/api/auth/login", input);
+  const result = await api.post<AuthResult & { token: string }>("/api/auth/login", input);
   setToken(result.token);
   username.value = result.username;
+  isAdmin.value = result.isAdmin === true;
   verified = true;
   pending = null;
 }
@@ -36,6 +44,7 @@ export async function logout(): Promise<void> {
   }
   clearToken();
   username.value = "";
+  isAdmin.value = false;
   verified = false;
   pending = null;
 }
@@ -52,9 +61,10 @@ export function ensureAuth(): Promise<boolean> {
   if (!getToken()) return Promise.resolve(false);
   if (pending) return pending;
   pending = api
-    .get<{ username: string }>("/api/auth/me")
+    .get<AuthResult>("/api/auth/me")
     .then((result) => {
       username.value = result.username;
+      isAdmin.value = result.isAdmin === true;
       verified = true;
       return true;
     })
@@ -62,6 +72,7 @@ export function ensureAuth(): Promise<boolean> {
       // 401 已由 client 处理跳转；此处只需返回失败让守卫放行到登录页。
       clearToken();
       username.value = "";
+      isAdmin.value = false;
       verified = false;
       return false;
     })
@@ -74,4 +85,9 @@ export function ensureAuth(): Promise<boolean> {
 /** 已登录用户名（模板中直接用）。 */
 export function currentUsername(): Ref<string> {
   return username;
+}
+
+/** 当前账号是否管理员（模板中直接用；模板会自动解包 Ref）。 */
+export function currentIsAdmin(): Ref<boolean> {
+  return isAdmin;
 }

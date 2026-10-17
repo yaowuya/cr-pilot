@@ -18,7 +18,7 @@ import { createPromptRepository } from "./infrastructure/sqlite/prompt-repo.ts";
 import { createLlmProviderRepository } from "./infrastructure/sqlite/llm-provider-repo.ts";
 import { createReviewRecordRepository } from "./infrastructure/sqlite/review-record-repo.ts";
 import { apiKeyEnvName, writeModelsJson } from "./infrastructure/pi/models-json.ts";
-import { createAuthMiddleware } from "./interfaces/http/auth-middleware.ts";
+import { createAuthMiddleware, createRequireAdmin } from "./interfaces/http/auth-middleware.ts";
 import { createStaticAssets } from "./interfaces/http/static-assets.ts";
 import { createAdminsRouter } from "./interfaces/http/api/admins.ts";
 import { createAuthRouter } from "./interfaces/http/api/auth.ts";
@@ -137,7 +137,8 @@ async function startApplication(input: {
     const wecomNotifier = createWecomNotifier({ logger });
 
     // 持久化适配器：四个仓储共用同一连接（D-018 单连接 + WAL）。
-    const admins = createAdminRepository(db, config.authSalt);
+    // adminUsername 传入用于计算角色（D-024）：只有它指定的账号是管理员。
+    const admins = createAdminRepository(db, config.authSalt, config.adminUsername);
     const prompts = createPromptRepository(db);
     const providers = createLlmProviderRepository(db);
     const records = createReviewRecordRepository(db);
@@ -174,6 +175,13 @@ async function startApplication(input: {
     } else {
       logger.info("管理员账号已就绪", { 账号数: admins.count(), 引导已启用: Boolean(config.adminUsername && config.adminPassword) });
     }
+    // 角色由 ADMIN_USERNAME 决定（D-024）：为空时没有任何账号是管理员，
+    // 「管理员」页对所有人不可见。这通常是漏配 .env，必须显式告警。
+    if (!config.adminUsername) {
+      logger.warn("ADMIN_USERNAME 未配置：所有账号都将被视为普通账号，「管理员」页不可访问。请在 .env 中指定管理员账号名");
+    } else {
+      logger.info("管理员权限归属", { 管理员账号: config.adminUsername });
+    }
 
     const pipeline = createReviewPipeline({
       client,
@@ -189,6 +197,8 @@ async function startApplication(input: {
     });
 
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
+    // 管理员权限门：只挂在账号管理路由上，其余管理页所有登录账号都能用。
+    const requireAdmin = createRequireAdmin();
     const staticAssets = createStaticAssets({ distDir: WEB_DIST_DIR, logger });
     await startServer(
       config,
@@ -200,7 +210,7 @@ async function startApplication(input: {
         // 登录免鉴权；me 自带鉴权（否则无法用于校验本地令牌）。
         publicApiRoutes: { "/api/auth": createAuthRouter({ admins, authSalt: config.authSalt, authMiddleware }) },
         apiRoutes: {
-          "/api/admins": createAdminsRouter({ admins }),
+          "/api/admins": createAdminsRouter({ admins, requireAdmin }),
           "/api/reviews": createReviewsRouter({ records }),
           "/api/config": createConfigRouter({ config: configRepo }),
           "/api/prompts": createPromptsRouter({ prompts, providers, rulesDir: config.rulesDir }),

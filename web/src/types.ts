@@ -130,5 +130,14 @@ export interface ConfigItem {
 export interface AdminUser {
   id: number;
   username: string;
+  /** 是否具备管理员权限（由后端按 ADMIN_USERNAME 计算，不存数据库）。 */
+  isAdmin: boolean;
   createdAt: number;
+}
+
+/** 登录/校验登录态接口的响应。 */
+export interface AuthResult {
+  username: string;
+  /** 是否管理员：前端据此隐藏「管理员」菜单并拦截路由。 */
+  isAdmin: boolean;
 }

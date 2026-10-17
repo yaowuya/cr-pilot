@@ -99,7 +99,7 @@ import {
   SwitchButton,
   User,
 } from "@element-plus/icons-vue";
-import { currentUsername, logout } from "../stores/auth.ts";
+import { currentIsAdmin, currentUsername, logout } from "../stores/auth.ts";
 import { theme, toggleTheme } from "../stores/theme.ts";
 
 const route = useRoute();
@@ -107,6 +107,8 @@ const router = useRouter();
 // currentUsername() 返回 Ref<string>，模板里可直接解包，脚本里必须取 .value
 const username = currentUsername();
 const usernameText = computed(() => username.value);
+// 角色用 ref 本身参与 computed 依赖，模板里直接当布尔值用
+const isAdmin = currentIsAdmin();
 
 /**
  * 侧边栏折叠状态。
@@ -135,21 +137,29 @@ function onToggleCollapse(): void {
   userCollapsed.value = !userCollapsed.value;
 }
 
-/** 菜单定义：path 与路由一一对应，title 同时用于面包屑。 */
-const menuItems = [
-  { path: "/reviews", title: "评审记录", icon: Document },
-  { path: "/prompts", title: "Prompt 管理", icon: EditPen },
-  { path: "/providers", title: "AI 厂商", icon: Cpu },
-  { path: "/config", title: "环境变量", icon: Setting },
-  { path: "/admins", title: "管理员", icon: User },
+/**
+ * 菜单定义：path 与路由一一对应，title 同时用于面包屑。
+ *
+ * `adminOnly` 的项只对管理员展示（D-024）：普通账号看不到「管理员」入口，
+ * 直接输 URL 也会被路由守卫弹回。后端 `/api/admins` 另有 403 兜底。
+ */
+const allMenuItems = [
+  { path: "/reviews", title: "评审记录", icon: Document, adminOnly: false },
+  { path: "/prompts", title: "Prompt 管理", icon: EditPen, adminOnly: false },
+  { path: "/providers", title: "AI 厂商", icon: Cpu, adminOnly: false },
+  { path: "/config", title: "环境变量", icon: Setting, adminOnly: false },
+  { path: "/admins", title: "管理员", icon: User, adminOnly: true },
 ];
+
+/** 当前账号可见的菜单项。 */
+const menuItems = computed(() => allMenuItems.filter((item) => !item.adminOnly || isAdmin.value));
 
 /** 当前激活菜单：取一级路径，避免未来加子路由时菜单失焦。 */
 const activeMenu = computed(() => `/${route.path.split("/")[1] ?? ""}`);
 
 /** 面包屑：固定「控制台」+ 当前页名。 */
 const breadcrumbs = computed(() => {
-  const current = menuItems.find((item) => item.path === activeMenu.value);
+  const current = allMenuItems.find((item) => item.path === activeMenu.value);
   return current ? ["控制台", current.title] : ["控制台"];
 });
 

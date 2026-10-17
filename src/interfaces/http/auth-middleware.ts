@@ -35,8 +35,9 @@ function tokensEqual(left: string, right: string): boolean {
  * 无状态令牌（D-009）：账号数量为个位数到几十，逐个派生比对的开销可忽略，
  * 换来的是不引入会话表与吊销逻辑。令牌无效统一返回 401，由前端跳登录页。
  *
- * 认证通过的账号名写入 `res.locals.username` 而不是扩展 `req` 类型，
- * 避免为局部需求修改全局 Express 类型声明。
+ * 认证通过的账号名写入 `res.locals.username`、角色写入 `res.locals.isAdmin`，
+ * 而不是扩展 `req` 类型，避免为局部需求修改全局 Express 类型声明。
+ * 角色由仓储按 `ADMIN_USERNAME` 计算（D-024），因此这里不需要额外配置。
  */
 export function createAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
   return (req, res, next) => {
@@ -53,6 +54,27 @@ export function createAuthMiddleware(deps: AuthMiddlewareDeps): RequestHandler {
       return;
     }
     res.locals.username = matched.username;
+    res.locals.isAdmin = matched.isAdmin;
     next();
+  };
+}
+
+/**
+ * 要求管理员权限的中间件。
+ *
+ * 必须挂在 `createAuthMiddleware` 之后：它只读取已认证的 `res.locals.isAdmin`，
+ * 本身不校验令牌。未认证时 `isAdmin` 为 undefined，同样返回 403——但那种情况
+ * 不会出现，因为鉴权中间件先返回 401。
+ *
+ * 返回 403 而不是 404：权限不足与「路由不存在」是两件事，前者更便于排障，
+ * 也不会让前端把「没权限」误判成「接口地址写错」。
+ */
+export function createRequireAdmin(): RequestHandler {
+  return (_req, res, next) => {
+    if (res.locals.isAdmin === true) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "需要管理员权限" });
   };
 }

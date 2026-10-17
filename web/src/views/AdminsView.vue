@@ -22,6 +22,8 @@
               <div class="admin-cell__info">
                 <span class="admin-cell__name">{{ row.username }}</span>
                 <span v-if="row.username === selfName" class="admin-cell__self">当前登录</span>
+                <!-- 管理员身份来自 ADMIN_USERNAME 配置，页面上不可授予或撤销（D-024） -->
+                <span v-if="row.isAdmin" class="admin-cell__admin">管理员</span>
               </div>
             </div>
           </template>
@@ -209,6 +211,15 @@ onMounted(() => {
   font-size: 11px;
   color: var(--el-color-primary);
   background-color: var(--el-color-primary-light-9);
+  border-radius: 10px;
+}
+
+/* 管理员标记：用成功色与「当前登录」的主色区分，避免两个标签混淆 */
+.admin-cell__admin {
+  padding: 1px 7px;
+  font-size: 11px;
+  color: var(--el-color-success);
+  background-color: var(--el-color-success-light-9);
   border-radius: 10px;
 }
 </style>
