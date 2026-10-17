@@ -10,6 +10,7 @@ import {
 } from "../domain/inline-comment.ts";
 import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
 import type { ReviewRecord } from "../domain/review-record.ts";
+import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
 import type { PromptRepository } from "../domain/review-prompt.ts";
 import type { Change, Commit, DiffRefs, GitlabClient, MergeRequestTask, Reviewer, WecomNotifier } from "../domain/review-task.ts";
 
@@ -44,6 +45,8 @@ interface PipelineDeps {
   recordWriter?: ReviewRecordWriter;
   /** prompt 来源（数据库）。命中时不使用 `rules` 的 yaml 解析结果。 */
   promptSource?: PromptRepository;
+  /** LLM 厂商仓储。缺省时评审用 models.json 的既有默认配置。 */
+  llmProviders?: LlmProviderRepository;
 }
 
 /** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致（20 分钟）。 */
@@ -141,6 +144,17 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       });
 
       const ruleSet = resolveRuleSet(task.fullName);
+      // LLM 目标：项目绑定 > prompt 指定 > 全局默认（D-022）。全部为空时不传，
+      // 让 reviewer 用 models.json 里的既有默认配置。
+      const llmTarget = resolveLlmTarget(task.fullName);
+      if (llmTarget) {
+        logger.info("本次评审使用的模型", {
+          项目ID: task.projectId,
+          MR编号: task.iid,
+          厂商: llmTarget.provider.label,
+          模型: llmTarget.model,
+        });
+      }
       const commitsText = commits.map((commit) => `${commit.id.slice(0, 8)} ${commit.message.split("\n")[0] ?? ""}`).join("\n");
 
       // 先取 diff version 的 head sha：它必须注入 user prompt，AI 才能回显
@@ -172,6 +186,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             code: userMessage,
             context: undefined,
             signal: AbortSignal.timeout(timeoutMs),
+            provider: llmTarget?.provider.name,
+            model: llmTarget?.model,
           });
           batchResults.push(result.text);
           logger.info("单批评审完成", {
@@ -202,6 +218,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           code: batchResults.join("\n\n---\n\n"),
           context: undefined,
           signal: AbortSignal.timeout(timeoutMs),
+          provider: llmTarget?.provider.name,
+          model: llmTarget?.model,
         });
         finalComment = stripMarkdownFences(summary.text.trim());
         logger.info("汇总完成", {
@@ -315,6 +333,30 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       };
     }
     return rules.resolve(fullName);
+  }
+
+  /**
+   * 解析本次评审使用的 LLM 厂商与模型。
+   *
+   * 优先级（D-022）：项目绑定 > prompt 上指定的厂商 > 全局默认厂商。
+   * 全都没有配置时返回 undefined，reviewer 会回落到 models.json 的默认模型，
+   * 保证「没配厂商」的老部署仍然能跑。
+   */
+  function resolveLlmTarget(fullName: string): ResolvedLlmTarget | undefined {
+    const repo = deps.llmProviders;
+    if (!repo) return undefined;
+
+    // prompt 上显式指定的厂商优先于全局默认，但低于项目绑定——
+    // 项目绑定是运维针对单个项目做的临时调整，语义上更具体。
+    const stored = deps.promptSource?.resolve(fullName);
+    if (stored?.providerId) {
+      const provider = repo.get(stored.providerId);
+      if (provider) {
+        const model = stored.model || provider.defaultModel || provider.models[0];
+        if (model) return { provider, model };
+      }
+    }
+    return repo.resolveTarget(fullName);
   }
 
   /**

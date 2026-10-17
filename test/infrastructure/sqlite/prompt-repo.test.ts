@@ -151,3 +151,98 @@ test("importFromDir 对非法 YAML 只跳过该文件，不中断整个导入", 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("一条 prompt 可关联多个项目，任一命中即生效", () => {
+  const db = openDatabase(":memory:");
+  const repo = createPromptRepository(db);
+  repo.create({
+    repository: "通用评审",
+    projects: ["auto-ops", "cw-auto-ops", "auto-ops-platform"],
+    systemPrompt: "sys-shared",
+    userPrompt: "u {diffs_text}",
+  });
+  for (const project of ["auto-ops", "cw-auto-ops", "auto-ops-platform"]) {
+    assert.equal(repo.resolve(project)?.systemPrompt, "sys-shared", `${project} 应命中同一条 prompt`);
+  }
+  assert.equal(repo.resolve("unrelated/repo"), undefined, "未关联项目且无 default 时返回 undefined");
+  db.close();
+});
+
+test("多项目列表去空、去重且大小写不敏感", () => {
+  const db = openDatabase(":memory:");
+  const repo = createPromptRepository(db);
+  const created = repo.create({
+    repository: "共享",
+    projects: ["auto-ops", " AUTO-OPS ", "cw-auto-ops", ""],
+    systemPrompt: "sys",
+    userPrompt: "u",
+  });
+  assert.deepEqual(created.projects, ["auto-ops", "cw-auto-ops"]);
+  db.close();
+});
+
+test("update 显式传 projects 时覆盖，不传时保留原有关联", () => {
+  const db = openDatabase(":memory:");
+  const repo = createPromptRepository(db);
+  const created = repo.create({
+    repository: "r",
+    projects: ["a", "b"],
+    systemPrompt: "sys",
+    userPrompt: "u",
+  });
+  const kept = repo.update(created.id, { systemPrompt: "sys2", userPrompt: "u2" });
+  assert.deepEqual(kept.projects, ["a", "b"], "只改正文不应清空项目");
+
+  const replaced = repo.update(created.id, { projects: ["c"], systemPrompt: "sys3", userPrompt: "u3" });
+  assert.deepEqual(replaced.projects, ["c"], "显式传 projects 应覆盖");
+  db.close();
+});
+
+test("listKnownProjects 汇总去重，供前端下拉建议", () => {
+  const db = openDatabase(":memory:");
+  const repo = createPromptRepository(db);
+  repo.create({ repository: "r1", projects: ["a", "b"], systemPrompt: "s", userPrompt: "u" });
+  repo.create({ repository: "r2", projects: ["b", "c"], systemPrompt: "s", userPrompt: "u" });
+  assert.deepEqual(repo.listKnownProjects(), ["a", "b", "c"]);
+  db.close();
+});
+
+test("删除 prompt 级联清理项目关联", () => {
+  const db = openDatabase(":memory:");
+  const repo = createPromptRepository(db);
+  const created = repo.create({ repository: "r", projects: ["a"], systemPrompt: "s", userPrompt: "u" });
+  repo.remove(created.id);
+  assert.deepEqual(repo.listKnownProjects(), [], "删 prompt 必须连带删关联，否则下拉会残留已失效项目");
+  db.close();
+});
+
+test("importFromDir 把逗号分隔的 repository 拆成多个项目", () => {
+  // 回归：老 yaml 用「auto-ops,cw-auto-ops」这种逗号串表示一套 prompt 覆盖
+  // 多个项目。整串存成一个项目会让所有项目的匹配失效。
+  const db = openDatabase(":memory:");
+  const repo = createPromptRepository(db);
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-rules-"));
+  try {
+    writeFileSync(
+      join(dir, "shared.yaml"),
+      [
+        "repository: auto-ops,cw-auto-ops,auto-ops-platform",
+        "code_review_prompt:",
+        "  system_prompt: |-",
+        "    你是评审专家",
+        "  user_prompt: |-",
+        "    评审 {diffs_text}",
+      ].join("\n"),
+      "utf8",
+    );
+    repo.importFromDir(dir);
+    const list = repo.list();
+    assert.equal(list.length, 1);
+    assert.deepEqual(list[0].projects, ["auto-ops", "auto-ops-platform", "cw-auto-ops"], "读取按名称排序");
+    // 拆开后每个项目都能命中同一条 prompt。
+    assert.equal(repo.resolve("cw-auto-ops")?.repository, "auto-ops,cw-auto-ops,auto-ops-platform");
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

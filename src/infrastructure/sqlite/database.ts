@@ -53,6 +53,34 @@ CREATE TABLE IF NOT EXISTS review_prompts (
   wecom_score_threshold INTEGER,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS prompt_projects (
+  prompt_id INTEGER NOT NULL,
+  project TEXT NOT NULL,
+  PRIMARY KEY (prompt_id, project),
+  FOREIGN KEY (prompt_id) REFERENCES review_prompts (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_projects_project ON prompt_projects (project);
+CREATE TABLE IF NOT EXISTS llm_providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  api_key TEXT,
+  api TEXT NOT NULL,
+  models TEXT NOT NULL,
+  default_model TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS llm_project_bindings (
+  project TEXT PRIMARY KEY,
+  provider_id INTEGER NOT NULL,
+  model TEXT,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (provider_id) REFERENCES llm_providers (id) ON DELETE CASCADE
+);
 `;
 
 /** 已注册过实验特性静默处理器，避免重复注册监听。 */
@@ -89,6 +117,34 @@ export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA busy_timeout = 5000");
+  // SQLite 默认关闭外键约束，必须显式打开，否则 ON DELETE CASCADE 不生效
+  // （删 prompt 时关联的 prompt_projects 行会残留）。
+  db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/**
+ * 增量迁移：为已存在的旧库补齐新增列。
+ *
+ * `CREATE TABLE IF NOT EXISTS` 只对「表不存在」生效，不会给已有表加列。
+ * 老部署升级到带新字段的版本时，如果不补这一步，任何读该表的查询都会报
+ * `no such column`，服务直接不可用。
+ *
+ * 用 `PRAGMA table_info` 探测而不是 try/catch ALTER：SQLite 的
+ * `ALTER TABLE ... ADD COLUMN` 在列已存在时抛错，靠异常判断会把真正的
+ * 失败（如磁盘只读）也一起吞掉。
+ */
+function migrate(db: DatabaseSync): void {
+  addColumnIfMissing(db, "review_prompts", "provider_id", "INTEGER");
+  addColumnIfMissing(db, "review_prompts", "model", "TEXT");
+}
+
+/** 给表补一列；表不存在或列已存在时静默跳过。 */
+function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
+  if (columns.length === 0) return; // 表还不存在，SCHEMA 建表时已带该列
+  if (columns.some((item) => item.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

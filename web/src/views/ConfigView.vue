@@ -23,8 +23,40 @@
       </template>
     </el-alert>
 
-    <el-card>
-      <el-table v-loading="loading" :data="rows">
+    <!--
+      分类展示：配置项按用途分组，而不是一长串平铺。
+      AI 模型类的 URL/Key/Model 已迁到「AI 厂商」页统一管理（支持多厂商），
+      这里只保留一个指引，避免两处都能改造成事实源分叉。
+    -->
+    <el-card v-for="group in groups" :key="group.name">
+      <template #header>
+        <div class="group-header">
+          <div class="group-header__title">
+            <span class="group-header__icon" :style="{ backgroundColor: group.bg, color: group.color }">
+              <el-icon><component :is="group.icon" /></el-icon>
+            </span>
+            <div>
+              <div class="group-header__name">{{ group.name }}</div>
+              <div class="group-header__desc">{{ group.desc }}</div>
+            </div>
+          </div>
+          <el-tag v-if="group.count > 0" size="small" type="info" effect="plain">{{ group.count }} 项</el-tag>
+        </div>
+      </template>
+
+      <!-- AI 模型分组：不列具体键，直接引导去厂商页 -->
+      <div v-if="group.name === 'AI 模型'" class="ai-hint">
+        <p class="ai-hint__text">
+          模型厂商的 API 地址、密钥与模型清单已迁移到独立页面，支持配置多个厂商（OpenAI、DeepSeek、
+          Anthropic、通义千问等），并可指定每个项目使用哪个厂商。
+        </p>
+        <el-button type="primary" @click="goProviders">
+          <el-icon><Cpu /></el-icon>
+          前往 AI 厂商配置
+        </el-button>
+      </div>
+
+      <el-table v-else v-loading="loading" :data="group.rows">
         <el-table-column label="配置项" width="260">
           <template #default="{ row }">
             <div class="key-cell">
@@ -77,10 +109,15 @@
  *
  * 密钥项默认显示后端返回的掩码（后端不回传真实值），输入框留空表示不修改；
  * 只有用户实际输入了内容才会提交该项，避免把掩码当成新值写回数据库。
+ *
+ * 分类展示（D-023）：键名按前缀与语义归入固定分组，避免几十项平铺难找。
+ * AI 模型相关的键不再在此编辑——多厂商配置需要 URL/Key/Model 成组管理，
+ * 单键编辑无法表达，统一收敛到「AI 厂商」页。
  */
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Check, Hide, Refresh, View } from "@element-plus/icons-vue";
+import { Check, Connection, Cpu, Document, Hide, Refresh, Setting, View } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
 import type { ConfigItem } from "../types.ts";
 
@@ -94,9 +131,111 @@ interface ConfigRow extends ConfigItem {
   revealed: boolean;
 }
 
+/** 一个配置分组。 */
+interface ConfigGroup {
+  name: string;
+  desc: string;
+  icon: unknown;
+  color: string;
+  bg: string;
+  rows: ConfigRow[];
+  count: number;
+}
+
+const router = useRouter();
 const loading = ref(false);
 const saving = ref(false);
 const rows = ref<ConfigRow[]>([]);
+
+/**
+ * 键名 → 分组。
+ *
+ * 用前缀与显式清单而不是「猜」：分组是给人看的，错归组比不归组更糟。
+ * 未命中的键落到「其他」，保证新增配置不会凭空消失。
+ */
+const GROUP_RULES: Array<{ name: string; desc: string; icon: unknown; color: string; bg: string; match: (key: string) => boolean }> = [
+  {
+    name: "AI 模型",
+    desc: "多厂商模型配置已迁移到独立页面",
+    icon: Cpu,
+    color: "#8b5cf6",
+    bg: "rgb(139 92 246 / 10%)",
+    // LLMGW_API_KEY 是老的单厂商密钥，也归到这里提示迁移。
+    match: (key) => /^(LLMGW_API_KEY|LLM_|AI_)/.test(key),
+  },
+  {
+    name: "GitLab 集成",
+    desc: "GitLab 实例地址、证书与 API 超时",
+    icon: Connection,
+    color: "#0ea5e9",
+    bg: "rgb(14 165 233 / 10%)",
+    match: (key) => key.startsWith("GITLAB_"),
+  },
+  {
+    name: "评审行为",
+    desc: "超时、分批预算、风格与规则目录",
+    icon: Document,
+    color: "#5b5bd6",
+    bg: "rgb(91 91 214 / 10%)",
+    match: (key) => key.startsWith("REVIEW_") || key === "QUEUE_CONCURRENCY",
+  },
+  {
+    name: "服务与存储",
+    desc: "监听地址、日志与数据库路径",
+    icon: Setting,
+    color: "#10b981",
+    bg: "rgb(16 185 129 / 10%)",
+    match: (key) => ["PORT", "HOST", "LOG_FILE", "LOG_LEVEL", "DB_PATH"].includes(key),
+  },
+  {
+    name: "账号与安全",
+    desc: "管理员引导账号与令牌盐",
+    icon: Setting,
+    color: "#f59e0b",
+    bg: "rgb(245 158 11 / 10%)",
+    match: (key) => key.startsWith("ADMIN_") || key === "AUTH_SALT",
+  },
+];
+
+/** 按规则分组；未命中的键进「其他」。 */
+const groups = computed<ConfigGroup[]>(() => {
+  const buckets = new Map<string, ConfigRow[]>();
+  const others: ConfigRow[] = [];
+  for (const row of rows.value) {
+    const rule = GROUP_RULES.find((item) => item.match(row.key));
+    if (!rule) {
+      others.push(row);
+      continue;
+    }
+    const list = buckets.get(rule.name) ?? [];
+    list.push(row);
+    buckets.set(rule.name, list);
+  }
+
+  const result: ConfigGroup[] = [];
+  for (const rule of GROUP_RULES) {
+    const list = buckets.get(rule.name) ?? [];
+    // AI 模型分组即使没有键也展示：它是「去别处配置」的指引，不展示就没人知道要迁移。
+    if (list.length === 0 && rule.name !== "AI 模型") continue;
+    result.push({ ...rule, rows: list, count: list.length });
+  }
+  if (others.length > 0) {
+    result.push({
+      name: "其他",
+      desc: "未归类的配置项",
+      icon: Setting,
+      color: "#64748b",
+      bg: "rgb(100 116 139 / 10%)",
+      rows: others,
+      count: others.length,
+    });
+  }
+  return result;
+});
+
+function goProviders(): void {
+  void router.push("/providers");
+}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -152,6 +291,61 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 分组头：图标 + 名称 + 说明，右侧数量 */
+.group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.group-header__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.group-header__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  font-size: 16px;
+  border-radius: 9px;
+}
+
+.group-header__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.group-header__desc {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+}
+
+/* AI 模型分组的迁移指引 */
+.ai-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 4px 0;
+}
+
+.ai-hint__text {
+  max-width: 720px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--el-text-color-regular);
+}
+
 /* 配置项列：键名在上，标签在下，避免长键名与多个标签挤在一行 */
 .key-cell {
   display: flex;
@@ -192,5 +386,13 @@ onMounted(() => {
 
 .status--idle {
   color: var(--el-text-color-secondary);
+}
+
+/* 窄屏：指引改为上下排布 */
+@media (max-width: 768px) {
+  .ai-hint {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>

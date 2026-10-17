@@ -88,6 +88,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
   ArrowDown,
+  Cpu,
   Document,
   EditPen,
   Expand,
@@ -138,6 +139,7 @@ function onToggleCollapse(): void {
 const menuItems = [
   { path: "/reviews", title: "评审记录", icon: Document },
   { path: "/prompts", title: "Prompt 管理", icon: EditPen },
+  { path: "/providers", title: "AI 厂商", icon: Cpu },
   { path: "/config", title: "环境变量", icon: Setting },
   { path: "/admins", title: "管理员", icon: User },
 ];

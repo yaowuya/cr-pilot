@@ -1,7 +1,14 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAgentSession, DefaultResourceLoader, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai/compat";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  ModelRuntime,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
 import type { ReviewInput, ReviewResult, Reviewer } from "../../domain/review-task.ts";
 
@@ -29,7 +36,14 @@ export interface PiSessionLike {
 }
 
 /** 创建一次评审所用的 pi 会话。默认实现接真实 SDK，测试注入假实现。 */
-export type PiSessionFactory = (options: { systemPrompt: string; cwd: string }) => Promise<PiSessionLike>;
+export type PiSessionFactory = (options: {
+  systemPrompt: string;
+  cwd: string;
+  /** 目标模型；缺省时用 models.json 的默认配置。 */
+  model?: string;
+  /** 目标厂商的 provider key。 */
+  provider?: string;
+}) => Promise<PiSessionLike>;
 
 /**
  * 创建一个空的隔离工作目录。
@@ -100,7 +114,7 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
   const logger = options.logger ?? createSilentLogger();
   logger.debug("已创建隔离工作目录", { cwd: workspace });
   return {
-    async review({ systemPrompt, code, context, signal }) {
+    async review({ systemPrompt, code, context, signal, provider, model }) {
       if (signal.aborted) {
         logger.debug("评审在开始前已中断，不创建会话");
         throw signal.reason ?? new Error("评审在开始前已被中断");
@@ -110,8 +124,10 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
         工作目录: workspace,
         系统提示字数: systemPrompt.length,
         用户消息字数: userMessage.length,
+        厂商: provider ?? "默认",
+        模型: model ?? "默认",
       });
-      const session = await sessionFactory({ systemPrompt, cwd: workspace });
+      const session = await sessionFactory({ systemPrompt, cwd: workspace, provider, model });
       let disposed = false;
       const disposeOnce = (): void => {
         if (disposed) return;
@@ -143,7 +159,12 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
 }
 
 /** 默认会话工厂：按已核实的 SDK 签名装配一次隔离的 pi 会话。 */
-async function createRealSession(options: { systemPrompt: string; cwd: string }): Promise<PiSessionLike> {
+async function createRealSession(options: {
+  systemPrompt: string;
+  cwd: string;
+  provider?: string;
+  model?: string;
+}): Promise<PiSessionLike> {
   const agentDir = getAgentDir();
   const loader = new DefaultResourceLoader(
     buildLoaderOptions({ prompt: options.systemPrompt, cwd: options.cwd, agentDir }),
@@ -157,8 +178,42 @@ async function createRealSession(options: { systemPrompt: string; cwd: string })
     agentDir,
     resourceLoader: loader,
     sessionManager: SessionManager.inMemory(),
+    // 按项目/全局配置选定模型（D-022）。解析失败时不传 model，退回 SDK 的
+    // 默认选择（models.json 的 defaultModel），避免因为一条配置错误让评审直接失败。
+    model: await resolveModel(agentDir, options.provider, options.model),
     // "all" 关闭内置、扩展与自定义工具；字符串枚举而非布尔值是 SDK 的实际签名。
     noTools: "all",
   });
   return session;
+}
+
+/**
+ * 从 models.json 解析出具体的 Model 对象。
+ *
+ * SDK 的 `model` 选项要的是 Model 实例而不是字符串，因此需要先建 ModelRuntime
+ * 读一遍 models.json，再用 `getModel(provider, modelId)` 取出。
+ *
+ * 只指定 model 不指定 provider 时，遍历所有 provider 找第一个匹配的模型：
+ * 页面允许只填模型名（用户不关心 provider key），这种宽松匹配更符合直觉。
+ */
+async function resolveModel(
+  agentDir: string,
+  provider?: string,
+  modelId?: string,
+): Promise<Model<any> | undefined> {
+  if (!modelId) return undefined;
+  try {
+    const runtime = await ModelRuntime.create({ modelsPath: join(agentDir, "models.json") });
+    if (provider) {
+      return runtime.getModel(provider, modelId) ?? undefined;
+    }
+    for (const item of runtime.getProviders()) {
+      const found = runtime.getModel(item.id, modelId);
+      if (found) return found;
+    }
+    return undefined;
+  } catch {
+    // models.json 缺失或格式异常：交给 SDK 的默认模型选择，不阻断评审。
+    return undefined;
+  }
 }

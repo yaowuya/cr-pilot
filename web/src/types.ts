@@ -35,8 +35,15 @@ export interface ReviewStats {
 export interface PromptSummary {
   id: number;
   repository: string;
+  /** 关联的 GitLab 项目全名列表；任一命中即使用该 prompt。 */
+  projects: string[];
   hasWecomWebhook: boolean;
   wecomScoreThreshold?: number;
+  /** 指定的 LLM 厂商 id；未设置时用全局默认。 */
+  providerId?: number;
+  /** 厂商展示名；厂商已被删除时为空。 */
+  providerLabel?: string;
+  model?: string;
   updatedAt: number;
 }
 
@@ -44,11 +51,68 @@ export interface PromptSummary {
 export interface StoredPrompt {
   id: number;
   repository: string;
+  projects: string[];
   systemPrompt: string;
   userPrompt: string;
   wecomWebhookUrl?: string;
   wecomScoreThreshold?: number;
+  providerId?: number;
+  model?: string;
   updatedAt: number;
+}
+
+/** prompt 页的下拉建议数据：已关联项目 + 可用厂商。 */
+export interface PromptMeta {
+  projects: string[];
+  providers: {
+    id: number;
+    label: string;
+    name: string;
+    models: string[];
+    defaultModel?: string;
+    isDefault: boolean;
+  }[];
+}
+
+/** LLM 厂商协议类型。 */
+export type LlmApiKind = "openai-responses" | "openai-completions" | "anthropic-messages";
+
+/** 厂商列表项（密钥只回掩码）。 */
+export interface LlmProviderSummary {
+  id: number;
+  name: string;
+  label: string;
+  kind: string;
+  baseUrl: string;
+  hasApiKey: boolean;
+  apiKeyMasked?: string;
+  api: LlmApiKind;
+  models: string[];
+  defaultModel?: string;
+  isDefault: boolean;
+  updatedAt: number;
+}
+
+/** 项目级厂商绑定。 */
+export interface LlmProjectBinding {
+  project: string;
+  providerId: number;
+  model?: string;
+}
+
+/** 厂商列表接口响应。 */
+export interface LlmProvidersResponse {
+  items: LlmProviderSummary[];
+  bindings: LlmProjectBinding[];
+}
+
+/** 内置厂商模板（新建时预填）。 */
+export interface LlmProviderTemplate {
+  kind: string;
+  label: string;
+  baseUrl: string;
+  api: LlmApiKind;
+  models: string[];
 }
 
 /** 环境变量项。`masked` 为 true 时 `value` 已是掩码。 */

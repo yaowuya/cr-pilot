@@ -15,13 +15,16 @@ import { openDatabase } from "./infrastructure/sqlite/database.ts";
 import { createAdminRepository } from "./infrastructure/sqlite/admin-repo.ts";
 import { createConfigRepository } from "./infrastructure/sqlite/config-repo.ts";
 import { createPromptRepository } from "./infrastructure/sqlite/prompt-repo.ts";
+import { createLlmProviderRepository } from "./infrastructure/sqlite/llm-provider-repo.ts";
 import { createReviewRecordRepository } from "./infrastructure/sqlite/review-record-repo.ts";
+import { apiKeyEnvName, writeModelsJson } from "./infrastructure/pi/models-json.ts";
 import { createAuthMiddleware } from "./interfaces/http/auth-middleware.ts";
 import { createStaticAssets } from "./interfaces/http/static-assets.ts";
 import { createAdminsRouter } from "./interfaces/http/api/admins.ts";
 import { createAuthRouter } from "./interfaces/http/api/auth.ts";
 import { createConfigRouter } from "./interfaces/http/api/config.ts";
 import { createPromptsRouter } from "./interfaces/http/api/prompts.ts";
+import { createProvidersRouter } from "./interfaces/http/api/providers.ts";
 import { createReviewsRouter } from "./interfaces/http/api/reviews.ts";
 
 /** 前端构建产物目录，与 `web/vite.config.ts` 的 outDir 对应。 */
@@ -136,7 +139,30 @@ async function startApplication(input: {
     // 持久化适配器：四个仓储共用同一连接（D-018 单连接 + WAL）。
     const admins = createAdminRepository(db, config.authSalt);
     const prompts = createPromptRepository(db);
+    const providers = createLlmProviderRepository(db);
     const records = createReviewRecordRepository(db);
+
+    /**
+     * 把数据库里的厂商配置同步到 pi-agent/models.json 并导出密钥到环境变量。
+     *
+     * 两件事必须一起做：models.json 里写的是 `$LLM_KEY_XXX` 引用，若只写文件不导出
+     * 环境变量，SDK 解析密钥时会拿到空值并报 No API key found。
+     *
+     * 数据库里没有厂商时不动文件：老部署升级后仍用原来手写的 models.json 跑。
+     */
+    const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || "pi-agent";
+    const syncModels = (): void => {
+      const all = providers.list().map((item) => providers.get(item.id)).filter((item): item is NonNullable<typeof item> => Boolean(item));
+      for (const provider of all) {
+        if (provider.apiKey) process.env[apiKeyEnvName(provider.name)] = provider.apiKey;
+      }
+      const result = writeModelsJson({ agentDir, providers: all, defaultProvider: providers.getDefault() });
+      if (result.written) {
+        logger.info("已同步 LLM 厂商配置到 models.json", { 路径: result.path, 厂商数: all.length, 默认模型: result.defaultModel ?? "(无)" });
+      }
+    };
+    // 启动时同步一次：保证容器重建后 models.json 与数据库一致（数据库是唯一事实源）。
+    syncModels();
     // 首次启动引导首个管理员（D-011）；已有账号时不覆盖。
     // 密码为空时跳过：空密码账号无法登录（登录接口要求非空），却会占住
     // 「表为空」的位置，导致后续再配 ADMIN_PASSWORD 也不会被创建。
@@ -159,6 +185,7 @@ async function startApplication(input: {
       wecomNotifier,
       recordWriter: records,
       promptSource: prompts,
+      llmProviders: providers,
     });
 
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
@@ -176,7 +203,8 @@ async function startApplication(input: {
           "/api/admins": createAdminsRouter({ admins }),
           "/api/reviews": createReviewsRouter({ records }),
           "/api/config": createConfigRouter({ config: configRepo }),
-          "/api/prompts": createPromptsRouter({ prompts, rulesDir: config.rulesDir }),
+          "/api/prompts": createPromptsRouter({ prompts, providers, rulesDir: config.rulesDir }),
+          "/api/providers": createProvidersRouter({ providers, onChanged: syncModels }),
         },
         staticAssets,
       },

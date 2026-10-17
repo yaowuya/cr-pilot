@@ -58,12 +58,27 @@ export interface MergeRequestTask {
   gitlabToken?: string;
 }
 
-/** 一次评审的输入。systemPrompt 是 prompt 文件全文，code 是待评审内容。 */
+/**
+ * 一次评审的输入。systemPrompt 是 prompt 文件全文，code 是待评审内容。
+ *
+ * `provider` / `model` 为可选的模型选择（D-022）：未指定时评审执行者使用
+ * `pi-agent/models.json` 里的既有默认配置，保证老部署与未配置厂商时仍可运行。
+ */
 export interface ReviewInput {
   systemPrompt: string;
   code: string;
   context?: string;
   signal: AbortSignal;
+  /** 目标厂商在 models.json 里的 provider key。 */
+  provider?: string;
+  /** 目标模型 id。 */
+  model?: string;
+  /** 该厂商的 apiKey（运行时注入，不落 models.json 明文）。 */
+  apiKey?: string;
+  /** 该厂商的 API 基地址；与 models.json 里的配置一致时可不传。 */
+  baseUrl?: string;
+  /** 该厂商的协议类型。 */
+  api?: string;
 }
 
 /** 评审结果。model 取自实际会话，便于调用方确认真正生效的模型。 */
