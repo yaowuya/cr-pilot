@@ -1,18 +1,37 @@
 <template>
-  <div>
+  <div class="prompt-editor">
     <el-form-item label="System Prompt（作为模型系统提示）">
-      <el-input :model-value="systemPrompt" type="textarea" :rows="10" placeholder="系统的角色与评审要求" @update:model-value="emit('update:systemPrompt', $event)" />
+      <el-input
+        :model-value="systemPrompt"
+        type="textarea"
+        :rows="9"
+        resize="vertical"
+        placeholder="系统的角色与评审要求"
+        class="prompt-textarea"
+        @update:model-value="emit('update:systemPrompt', $event)"
+      />
     </el-form-item>
 
     <el-form-item label="User Prompt（评审内容模板）">
-      <el-input :model-value="userPrompt" type="textarea" :rows="10" placeholder="包含占位符的评审内容模板" @update:model-value="emit('update:userPrompt', $event)" />
+      <el-input
+        :model-value="userPrompt"
+        type="textarea"
+        :rows="9"
+        resize="vertical"
+        placeholder="包含占位符的评审内容模板"
+        class="prompt-textarea"
+        @update:model-value="emit('update:userPrompt', $event)"
+      />
       <!--
         占位符提示：模板必须包含 {diffs_text}，否则模型收不到代码变更，
         评审结果必然为空。提交时由后端渲染这两处占位符。
       -->
-      <el-text type="info" size="small" class="placeholder-hint">
-        可用占位符：<code>{diffs_text}</code>（代码变更，必填）与 <code>{commits_text}</code>（提交历史）
-      </el-text>
+      <div class="placeholder-hint">
+        可用占位符：
+        <code>{diffs_text}</code><span class="placeholder-hint__note">代码变更，必填</span>
+        <code>{commits_text}</code><span class="placeholder-hint__note">提交历史</span>
+        <code>{head_sha}</code><span class="placeholder-hint__note">当前提交 SHA，行内评论定位用</span>
+      </div>
     </el-form-item>
   </div>
 </template>
@@ -33,14 +52,35 @@ const emit = defineEmits<{ "update:systemPrompt": [string]; "update:userPrompt":
 </script>
 
 <style scoped>
+/* prompt 是代码类文本，用等宽字体；行高略松便于逐行比对 */
+.prompt-textarea :deep(textarea) {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .placeholder-hint {
-  margin-top: 4px;
-  display: block;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .placeholder-hint code {
-  padding: 0 4px;
-  background-color: var(--el-fill-color-light);
-  border-radius: 2px;
+  padding: 1px 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-color-primary);
+  background-color: var(--el-color-primary-light-9);
+  border-radius: 5px;
+}
+
+/* 占位符后的灰色说明文字，与代码片段区分开 */
+.placeholder-hint__note {
+  margin-right: 6px;
+  color: var(--el-text-color-placeholder);
 }
 </style>

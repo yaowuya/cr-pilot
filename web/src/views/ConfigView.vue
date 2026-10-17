@@ -1,54 +1,74 @@
 <template>
-  <el-card>
-    <template #header>
-      <div class="card-header">
-        <span>环境变量</span>
-        <div>
-          <el-button :loading="loading" @click="load">刷新</el-button>
-          <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
-        </div>
+  <div class="page-container">
+    <header class="page-header">
+      <div>
+        <h1 class="page-header__title">环境变量</h1>
+        <p class="page-header__desc">配置写入数据库并覆盖同名环境变量；标记「需重启」的项在重启后生效</p>
       </div>
-    </template>
+      <div class="page-header__actions">
+        <el-button :loading="loading" @click="load">
+          <el-icon><Refresh /></el-icon>
+          刷新
+        </el-button>
+        <el-button type="primary" :loading="saving" @click="onSave">
+          <el-icon><Check /></el-icon>
+          保存
+        </el-button>
+      </div>
+    </header>
 
-    <el-alert
-      type="info"
-      :closable="false"
-      class="hint"
-      title="保存后配置写入数据库，标记「需重启」的项在重启容器后生效。密钥类字段不回传真实值，留空表示不修改。"
-    />
+    <el-alert type="info" :closable="false" show-icon>
+      <template #title>
+        密钥类字段不回传真实值，留空表示不修改；只有实际输入过内容的项才会提交。
+      </template>
+    </el-alert>
 
-    <el-table v-loading="loading" :data="rows" border>
-      <el-table-column prop="key" label="配置项" width="260" />
-      <el-table-column label="当前值" min-width="320">
-        <template #default="{ row }">
-          <el-input
-            v-model="row.draft"
-            :type="row.masked && !row.revealed && row.draft ? 'password' : 'text'"
-            :placeholder="row.masked ? '留空表示不修改' : ''"
-            :disabled="row.readOnly"
-            @input="row.dirty = true"
-          >
-            <!-- 密钥项：后端不回传真实值，输入框里只有用户自己刚输入的内容。
-                 该图标仅切换本地可见性，不产生网络请求。 -->
-            <template v-if="row.masked && row.draft" #suffix>
-              <el-icon class="reveal-icon" @click="row.revealed = !row.revealed">
-                <View v-if="!row.revealed" />
-                <Hide v-else />
-              </el-icon>
-            </template>
-          </el-input>
-        </template>
-      </el-table-column>
-      <el-table-column label="说明" width="160">
-        <template #default="{ row }">
-          <el-tag v-if="row.masked" type="warning" size="small">密钥</el-tag>
-          <el-tag v-if="row.readOnly" type="info" size="small" class="tag-gap">只读</el-tag>
-          <el-tag v-if="row.restartRequired" type="danger" size="small" class="tag-gap">需重启</el-tag>
-          <el-tag v-if="row.overridden" type="info" size="small" class="tag-gap">已覆盖</el-tag>
-        </template>
-      </el-table-column>
-    </el-table>
-  </el-card>
+    <el-card>
+      <el-table v-loading="loading" :data="rows">
+        <el-table-column label="配置项" width="260">
+          <template #default="{ row }">
+            <div class="key-cell">
+              <span class="key-cell__name">{{ row.key }}</span>
+              <div class="key-cell__tags">
+                <el-tag v-if="row.masked" type="warning" size="small" effect="plain">密钥</el-tag>
+                <el-tag v-if="row.readOnly" type="info" size="small" effect="plain">只读</el-tag>
+                <el-tag v-if="row.restartRequired" type="danger" size="small" effect="plain">需重启</el-tag>
+                <el-tag v-if="row.overridden" type="primary" size="small" effect="plain">已覆盖</el-tag>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="当前值" min-width="340">
+          <template #default="{ row }">
+            <el-input
+              v-model="row.draft"
+              :type="row.masked && !row.revealed && row.draft ? 'password' : 'text'"
+              :placeholder="row.masked ? '留空表示不修改' : ''"
+              :disabled="row.readOnly"
+              @input="row.dirty = true"
+            >
+              <!-- 密钥项：后端不回传真实值，输入框里只有用户自己刚输入的内容。
+                   该图标仅切换本地可见性，不产生网络请求。 -->
+              <template v-if="row.masked && row.draft" #suffix>
+                <el-icon class="reveal-icon" @click="row.revealed = !row.revealed">
+                  <View v-if="!row.revealed" />
+                  <Hide v-else />
+                </el-icon>
+              </template>
+            </el-input>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <span v-if="row.dirty && row.draft.trim() !== ''" class="status status--dirty">待保存</span>
+            <span v-else class="status status--idle">未修改</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -60,7 +80,7 @@
  */
 import { onMounted, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Hide, View } from "@element-plus/icons-vue";
+import { Check, Hide, Refresh, View } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
 import type { ConfigItem } from "../types.ts";
 
@@ -132,17 +152,45 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.card-header {
+/* 配置项列：键名在上，标签在下，避免长键名与多个标签挤在一行 */
+.key-cell {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.hint {
-  margin-bottom: 16px;
+.key-cell__name {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+  word-break: break-all;
 }
 
-.tag-gap {
-  margin-left: 4px;
+.key-cell__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.reveal-icon {
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+}
+
+.reveal-icon:hover {
+  color: var(--el-color-primary);
+}
+
+.status {
+  font-size: 13px;
+}
+
+.status--dirty {
+  color: var(--el-color-warning);
+}
+
+.status--idle {
+  color: var(--el-text-color-secondary);
 }
 </style>

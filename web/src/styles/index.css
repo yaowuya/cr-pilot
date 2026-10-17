@@ -1,0 +1,250 @@
+/**
+ * 全局样式与设计令牌。
+ *
+ * 视觉基准对齐 vue-element-plus-admin（ElementAdmin v3）的 token 体系：
+ * 主色 #5b5bd6（靛蓝），页面底色 #f6f7fb，边框 #dfe3ea，
+ * 文本三级灰阶 #273142 / #526077 / #7a879c。
+ *
+ * 全部通过 CSS 变量暴露，组件内只引用变量而不写字面色值，
+ * 这样暗色主题只需覆盖 :root.dark 一处即可整体切换。
+ */
+
+/* ========== 亮色主题（默认） ========== */
+html:root {
+  /* 主色阶：由 #5b5bd6 派生，Element Plus 的按钮/链接/焦点环都读这组变量 */
+  --el-color-primary: #5b5bd6;
+  --el-color-primary-light-3: #7c7cdf;
+  --el-color-primary-light-5: #9d9de8;
+  --el-color-primary-light-7: #c1c1f1;
+  --el-color-primary-light-8: #dadaf7;
+  --el-color-primary-light-9: #eeeeff;
+  --el-color-primary-dark-2: #4949b8;
+
+  /* 背景与填充 */
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f6f7fb;
+  --el-bg-color-overlay: #ffffff;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-light: #f5f6fa;
+
+  /* 边框 */
+  --el-border-color: #dfe3ea;
+  --el-border-color-light: #e7eaf0;
+  --el-border-color-lighter: #edf0f5;
+
+  /* 文本 */
+  --el-text-color-primary: #273142;
+  --el-text-color-regular: #526077;
+  --el-text-color-secondary: #7a879c;
+
+  /* 圆角：Element Plus 默认 4px 偏硬，管理后台统一到 8px 更柔和 */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+
+  /* ---- 应用外壳（自定义，不属 Element Plus） ---- */
+  --app-sidebar-width: 224px;
+  --app-sidebar-collapsed-width: 72px;
+  --app-sidebar-bg: #ffffff;
+  --app-sidebar-text: #64748b;
+  --app-sidebar-text-active: #5252c9;
+  --app-sidebar-active-bg: #eeeeff;
+  --app-header-bg: #ffffff;
+  --app-header-text: #526077;
+  --app-header-hover: #f4f5fb;
+  --app-logo-height: 60px;
+  --app-border-color: #e7eaf0;
+  --app-content-padding: 24px;
+  --app-content-bg: #f6f7fb;
+  /* 双层阴影：1px 贴边 + 24px 弥散，比单层阴影更有层次 */
+  --app-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 8px 24px rgb(15 23 42 / 4%);
+  --app-shadow-hover: 0 1px 2px rgb(15 23 42 / 6%), 0 12px 32px rgb(15 23 42 / 8%);
+  --app-transition: 0.2s;
+}
+
+/* ========== 暗色主题 ========== */
+html:root.dark {
+  --el-color-primary: #818cf8;
+  --el-color-primary-light-3: #747ee0;
+  --el-color-primary-light-5: #5e68bd;
+  --el-color-primary-light-7: #454e86;
+  --el-color-primary-light-8: #343c67;
+  --el-color-primary-light-9: #252c49;
+  --el-color-primary-dark-2: #9aa2fa;
+
+  --el-bg-color: #151e30;
+  --el-bg-color-page: #0b1120;
+  --el-bg-color-overlay: #1b2538;
+  --el-fill-color-blank: #151e30;
+  --el-fill-color-light: #1c2638;
+  --el-fill-color: #1a2436;
+  --el-fill-color-dark: #0f1726;
+
+  --el-border-color: #344055;
+  --el-border-color-light: #2d394c;
+  --el-border-color-lighter: #273244;
+
+  --el-text-color-primary: #f1f5f9;
+  --el-text-color-regular: #cbd5e1;
+  --el-text-color-secondary: #94a3b8;
+
+  --app-sidebar-bg: #111827;
+  --app-sidebar-text: #94a3b8;
+  --app-sidebar-text-active: #c7d2fe;
+  --app-sidebar-active-bg: #252e47;
+  --app-header-bg: #111827;
+  --app-header-text: #cbd5e1;
+  --app-header-hover: #1c2638;
+  --app-border-color: #273244;
+  --app-content-bg: #0b1120;
+  --app-shadow: 0 1px 2px rgb(0 0 0 / 18%), 0 10px 30px rgb(0 0 0 / 18%);
+  --app-shadow-hover: 0 1px 2px rgb(0 0 0 / 24%), 0 14px 36px rgb(0 0 0 / 24%);
+}
+
+/* ========== 基础重置 ========== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+  background-color: var(--el-bg-color-page);
+  /* 字体渲染优化：macOS/Windows 上小字号更清晰 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 滚动条：默认系统滚动条在暗色主题下很突兀，统一细样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--el-border-color);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--el-text-color-secondary);
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+/* 主题切换时避免整页闪烁 */
+body,
+.app-shell,
+.app-sidebar,
+.app-header {
+  transition:
+    background-color var(--app-transition) ease,
+    border-color var(--app-transition) ease,
+    color var(--app-transition) ease;
+}
+
+/* ========== 通用页面结构 ========== */
+/* 每个视图的根容器：统一纵向间距，避免各页面各写一套 margin */
+.page-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 页面标题区：标题 + 描述 + 右侧操作 */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-header__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  color: var(--el-text-color-primary);
+}
+
+.page-header__desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--el-text-color-secondary);
+}
+
+.page-header__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+/* 卡片：覆盖 Element Plus 默认的 1px 全边框 + 无阴影，改为轻阴影 + 浅边框 */
+.el-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+  box-shadow: none;
+  transition:
+    box-shadow var(--app-transition) ease,
+    border-color var(--app-transition) ease;
+}
+
+.el-card:hover {
+  box-shadow: var(--app-shadow);
+}
+
+.el-card__header {
+  padding: 16px 20px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.el-card__body {
+  padding: 20px;
+}
+
+/* 表格：去掉默认竖线，横向留白更松，表头用浅底 */
+.el-table {
+  --el-table-border-color: var(--el-border-color-lighter);
+  --el-table-header-bg-color: var(--el-fill-color-light);
+  --el-table-header-text-color: var(--el-text-color-regular);
+  --el-table-row-hover-bg-color: var(--el-fill-color-light);
+  font-size: 13px;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
+
+/* 表头单元格垂直居中，避免多行表头错位 */
+.el-table th.el-table__cell > .cell {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+/* 按钮：默认圆角 8px 已在变量里，这里只补图标间距与字重 */
+.el-button {
+  font-weight: 500;
+}
+
+/* 统计数字：等宽数字让多个卡片的小数点对齐 */
+.el-statistic__number {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

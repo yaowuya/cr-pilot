@@ -1,34 +1,60 @@
 <template>
-  <div>
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>Prompt 管理</span>
-          <div>
-            <el-button :loading="importing" @click="onImport">从 yaml 导入</el-button>
-            <el-button type="primary" @click="openCreate">新建</el-button>
-          </div>
-        </div>
-      </template>
+  <div class="page-container">
+    <header class="page-header">
+      <div>
+        <h1 class="page-header__title">Prompt 管理</h1>
+        <p class="page-header__desc">按项目维护评审 prompt，未配置的项目回落到 default</p>
+      </div>
+      <div class="page-header__actions">
+        <el-button :loading="importing" @click="onImport">
+          <el-icon><Download /></el-icon>
+          从 yaml 导入
+        </el-button>
+        <el-button type="primary" @click="openCreate">
+          <el-icon><Plus /></el-icon>
+          新建
+        </el-button>
+      </div>
+    </header>
 
-      <el-table v-loading="loading" :data="prompts" border>
-        <el-table-column prop="repository" label="项目全名" min-width="220" show-overflow-tooltip />
-        <el-table-column label="企微推送" width="110">
+    <el-card>
+      <el-table v-loading="loading" :data="prompts">
+        <el-table-column label="项目全名" min-width="240" show-overflow-tooltip>
           <template #default="{ row }">
-            <el-tag :type="row.hasWecomWebhook ? 'success' : 'info'" size="small">
+            <div class="repo-cell">
+              <span class="repo-cell__icon">
+                <el-icon><Folder /></el-icon>
+              </span>
+              <span class="cell-strong">{{ row.repository }}</span>
+              <el-tag v-if="row.repository === 'default'" size="small" type="warning" effect="plain">默认</el-tag>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="企微推送" width="120">
+          <template #default="{ row }">
+            <el-tag :type="row.hasWecomWebhook ? 'success' : 'info'" size="small" effect="light">
               {{ row.hasWecomWebhook ? "已配置" : "未配置" }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="评分阈值" width="100">
-          <template #default="{ row }">{{ row.wecomScoreThreshold ?? "—" }}</template>
+        <el-table-column label="评分阈值" width="110" align="right">
+          <template #default="{ row }">
+            <span :class="row.wecomScoreThreshold === undefined ? 'cell-muted' : 'cell-strong'">
+              {{ row.wecomScoreThreshold ?? "—" }}
+            </span>
+          </template>
         </el-table-column>
         <el-table-column label="更新时间" width="180">
-          <template #default="{ row }">{{ formatTime(row.updatedAt) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="150">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+            <span class="cell-muted">{{ formatTime(row.updatedAt) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="140" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openEdit(row)">
+              <el-icon><Edit /></el-icon>
+              编辑
+            </el-button>
             <el-popconfirm title="删除后该项目将回落到 default prompt，确认删除？" @confirm="onDelete(row)">
               <template #reference>
                 <el-button link type="danger">删除</el-button>
@@ -37,29 +63,43 @@
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="暂无 prompt，可先点「从 yaml 导入」" />
+          <el-empty description="暂无 prompt，可先点「从 yaml 导入」" :image-size="90" />
         </template>
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="editingId ? `编辑 prompt：${form.repository}` : '新建 prompt'" width="800px">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="editingId ? `编辑 prompt：${form.repository}` : '新建 prompt'"
+      width="860px"
+      top="6vh"
+      destroy-on-close
+    >
       <el-form label-position="top">
-        <el-form-item label="项目全名">
-          <el-input
-            v-model="form.repository"
-            placeholder="项目全名，例如 group/project；留 default 表示全局默认"
-            :disabled="editingId !== null"
-          />
-        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="16">
+            <el-form-item label="项目全名">
+              <el-input
+                v-model="form.repository"
+                placeholder="例如 group/project；留 default 表示全局默认"
+                :disabled="editingId !== null"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="企微评分阈值（可选）">
+              <el-input v-model="form.wecomScoreThreshold" placeholder="低于该值才推送，如 70" />
+            </el-form-item>
+          </el-col>
+        </el-row>
         <el-form-item label="企微 Webhook（可选）">
           <el-input v-model="form.wecomWebhookUrl" placeholder="企业微信群机器人 Webhook URL" />
         </el-form-item>
-        <el-form-item label="企微评分阈值（可选）">
-          <el-input v-model="form.wecomScoreThreshold" placeholder="总分低于该值才推送，例如 70" />
-        </el-form-item>
-      </el-form>
 
-      <PromptEditor v-model:system-prompt="form.systemPrompt" v-model:user-prompt="form.userPrompt" />
+        <!-- PromptEditor 内部是 el-form-item，必须在 el-form 之内，
+             否则 label-position 等上下文继承不到，标签会与输入框错位。 -->
+        <PromptEditor v-model:system-prompt="form.systemPrompt" v-model:user-prompt="form.userPrompt" />
+      </el-form>
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -78,6 +118,7 @@
  */
 import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
+import { Download, Edit, Folder, Plus } from "@element-plus/icons-vue";
 import PromptEditor from "../components/PromptEditor.vue";
 import { api, isApiError } from "../api/client.ts";
 import type { PromptSummary, StoredPrompt } from "../types.ts";
@@ -204,9 +245,55 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.card-header {
+.cell-strong {
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+}
+
+.cell-muted {
+  color: var(--el-text-color-secondary);
+}
+
+/* 项目名前的文件夹图标：让长列表里的一列文本有视觉锚点 */
+.repo-cell {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
+}
+
+.repo-cell__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  color: var(--el-color-primary);
+  background-color: var(--el-color-primary-light-9);
+  border-radius: 7px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 0 16px;
+  grid-template-columns: 2fr 1fr;
+}
+
+/* 网格单元里的 el-form-item 默认 width:100% 且 flex-shrink 受限，
+   不显式放开 min-width 会让长标签把列撑破。 */
+.form-grid :deep(.el-form-item) {
+  min-width: 0;
+}
+
+/* 弹窗内的 prompt 编辑器：两个 textarea 之间留出间距，
+   避免上下两块代码区视觉粘连。 */
+.prompt-editor-gap {
+  margin-top: 4px;
+}
+
+@media (max-width: 640px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
