@@ -98,7 +98,8 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 
 | 环境变量 | 默认值 | 作用 |
 | --- | --- | --- |
-| `PORT` | `5001` | 监听端口 |
+| `PORT` | `5001` | 主监听端口（API 与 webhook） |
+| `UI_PORT` | `5002` | 管理界面端口，与 `PORT` 提供完全相同的服务。设 `0` 关闭第二端口 |
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `GITLAB_URL` | 无（可选） | GitLab 实例地址。缺省时从 webhook 派生：优先 `X-Gitlab-Instance` 请求头，其次 payload `repository.homepage` 的 origin；显式配置可覆盖派生值，并兜底老版本 GitLab |
 | `GITLAB_INSECURE_TLS` | `0` | 为 `1` 时跳过 GitLab TLS 证书校验（内网自签名） |
@@ -204,12 +205,14 @@ npm start
 前端开发（可选）：
 
 ```bash
-npm run dev:frontend   # Vite 开发服务器 http://localhost:5002，自动代理 /api 与 /review/ 到后端 5001
+npm run dev:frontend   # Vite 开发服务器 http://localhost:5173，自动代理 /api 与 /review/ 到后端 5001
 npm run build:frontend # 构建产物到 dist/，由 Express 托管
 ```
 
-开发时前后端端口分工：**前端 5002（Vite）、后端 5001（Express）**。
-Vite 用 `strictPort: true`，5002 被占用时直接报错而不是静默切换端口。
+开发时前后端端口分工：**前端 5173（Vite dev server）、后端 5001（Express）**。
+Vite 用 `strictPort: true`，5173 被占用时直接报错而不是静默切换端口。
+注意：Vite 只在本地开发时用；Docker 部署时前端已构建成静态文件由后端 5001 托管，
+不存在 5173/5002 端口。
 
 ## Docker 部署
 
@@ -221,11 +224,13 @@ Vite 用 `strictPort: true`，5002 被占用时直接报错而不是静默切换
 # 2. 构建并启动（Dockerfile 内含前端构建阶段，首次约 1-2 分钟）
 docker compose up -d --build
 
-# 健康检查
+# 健康检查（两个端口都提供）
 curl http://localhost:5001/health   # → {"status":"ok"}
+curl http://localhost:5002/health   # → {"status":"ok"}
 
-# 管理控制台
-# 浏览器打开 http://<host>:5001/，用 ADMIN_USERNAME / ADMIN_PASSWORD 登录
+# 管理控制台（两个端口任选，服务内容完全相同）
+# 浏览器打开 http://<host>:5001/ 或 http://<host>:5002/，
+# 用 ADMIN_USERNAME / ADMIN_PASSWORD 登录
 
 # 查看日志（控制台 + 容器内 /app/logs/cr-pilot.log）
 docker compose logs -f cr-pilot
@@ -237,6 +242,11 @@ docker compose exec cr-pilot node scripts/import-prompts.ts
 
 **不需要手动构建前端**：Dockerfile 的 `frontend` 阶段会在容器内执行 `npm run build`，
 产物落到 `/app/dist` 并由 Express 托管。
+
+**双端口说明**：容器同时监听 **5001** 和 **5002**，两者由同一个 Express 实例提供服务，
+页面与 API 完全一致。这是为对齐团队既有约定（旧项目 5001=Flask API、5002=Streamlit UI），
+让既有运维脚本与书签无需改动。本项目只有一个进程，没有第二个服务，因此不需要 Nginx。
+可用 `UI_PORT=0` 关闭第二端口，只保留 5001。
 
 **数据与日志用 Docker 具名卷**（`cr-pilot-data`、`cr-pilot-logs`），而不是宿主机绝对路径。
 原因：bind mount 会沿用宿主机目录属主，目录不存在时 Docker 以 root 创建，而容器内以

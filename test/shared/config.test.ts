@@ -18,6 +18,7 @@ test("loadConfig 未配置 GITLAB_URL 时为空串（从 webhook 派生）", () 
 test("loadConfig 在无环境变量时返回默认值", () => {
   assert.deepEqual(loadConfig({ GITLAB_URL: "https://gitlab.example.com" }), {
     port: 5001,
+    uiPort: 5002,
     host: "127.0.0.1",
     promptPath: "prompts/review.md",
     timeoutMs: 1200000,
@@ -114,4 +115,18 @@ test("loadConfig 对非法日志级别与非法布尔值快速失败", () => {
 
 test("loadConfig 去掉 GITLAB_URL 尾部斜杠", () => {
   assert.equal(loadConfig({ GITLAB_URL: "https://gitlab.example.com/" }).gitlabUrl, "https://gitlab.example.com");
+});
+
+test("UI_PORT 默认 5002，可显式关闭或改端口", () => {
+  // 团队既有约定：5001=API、5002=管理界面。两个端口由同一实例提供。
+  assert.equal(loadConfig(EMPTY_ENV).uiPort, 5002);
+  assert.equal(loadConfig({ UI_PORT: "8082" }).uiPort, 8082);
+  // 0 表示关闭第二端口，不能当成非法值
+  assert.equal(loadConfig({ UI_PORT: "0" }).uiPort, 0);
+  assert.equal(loadConfig({ UI_PORT: "" }).uiPort, 5002);
+});
+
+test("UI_PORT 非法值直接抛错", () => {
+  assert.throws(() => loadConfig({ UI_PORT: "abc" }), /UI_PORT 必须是非负整数/);
+  assert.throws(() => loadConfig({ UI_PORT: "-1" }), /UI_PORT 必须是非负整数/);
 });

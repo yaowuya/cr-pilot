@@ -4,6 +4,18 @@ import { parseLogLevel, type LogLevel } from "./logger.ts";
 export interface AppConfig {
   /** 监听端口。默认 5001，对齐团队既有约定。 */
   port: number;
+  /**
+   * 额外的监听端口（可选）。默认 5002。
+   *
+   * 背景：团队既有部署约定「5001 = API、5002 = 管理界面」两个端口。
+   * 旧项目是 Flask + Streamlit 两个独立进程，各占一个端口；本项目前端是
+   * 由 Express 托管的静态文件，没有第二个进程。为兼容既有访问习惯
+   * （运维脚本、书签、监控都指向 5002），让同一个 Express 实例再监听一个
+   * 端口——两个端口提供完全相同的服务，不额外起进程也不引入 Nginx。
+   *
+   * 设为 0 或与 `port` 相同时不启用第二端口。
+   */
+  uiPort: number;
   /** 监听地址。默认只绑本机。 */
   host: string;
   /** 评审 prompt 兜底文件路径（无 YAML 规则时使用）。 */
@@ -44,6 +56,11 @@ export interface AppConfig {
 }
 
 const DEFAULT_PORT = 5001;
+/**
+ * 管理界面的备用端口，对齐团队既有「5001=API、5002=UI」约定。
+ * 设 0 可关闭第二端口；与 PORT 相同时也会自动跳过。
+ */
+const DEFAULT_UI_PORT = 5002;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PROMPT_PATH = "prompts/review.md";
 const DEFAULT_TIMEOUT_MS = 1200000;
@@ -68,6 +85,8 @@ const DEFAULT_DB_PATH = "./data/cr-pilot.db";
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     port: readPositiveInt(env, "PORT", DEFAULT_PORT),
+    // 允许显式设为 0 来关闭：readPositiveInt 不接受 0，因此单独读取。
+    uiPort: readOptionalNonNegativeInt(env, "UI_PORT", DEFAULT_UI_PORT),
     host: env.HOST?.trim() || DEFAULT_HOST,
     promptPath: env.REVIEW_PROMPT_PATH?.trim() || DEFAULT_PROMPT_PATH,
     timeoutMs: readPositiveInt(env, "REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
@@ -112,6 +131,23 @@ function readBooleanFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   if (raw === "1" || raw === "true") return true;
   if (raw === "0" || raw === "false") return false;
   throw new Error(`环境变量 ${name} 必须是 0 或 1，实际收到 ${raw}`);
+}
+
+/** 读取正整数环境变量。空值走默认值，非正整数抛错并带上变量名。 */
+/**
+ * 读取允许为 0 的端口号；0 表示「关闭该端口」。
+ *
+ * 与 `readPositiveInt` 分开是因为 UI_PORT 需要支持显式关闭：
+ * 有些部署只想要单端口，用同一个校验函数会把 0 判成非法。
+ */
+function readOptionalNonNegativeInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`环境变量 ${name} 必须是非负整数，实际收到 ${raw}`);
+  }
+  return value;
 }
 
 /** 读取正整数环境变量。空值走默认值，非正整数抛错并带上变量名。 */

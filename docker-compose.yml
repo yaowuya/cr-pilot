@@ -4,9 +4,13 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: cr-pilot
-    # 宿主机 5001 → 容器 5001；如需只内网访问可去掉 ports，改用 network_mode: host
+    # 宿主机 5001 → 容器 5001（API/webhook）
+    # 宿主机 5002 → 容器 5002（管理界面，与 5001 服务完全相同）
+    # 对齐团队既有约定：5001=API、5002=UI。两个端口由同一个 Express 实例监听，
+    # 不额外起进程，也不需要 Nginx 反代。
     ports:
       - "5001:5001"
+      - "5002:5002"
 
     # 环境变量闭环：compose 原生 env_file 把 .env 全部注入容器 environment，
     # 应用无需再读文件，pi 的 $LLMGW_API_KEY 插值也一定能读到进程环境。
@@ -19,6 +23,9 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=5001
+      # 管理界面端口：与 5001 提供相同的服务（同一个 Express 实例双监听）。
+      # 设为 0 可关闭，只保留 5001。
+      - UI_PORT=5002
       # 日志落盘到上面挂载的 /app/logs 卷；不设置时只输出到控制台，
       # 挂载点等于闲置，容器重启后日志也一并丢失。
       - LOG_FILE=/app/logs/cr-pilot.log
@@ -49,8 +56,12 @@ services:
     # network_mode: host
 
     # 健康检查：容器启动后每 30s 探测 /health 端点
+    # 同时探测 5002，任一端口不通都算不健康——两个端口是同一实例，
+    # 只探 5001 无法发现「第二端口没起来」这种配置事故。
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5001/health"]
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://localhost:5001/health && wget -q --spider http://localhost:5002/health
       interval: 30s
       timeout: 5s
       retries: 3

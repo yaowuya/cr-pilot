@@ -79,6 +79,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   logger.info("生效配置", {
     监听地址: config.host,
     端口: config.port,
+    管理界面端口: config.uiPort > 0 && config.uiPort !== config.port ? config.uiPort : "(未启用)",
     GitLab地址: config.gitlabUrl,
     Prompt路径: config.promptPath,
     评审超时毫秒: config.timeoutMs,

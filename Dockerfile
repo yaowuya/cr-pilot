@@ -51,7 +51,10 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
+# 主端口（API + webhook）与管理界面端口，对齐团队既有「5001=API、5002=UI」约定。
+# 同一 Express 实例同时监听两者，不需要第二个进程。
 ENV PORT=5001
+ENV UI_PORT=5002
 # pi 凭证闭环：配置目录固定在镜像内的 /app/pi-agent（models.json 用
 # $LLMGW_API_KEY 环境变量插值取密钥），密钥经挂载的 .env 注入，不依赖宿主机。
 ENV PI_CODING_AGENT_DIR=/app/pi-agent
@@ -89,7 +92,8 @@ RUN apk add --no-cache su-exec
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-EXPOSE 5001
+# 对外声明两个端口：5001（API/webhook）、5002（管理界面，等同 5001 的服务）
+EXPOSE 5001 5002
 
 # entrypoint 负责修属主并 exec 降权；CMD 只用 exec 形式避免信号丢失
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
