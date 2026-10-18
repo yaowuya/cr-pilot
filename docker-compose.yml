@@ -41,6 +41,10 @@ services:
     # 生产环境推荐：异常退出自动重启
     restart: unless-stopped
 
+    # 不要设置 user: 为非 root。镜像的 entrypoint 需要 root 权限修正具名卷属主
+    # （卷根目录由 Docker 建成 root 所有），再降权到 node 运行。
+    # 若确实要指定 user，请自行保证 /app/data 与 /app/logs 可写。
+
     # 如需访问宿主机网络（如宿主机跑 GitLab），可改为 network_mode: host
     # network_mode: host
 

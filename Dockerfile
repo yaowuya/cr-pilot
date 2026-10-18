@@ -72,18 +72,25 @@ COPY --from=builder /app/package.json ./
 # 目录必须对 node 用户可读；用 --chown 一并设好属主，避免运行时权限问题。
 COPY --chown=node:node --from=frontend /app/dist ./dist
 
-# 数据与日志目录：两者都是 compose 里的具名卷挂载点，必须在镜像内预建并授权。
-#
-# 关键：具名卷首次创建时会把镜像内该路径的**内容与属主**复制到卷里。
-# 若镜像内没有这个目录，Docker 会以 root 属主创建空目录直接挂上去，
-# 而容器内以 node(uid 1000) 运行 → 写日志/开库 EACCES。
-# 所以 /app/data 与 /app/logs 都必须在这里 mkdir + chown。
+# 数据与日志目录：两者都是 compose 里的具名卷挂载点，必须在镜像内预建。
 RUN mkdir -p /app/data /app/logs && chown -R node:node /app/data /app/logs
 
-# 创建非 root 用户并切换（Alpine 自带 node 用户 uid=1000）
-USER node
+# su-exec：极小的降权工具（~10KB），用于 entrypoint 以 root 修完属主后切回 node。
+# Alpine 不预装 gosu，su-exec 是官方推荐替代。
+RUN apk add --no-cache su-exec
+
+# 启动脚本：以 root 修正卷属主后降权运行。
+#
+# 为什么需要它：具名卷首次挂载到已存在目录时，Docker 会复制目录**内容**，
+# 但**卷根目录属主被设为 root**——镜像里 chown 成 node 的设置不生效。
+# 于是 node(uid 1000) 无法在 /app/data 建库、无法往 /app/logs 写日志，
+# 表现为「unable to open database file」。
+# 每次启动都 chown 一次（幂等、目录为空时开销可忽略），不依赖卷的初始化时机。
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 5001
 
-# Node 22 原生支持 TS 扩展名，无需编译
+# entrypoint 负责修属主并 exec 降权；CMD 只用 exec 形式避免信号丢失
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "src/bootstrap.ts"]

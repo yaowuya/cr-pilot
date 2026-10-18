@@ -237,8 +237,23 @@ docker compose exec cr-pilot node scripts/import-prompts.ts
 
 **数据与日志用 Docker 具名卷**（`cr-pilot-data`、`cr-pilot-logs`），而不是宿主机绝对路径。
 原因：bind mount 会沿用宿主机目录属主，目录不存在时 Docker 以 root 创建，而容器内以
-`node`（uid 1000）运行，会导致 SQLite 开库或写日志 `EACCES`。具名卷首次创建时复制镜像内
-目录属性，属主正确，**无需手工 `mkdir` / `chown`**。
+`node`（uid 1000）运行，会导致 SQLite 开库或写日志 `EACCES`。
+
+> **注意具名卷的属主行为**：卷首次挂载到镜像内已存在的目录时，Docker 只复制目录**内容**，
+> **卷根目录的属主会被设为 root**——镜像里 `chown` 成 `node` 的设置并不生效。
+> 因此镜像带了一个 entrypoint（`docker-entrypoint.sh`）：启动时以 root 递归修正
+> `/app/data`、`/app/logs` 的属主，再用 `su-exec` 降权到 `node` 运行应用。
+> 这也意味着**不要**在 compose 里设 `user:` 为非 root，否则修正属主那一步会被跳过。
+
+如果启动报 `unable to open database file`，通常是卷属主问题。排查与修复：
+
+```bash
+# 看卷根目录属主（应为 root，entrypoint 会在启动时改）
+docker compose run --rm --entrypoint sh cr-pilot -c 'ls -ld /app/data /app/logs'
+
+# 手工修正（通常不需要，entrypoint 已处理；用于历史卷遗留 root 文件的情况）
+docker compose run --rm --user root --entrypoint sh cr-pilot -c 'chown -R node:node /app/data /app/logs'
+```
 
 备份或迁移数据：
 
