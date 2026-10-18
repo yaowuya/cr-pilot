@@ -11,7 +11,7 @@ import {
 import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
 import type { ReviewRecord } from "../domain/review-record.ts";
 import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
-import type { PromptRepository } from "../domain/review-prompt.ts";
+import type { PromptRepository, StoredPrompt } from "../domain/review-prompt.ts";
 import type { Change, Commit, DiffRefs, GitlabClient, MergeRequestTask, Reviewer, WecomNotifier } from "../domain/review-task.ts";
 
 export type { MergeRequestTask };
@@ -51,6 +51,37 @@ interface PipelineDeps {
 
 /** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致（20 分钟）。 */
 const DEFAULT_TIMEOUT_MS = 1200000;
+
+/**
+ * 本次评审实际使用的 prompt 来源。
+ *
+ * 只用于日志与排障：评审结果异常时，第一件要确认的事就是「命中了哪条规则」。
+ * 三种来源互斥，`kind` 让日志可以一眼区分：
+ * - `db-project`：命中数据库里关联了该项目的 prompt；
+ * - `db-default`：数据库里没有项目记录，回落到全局 default；
+ * - `fallback`：数据库完全没有可用记录，落到 yaml 目录或 Markdown 兜底。
+ */
+export type PromptSource =
+  | { kind: "db-project"; name: string; id: number; projects: string[] }
+  | { kind: "db-default"; name: string; id: number }
+  | { kind: "fallback"; name: string };
+
+/**
+ * 来源的中文描述，直接用于日志字段。
+ *
+ * 刻意不使用空格：日志器对含空格的值会加引号包裹（见 shared/logger.ts），
+ * 而这里的描述是日志里的固定字段值，加引号只会让整行更难扫读。
+ */
+export function describePromptSource(source: PromptSource): string {
+  switch (source.kind) {
+    case "db-project":
+      return `数据库项目规则(${source.name},id=${source.id})`;
+    case "db-default":
+      return `数据库全局默认(${source.name},id=${source.id})`;
+    case "fallback":
+      return "yaml兜底(数据库无可用记录)";
+  }
+}
 
 /** 汇总 prompt 的系统提示后缀，要求模型把各批结果合并成一份最终评论。 */
 const SUMMARY_SUFFIX = "\n\n你之前分批评审了同一变更的各部分。下面按批序给出各批评审结果，请把它们合并成一份最终评论：去重、按严重程度排序、保留各条问题的位置与证据、合并评分并给出总分。每个问题小节必须包含「位置」「问题（有问题的代码块，带语言标记）」「建议（改进后的代码块，带语言标记）」，问题之间用 --- 分隔。输出结构与格式完全遵循上述规则的要求；只输出纯 Markdown 评论正文，不要用 ``` 代码块包裹整个评论，不要加任何前言或后缀。";
@@ -144,10 +175,19 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         提交数: commits.length,
       });
 
-      const ruleSet = resolveRuleSet(task.fullName);
+      // 解析规则集并记录来源：评审异常时第一件要确认的事就是「用了哪条 prompt」。
+      // 命中项目记录 / 全局 default / yaml 兜底 三者的行为差异很大，必须在日志里可见。
+      const { ruleSet, source: promptSource, stored: promptStored } = resolveRuleSet(task.fullName);
+      logger.info("本次评审使用的 prompt", {
+        项目ID: task.projectId,
+        MR编号: task.iid,
+        来源: describePromptSource(promptSource),
+        规则名: promptSource.name,
+        ...(promptSource.kind === "db-project" ? { 关联项目: promptSource.projects.join("、") } : {}),
+      });
       // LLM 目标：项目绑定 > prompt 指定 > 全局默认（D-022）。全部为空时不传，
       // 让 reviewer 用 models.json 里的既有默认配置。
-      const llmTarget = resolveLlmTarget(task.fullName);
+      const llmTarget = resolveLlmTarget(task.fullName, promptStored);
       if (llmTarget) {
         logger.info("本次评审使用的模型", {
           项目ID: task.projectId,
@@ -319,23 +359,49 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   };
 
   /**
-   * 解析本次评审使用的规则集。
+   * 解析本次评审使用的规则集，并记录它来自哪里。
    *
    * 数据库优先（P-015 / D-016）：命中即用，未命中回落 `default` 记录，
    * 两者都没有才使用 `rules`（yaml 目录或 Markdown 兜底）。数据库里存的是
    * 渲染后的最终文本，因此不再套用风格模板。
+   *
+   * 必须同时返回来源：只打「开始评审」而不打「用了哪条 prompt」时，评审结果
+   * 异常（比如规则没生效）根本无从判断命中的是项目记录、default 还是 yaml 兜底。
    */
-  function resolveRuleSet(fullName: string): RuleSet {
+  function resolveRuleSet(fullName: string): {
+    ruleSet: RuleSet;
+    source: PromptSource;
+    /** 命中的数据库记录；fallback 时为 undefined。供 LLM 目标解析复用，避免重复查库。 */
+    stored?: StoredPrompt;
+  } {
     const stored = deps.promptSource?.resolve(fullName);
     if (stored) {
+      // 记录命中的具体 prompt 名：项目记录显示项目名，兜底显示 default，
+      // 便于确认「这条 MR 到底吃的是哪套规则」。
+      const source: PromptSource =
+        stored.repository === "default"
+          ? { kind: "db-default", name: stored.repository, id: stored.id }
+          : {
+              kind: "db-project",
+              name: stored.repository,
+              id: stored.id,
+              // projects 在仓储实现里一定存在；这里兜住 undefined 是因为日志属于
+              // 旁路逻辑，不能因为一个可选字段缺失就把整个评审打断。
+              projects: stored.projects ?? [],
+            };
       return {
-        systemPrompt: stored.systemPrompt,
-        userPrompt: stored.userPrompt,
-        wecomWebhookUrl: stored.wecomWebhookUrl,
-        wecomScoreThreshold: stored.wecomScoreThreshold,
+        ruleSet: {
+          systemPrompt: stored.systemPrompt,
+          userPrompt: stored.userPrompt,
+          wecomWebhookUrl: stored.wecomWebhookUrl,
+          wecomScoreThreshold: stored.wecomScoreThreshold,
+        },
+        source,
+        stored,
       };
     }
-    return rules.resolve(fullName);
+    // 落到 yaml 目录或 Markdown 兜底：数据库里没有可用记录。
+    return { ruleSet: rules.resolve(fullName), source: { kind: "fallback", name: fullName } };
   }
 
   /**
@@ -345,13 +411,12 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
    * 全都没有配置时返回 undefined，reviewer 会回落到 models.json 的默认模型，
    * 保证「没配厂商」的老部署仍然能跑。
    */
-  function resolveLlmTarget(fullName: string): ResolvedLlmTarget | undefined {
+  function resolveLlmTarget(fullName: string, stored?: StoredPrompt): ResolvedLlmTarget | undefined {
     const repo = deps.llmProviders;
     if (!repo) return undefined;
 
     // prompt 上显式指定的厂商优先于全局默认，但低于项目绑定——
     // 项目绑定是运维针对单个项目做的临时调整，语义上更具体。
-    const stored = deps.promptSource?.resolve(fullName);
     if (stored?.providerId) {
       const provider = repo.get(stored.providerId);
       if (provider) {
