@@ -15,7 +15,7 @@ data/
 
 # 前端依赖与构建产物：由 npm run build:frontend 产出，镜像构建时重新生成
 web/node_modules/
-web/dist/
+dist/
 
 # playwright-cli 的临时快照、截图与控制台日志
 .playwright-cli/

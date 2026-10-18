@@ -28,7 +28,7 @@ import { createProvidersRouter } from "./interfaces/http/api/providers.ts";
 import { createReviewsRouter } from "./interfaces/http/api/reviews.ts";
 
 /** 前端构建产物目录，与 `web/vite.config.ts` 的 outDir 对应。 */
-const WEB_DIST_DIR = "web/dist";
+const WEB_DIST_DIR = "dist";
 
 // 仅在直接执行本文件时启动服务。测试会导入各模块，因此必须有这层判定，
 // 否则一次 import 就会占用端口并留下一个不会退出的进程。

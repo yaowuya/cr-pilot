@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS review_records (
   result TEXT NOT NULL,
   error_message TEXT,
   comment_url TEXT,
+  mr_url TEXT,
   started_at INTEGER NOT NULL,
   finished_at INTEGER NOT NULL
 );
@@ -139,6 +140,7 @@ export function openDatabase(path: string): DatabaseSync {
 function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "review_prompts", "provider_id", "INTEGER");
   addColumnIfMissing(db, "review_prompts", "model", "TEXT");
+  addColumnIfMissing(db, "review_records", "mr_url", "TEXT");
 }
 
 /** 给表补一列；表不存在或列已存在时静默跳过。 */

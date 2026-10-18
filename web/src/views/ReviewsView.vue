@@ -66,9 +66,23 @@
             <span class="cell-strong">{{ row.projectName }}</span>
           </template>
         </el-table-column>
+        <!--
+          MR 列：有 mrUrl 时渲染成可点击链接，点击在新标签打开 GitLab 的 MR 页面。
+          历史记录可能没有 URL（列为 null），此时退化为纯文本标签，不渲染死链。
+        -->
         <el-table-column label="MR" width="90">
           <template #default="{ row }">
-            <el-tag size="small" type="info" effect="plain">!{{ row.mrIid }}</el-tag>
+            <a
+              v-if="row.mrUrl"
+              :href="row.mrUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="mr-link"
+              :title="`在 GitLab 中打开 !${row.mrIid}`"
+            >
+              !{{ row.mrIid }}
+            </a>
+            <el-tag v-else size="small" type="info" effect="plain">!{{ row.mrIid }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="committerName" label="提交人" width="130" show-overflow-tooltip />
@@ -379,6 +393,19 @@ onMounted(() => {
 
 .score--high {
   color: #10b981;
+}
+
+/* MR 跳转链接：主色 + 悬浮下划线，让「可点」这件事一眼可见 */
+.mr-link {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--el-color-primary);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.mr-link:hover {
+  text-decoration: underline;
 }
 
 .pager {

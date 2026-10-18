@@ -21,6 +21,7 @@ interface ReviewRow {
   result: string;
   error_message: string | null;
   comment_url: string | null;
+  mr_url: string | null;
   started_at: number;
   finished_at: number;
 }
@@ -39,6 +40,7 @@ function toRecord(row: ReviewRow): ReviewRecord {
     result: row.result === "failed" ? "failed" : "success",
     errorMessage: row.error_message,
     commentUrl: row.comment_url,
+    mrUrl: row.mr_url,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
   };
@@ -49,8 +51,8 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
   const insertStatement = db.prepare(`
     INSERT INTO review_records (
       project_id, project_name, mr_iid, committer_name, change_count, batch_count,
-      score, duration_ms, result, error_message, comment_url, started_at, finished_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      score, duration_ms, result, error_message, comment_url, mr_url, started_at, finished_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   return {
@@ -68,6 +70,7 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
         record.result,
         record.errorMessage,
         record.commentUrl,
+        record.mrUrl,
         record.startedAt,
         record.finishedAt,
       );

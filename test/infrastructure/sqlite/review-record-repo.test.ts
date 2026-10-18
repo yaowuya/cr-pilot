@@ -18,6 +18,7 @@ function record(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
     result: "success",
     errorMessage: null,
     commentUrl: null,
+    mrUrl: null,
     startedAt: 1000,
     finishedAt: 2000,
     ...overrides,

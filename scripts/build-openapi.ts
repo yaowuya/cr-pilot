@@ -937,6 +937,12 @@ const schemas: Record<string, JsonObject> = {
       result: { type: "string", enum: ["success", "failed"], example: "success" },
       errorMessage: { type: "string", nullable: true, description: "仅 result=failed 时有值" },
       commentUrl: { type: "string", nullable: true, description: "回写的 MR 评论地址" },
+      mrUrl: {
+        type: "string",
+        nullable: true,
+        description: "MR 的 GitLab web 地址，供页面点击跳转；缺实例地址或项目名时为 null",
+        example: "https://code.cwoa.net/group/payment-service/-/merge_requests/12",
+      },
       startedAt: { type: "integer", description: "Unix 毫秒", example: 1792226620931 },
       finishedAt: { type: "integer", description: "Unix 毫秒", example: 1792226633331 },
     },

@@ -196,8 +196,8 @@ npm start
 前端开发（可选）：
 
 ```bash
-npm run dev:frontend   # Vite 开发服务器，自动代理 /api 与 /review 到 5001
-npm run build:frontend # 构建产物到 web/dist，由 Express 托管
+npm run dev:frontend   # Vite 开发服务器，自动代理 /api 与 /review/ 到 5001
+npm run build:frontend # 构建产物到 dist/，由 Express 托管
 ```
 
 ## Docker 部署

@@ -61,9 +61,9 @@ COPY --from=builder /app/prompts ./prompts
 # COPY --chown 在拷贝时直接设属主，避免额外的 chown RUN 层。
 COPY --chown=node:node --from=builder /app/pi-agent ./pi-agent
 COPY --from=builder /app/package.json ./
-# 前端构建产物：Express 静态托管 web/dist（见 src/bootstrap.ts 的 WEB_DIST_DIR）。
+# 前端构建产物：Express 静态托管 dist（见 src/bootstrap.ts 的 WEB_DIST_DIR）。
 # 目录必须对 node 用户可读；用 --chown 一并设好属主，避免运行时权限问题。
-COPY --chown=node:node --from=frontend /app/web/dist ./web/dist
+COPY --chown=node:node --from=frontend /app/dist ./dist
 
 # 数据目录：容器内默认挂载点，预建并授权，避免首次启动因无写权限失败
 RUN mkdir -p /app/data && chown -R node:node /app/data

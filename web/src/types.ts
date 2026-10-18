@@ -18,6 +18,8 @@ export interface ReviewRecord {
   result: "success" | "failed";
   errorMessage: string | null;
   commentUrl: string | null;
+  /** MR 的 GitLab web 地址，供页面点击跳转；历史记录可能为 null。 */
+  mrUrl: string | null;
   startedAt: number;
   finishedAt: number;
 }

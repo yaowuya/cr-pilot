@@ -120,6 +120,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           result: outcome.result,
           errorMessage: outcome.errorMessage ?? null,
           commentUrl: outcome.commentUrl ?? null,
+          mrUrl: buildMergeRequestUrl(task),
           startedAt,
           finishedAt: Date.now(),
         });
@@ -276,6 +277,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             targetBranch: task.targetBranch,
             score,
             comment: finalComment,
+            // 摘要消息附 MR 链接，接收者点一下就能看完整评审。
+            mrUrl: buildMergeRequestUrl(task),
           });
           try {
             await deps.wecomNotifier.send(ruleSet.wecomWebhookUrl, message);
@@ -582,10 +585,33 @@ function appendFallback(comment: string, fallback: string[]): string {
 }
 
 /**
+ * 拼出 MR 的 GitLab web 地址（纯函数，供测试）。
+ *
+ * GitLab 的 MR 地址规则稳定：`{实例}/{项目全名}/-/merge_requests/{iid}`。
+ * 用拼接而不是从 webhook 读 `object_attributes.url`：后者不落在任务模型里，
+ * 而实例地址与项目全名都已有，拼接不需要改 webhook 解析链路。
+ *
+ * 缺实例地址或项目全名时返回 null——宁可不给链接，也不给一个点开 404 的地址。
+ */
+export function buildMergeRequestUrl(task: {
+  gitlabUrl?: string;
+  fullName: string;
+  iid: number;
+}): string | null {
+  const base = task.gitlabUrl?.trim().replace(/\/+$/, "");
+  const fullName = task.fullName?.trim();
+  if (!base || !fullName) return null;
+  return `${base}/${fullName}/-/merge_requests/${task.iid}`;
+}
+
+/**
  * 组装企业微信 markdown 消息（application 层纯函数，供测试）。
  *
- * 只使用企微支持的 markdown 子集：标题、加粗、链接与正文；
- * 评审正文过长时由 notifier 按 4096 字节截断。
+ * 只发**摘要**，不附评审正文：企微是通知渠道而不是阅读器，把几十行代码块
+ * 塞进去既难看又触发 4096 字节截断，关键信息（评分、问题数量、去哪儿看）
+ * 反而被挤掉。详细内容在 MR 评论里，这里只给一个跳转链接。
+ *
+ * 只使用企微支持的 markdown 子集：标题、加粗、链接与正文。
  */
 export function buildWecomMessage(input: {
   projectId: number;
@@ -594,17 +620,67 @@ export function buildWecomMessage(input: {
   sourceBranch: string;
   targetBranch: string;
   score: number;
+  /** 评审正文（Markdown）。只用于统计问题数量，不拼进消息。 */
   comment: string;
+  /** MR 的 GitLab 地址；缺失时不输出链接行。 */
+  mrUrl?: string | null;
 }): string {
+  const counts = countFindingsBySeverity(input.comment);
   const lines = [
     `# 🤖 代码评审提醒 — ${input.fullName}`,
     "",
     `**MR:** !${input.iid}　**分支:** \`${input.sourceBranch}\` → \`${input.targetBranch}\``,
     `**AI 评分:** ${input.score > 0 ? `${input.score} 分` : "未解析出分数"}（低于阈值）`,
-    "",
-    "---",
-    "",
-    input.comment,
   ];
+
+  // 问题数量统计：让接收者一眼看出严重程度，不用点进去才知道。
+  const summaryParts: string[] = [];
+  if (counts.p0 > 0) summaryParts.push(`**P0** ${counts.p0} 个`);
+  if (counts.p1 > 0) summaryParts.push(`**P1** ${counts.p1} 个`);
+  if (counts.p2 > 0) summaryParts.push(`**P2** ${counts.p2} 个`);
+  if (counts.other > 0) summaryParts.push(`**其他** ${counts.other} 个`);
+  if (summaryParts.length > 0) {
+    lines.push(`**问题:** ${summaryParts.join("　")}　共 ${counts.total} 个`);
+  } else {
+    lines.push("**问题:** 未识别到分级问题，详见 MR 评论");
+  }
+
+  if (input.mrUrl) {
+    lines.push("", `[👉 查看 MR 与完整评审](${input.mrUrl})`);
+  }
   return lines.join("\n");
+}
+
+/** 评审正文里的问题分级统计。 */
+export interface FindingCounts {
+  p0: number;
+  p1: number;
+  p2: number;
+  /** 有分级标记之外的其他问题条目（如未标 P 级但带「位置：」的段落）。 */
+  other: number;
+  total: number;
+}
+
+/**
+ * 从评审正文统计各严重级别的问题数量（纯函数，供测试）。
+ *
+ * 识别规则对齐 prompt 约定的输出格式：问题条目以 `P0：` / `P1：` / `P2：`
+ * 开头（全角冒号），或 `- P0:` 这类列表项。用行首匹配而不是全文搜索，
+ * 避免正文里引用的代码恰好含 "P0" 时被误计。
+ */
+export function countFindingsBySeverity(comment: string): FindingCounts {
+  const counts: FindingCounts = { p0: 0, p1: 0, p2: 0, other: 0, total: 0 };
+  for (const rawLine of comment.split("\n")) {
+    const line = rawLine.trim();
+    // 形如 "P0：xxx" / "- P0: xxx" / "**P0**：xxx"
+    const match = /^(?:[-*]\s+)?\*{0,2}P([0-2])\*{0,2}\s*[:：]/.exec(line);
+    if (match) {
+      const level = Number(match[1]);
+      if (level === 0) counts.p0 += 1;
+      else if (level === 1) counts.p1 += 1;
+      else counts.p2 += 1;
+      counts.total += 1;
+    }
+  }
+  return counts;
 }

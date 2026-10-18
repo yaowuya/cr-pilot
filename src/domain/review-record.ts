@@ -25,6 +25,8 @@ export interface ReviewRecord {
   /** 仅 `result === "failed"` 时有值。 */
   errorMessage: string | null;
   commentUrl: string | null;
+  /** MR 的 GitLab web 地址，供页面点击跳转；历史记录可能为 null。 */
+  mrUrl: string | null;
   /** Unix 毫秒。 */
   startedAt: number;
   /** Unix 毫秒。 */

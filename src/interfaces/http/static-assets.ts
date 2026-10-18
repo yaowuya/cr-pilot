@@ -15,7 +15,7 @@ const BACKEND_PREFIXES = ["/api", "/review"];
 
 /** 静态托管依赖。 */
 export interface StaticAssetsDeps {
-  /** 前端构建产物目录（`web/dist`）。 */
+  /** 前端构建产物目录（仓库根的 `dist`）。 */
   distDir: string;
   logger: Logger;
 }
