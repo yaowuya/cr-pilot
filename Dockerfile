@@ -17,7 +17,9 @@ WORKDIR /app/web
 
 # 只复制前端依赖声明，利用层缓存：仅改源码时不重装依赖
 COPY web/package.json web/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+# 用 npm ci 而非 npm install：ci 严格按 lock 文件安装、不会改写 lock，
+# 构建可复现；install 在依赖声明与 lock 不一致时会静默改 lock。
+RUN npm ci --no-audit --no-fund
 
 COPY web/ ./
 RUN npm run build
@@ -34,6 +36,10 @@ COPY --from=deps /app/node_modules ./node_modules
 # 复制应用代码与运行期必须的配置目录
 COPY package.json package-lock.json ./
 COPY src ./src
+# scripts 是运维脚本（import-prompts 等），README 要求用
+# `docker compose exec cr-pilot node scripts/import-prompts.ts` 在容器内执行。
+# 不拷进来会让那条文档指引直接报 Cannot find module。
+COPY scripts ./scripts
 COPY prompts ./prompts
 COPY pi-agent ./pi-agent
 
@@ -55,6 +61,7 @@ ENV DB_PATH=/app/data/cr-pilot.db
 # 把 node_modules、源码、配置从 builder 拷入
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/src ./src
+COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/prompts ./prompts
 # pi-agent 目录必须对运行用户可写：pi SDK 首次评审时会写入缓存/状态文件
 # （如 models-store.json），只读会导致 internal error → No API key found。
@@ -65,8 +72,13 @@ COPY --from=builder /app/package.json ./
 # 目录必须对 node 用户可读；用 --chown 一并设好属主，避免运行时权限问题。
 COPY --chown=node:node --from=frontend /app/dist ./dist
 
-# 数据目录：容器内默认挂载点，预建并授权，避免首次启动因无写权限失败
-RUN mkdir -p /app/data && chown -R node:node /app/data
+# 数据与日志目录：两者都是 compose 里的具名卷挂载点，必须在镜像内预建并授权。
+#
+# 关键：具名卷首次创建时会把镜像内该路径的**内容与属主**复制到卷里。
+# 若镜像内没有这个目录，Docker 会以 root 属主创建空目录直接挂上去，
+# 而容器内以 node(uid 1000) 运行 → 写日志/开库 EACCES。
+# 所以 /app/data 与 /app/logs 都必须在这里 mkdir + chown。
+RUN mkdir -p /app/data /app/logs && chown -R node:node /app/data /app/logs
 
 # 创建非 root 用户并切换（Alpine 自带 node 用户 uid=1000）
 USER node

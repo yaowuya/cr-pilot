@@ -20,9 +20,14 @@ dist/
 # playwright-cli 的临时快照、截图与控制台日志
 .playwright-cli/
 
-# pi 运行时在 PI_CODING_AGENT_DIR 下生成的凭证与缓存（可能含密钥），只保留静态配置
+# pi 运行期在 PI_CODING_AGENT_DIR 下生成的文件。
+# models.json / settings.json 是数据库厂商配置的导出产物（D-025），
+# 改一次厂商就会变，入库只会让工作区反复变脏且与数据库形成两个事实源。
+# 首次部署的初始配置放在 models.template.json（入库），数据库为空时用它兜底。
 pi-agent/auth.json
 pi-agent/models-store.json
+pi-agent/models.json
+pi-agent/settings.json
 
 # Per-repository review rules may contain team secrets (wecom tokens, thresholds).
 # Only the global default.yaml is committed; drop real repo rules in locally.

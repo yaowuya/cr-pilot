@@ -81,11 +81,19 @@ export function buildModelsJson(providers: readonly LlmProvider[]): ModelsJson |
 }
 
 /**
- * 写入 models.json 并返回实际使用的默认模型 id。
+ * 生成 `models.json`（运行时产物，不入库）。
  *
- * 合并语义而非覆盖：文件里已有的其他厂商（手写的 `llmgw` 等）必须保留——
- * 生产部署依赖仓库里那份手写配置，整体覆盖会让它在首次启动后静默消失。
- * 数据库里的厂商按 name 覆盖同名项，因此页面管理的那部分始终以数据库为准。
+ * 文件布局（D-025）：
+ * - `models.template.json` 入库，是首次部署的初始配置；
+ * - `models.json` 由本函数生成，已在 `.gitignore`，不随仓库分发。
+ *
+ * 为什么这样拆：`models.json` 既是 SDK 的读取目标、又是数据库配置的导出产物。
+ * 若它同时入库，页面上每改一次厂商就会把仓库工作区弄脏，且「文件内容」与
+ * 「数据库内容」形成两个事实源。拆成模板 + 生成物后，数据库是唯一事实源，
+ * 模板只在数据库为空时兜底。
+ *
+ * 合并语义：首次生成时以模板为底座，数据库厂商按 name 覆盖同名项；
+ * 之后每次生成都从模板重建，不累积历史残留（删除的厂商会被正确移除）。
  *
  * `settings.json` 的 `defaultModel` 只接受裸模型 id（不含 provider 前缀），
  * 因此多个厂商存在同名模型时会冲突——这里优先用全局默认厂商的默认模型，
@@ -98,25 +106,38 @@ export function writeModelsJson(options: {
 }): { written: boolean; path: string; defaultModel?: string } {
   const generated = buildModelsJson(options.providers);
   const path = join(options.agentDir, "models.json");
-  if (!generated) return { written: false, path };
 
-  // 先读旧文件并保留未被子配置覆盖的厂商；读取失败（不存在/格式坏）按空处理，
-  // 坏文件会被本次写入修好，不需要报错阻断启动。
-  const existing = readExistingProviders(path);
-  const merged: ModelsJson = { providers: { ...existing, ...generated.providers } };
+  // 数据库为空时仍要产出一个文件：SDK 读不到 models.json 会回落到内置 catalog，
+  // 结果是「模型密钥未配置」而不是清晰报错。此时用模板兜底。
+  const template = readExistingProviders(join(options.agentDir, TEMPLATE_FILENAME));
+  if (!generated) {
+    // 没有任何配置来源（数据库空 + 模板缺失）：不写文件，由启动日志告警提示。
+    if (Object.keys(template).length === 0) return { written: false, path };
+    return writeMerged(path, template, undefined);
+  }
 
+  // 以模板为底座，数据库厂商覆盖同名项。
+  const merged: ModelsJson = { providers: { ...template, ...generated.providers } };
+  return writeMerged(path, merged.providers, options.defaultProvider);
+}
+
+/** 入库的模板文件名：与生成物区分，避免被 `.gitignore` 一并忽略。 */
+export const TEMPLATE_FILENAME = "models.template.json";
+
+/** 落盘并返回结果；内容未变化时不重写，避免无意义的 mtime 抖动。 */
+function writeMerged(
+  path: string,
+  providers: Record<string, ModelsJsonProvider>,
+  defaultProvider?: LlmProvider,
+): { written: boolean; path: string; defaultModel?: string } {
+  const content = `${JSON.stringify({ providers }, null, 2)}\n`;
   mkdirSync(dirname(path), { recursive: true });
-  // 内容语义未变时不写盘：models.json 是入库文件，每次启动都重新序列化会让它
-  // 因为格式差异（如 ["text"] 展开成多行）变成「已修改」，污染 git 工作区，
-  // 甚至被误提交覆盖掉手写配置。只有 providers 真的变化才落盘。
-  const nextContent = `${JSON.stringify(merged, null, 2)}\n`;
-  const changed = readTextIfExists(path) !== nextContent;
-  if (changed) writeFileSync(path, nextContent, "utf8");
+  const changed = readTextIfExists(path) !== content;
+  if (changed) writeFileSync(path, content, "utf8");
 
-  const defaultModel = options.defaultProvider?.defaultModel ?? options.defaultProvider?.models[0];
+  const defaultModel = defaultProvider?.defaultModel ?? defaultProvider?.models[0];
   if (defaultModel) {
-    const settingsPath = join(options.agentDir, "settings.json");
-    mkdirSync(dirname(settingsPath), { recursive: true });
+    const settingsPath = join(dirname(path), "settings.json");
     const nextSettings = `${JSON.stringify({ defaultModel }, null, 2)}\n`;
     if (readTextIfExists(settingsPath) !== nextSettings) writeFileSync(settingsPath, nextSettings, "utf8");
   }

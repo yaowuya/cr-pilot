@@ -45,9 +45,21 @@ npm install
 
 ## 前置条件：pi 模型凭证
 
-服务在进程内嵌入 pi SDK，凭证由 pi 自身管理，不属于本项目的配置项，也不通过本服务的环境变量传入。配置目录默认为 `~/.pi/agent/`。
+模型厂商配置**由数据库管理**，在管理页面「AI 厂商」里维护（支持 OpenAI / DeepSeek /
+Anthropic / 通义千问等多厂商，可指定每个项目用哪个厂商）。服务启动时把数据库配置
+导出到 `pi-agent/models.json`，并把密钥写入进程环境变量供 pi SDK 读取。
 
-**`models.json`** 声明评审模型，自定义 endpoint 写在这里：
+配置目录由 `PI_CODING_AGENT_DIR` 指定，默认 `pi-agent/`。该目录下的文件分工：
+
+| 文件 | 是否入库 | 作用 |
+|---|---|---|
+| `models.template.json` | ✅ | **初始配置模板**。数据库为空时用它兜底，保证新机器首次部署能启动 |
+| `models.json` | ❌ 运行时生成 | 由数据库配置导出，改一次厂商就会变，故不入库（`.gitignore`） |
+| `settings.json` | ❌ 运行时生成 | 同上，记录 `defaultModel` |
+| `auth.json` | ❌ | pi SDK 的凭证缓存（含密钥） |
+| `models-store.json` | ❌ | pi SDK 的运行期缓存 |
+
+`models.template.json` 的形状：
 
 ```json
 {
@@ -55,12 +67,13 @@ npm install
     "llmgw": {
       "baseUrl": "https://llmgw.cwoa.net/v1",
       "api": "openai-responses",
+      "apiKey": "$LLMGW_API_KEY",
       "models": [
         {
           "id": "gpt-5.6-terra",
           "name": "gpt-5.6-terra",
           "input": ["text"],
-          "contextWindow": 128000,
+          "contextWindow": 1000000,
           "maxTokens": 32000,
           "reasoning": false,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
@@ -71,13 +84,8 @@ npm install
 }
 ```
 
-**`auth.json`** 存放密钥，键名与 `models.json` 的 provider 名一致：
-
-```json
-{
-  "llmgw": { "type": "api_key", "key": "<模型服务密钥>" }
-}
-```
+`apiKey` 必须是 `$环境变量名` 形式的引用，**不要写明文**——生成 `models.json` 时
+原样保留这个引用，实际密钥从数据库导出到同名环境变量。
 
 `settings.json` 的 `defaultModel` 决定默认模型。校验方式：
 
@@ -101,8 +109,8 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |
 | `QUEUE_CONCURRENCY` | `5` | 后台队列并发数：同时处理的 MR 评审任务上限 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
-| `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。Docker 部署建议 `/app/logs/cr-pilot.log`（compose 已挂载宿主机 `/data/logs/cr-pilot`） |
-| `DB_PATH` | `./data/cr-pilot.db` | SQLite 数据库文件路径。容器内默认 `/app/data/cr-pilot.db`（挂载宿主机 `/data/cr-pilot`）。**必须落在本地盘**：WAL 模式不支持网络文件系统 |
+| `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。compose 已固定为 `/app/logs/cr-pilot.log` 并挂载具名卷 |
+| `DB_PATH` | `./data/cr-pilot.db` | SQLite 数据库文件路径。容器内固定 `/app/data/cr-pilot.db`（挂载具名卷 `cr-pilot-data`）。**必须落在本地盘**：WAL 模式不支持网络文件系统 |
 | `ADMIN_USERNAME` | 空 | 首次启动引导创建的管理员用户名，仅在管理员表为空时生效 |
 | `ADMIN_PASSWORD` | 空 | 首次启动引导创建的管理员密码；留空则跳过创建（空密码无法登录），启动告警 |
 | `AUTH_SALT` | 无（**必填**） | 令牌与密码盐的部署盐。令牌由「用户名 + 此盐」离线派生，留空等于任何人都能算出管理令牌，**服务拒绝启动**。生成：`node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` |
@@ -204,13 +212,10 @@ npm run build:frontend # 构建产物到 dist/，由 Express 托管
 
 ```bash
 # 1. 准备 .env：cp .env.example .env
-#    必填：LLMGW_API_KEY（pi 模型密钥）、AUTH_SALT（管理令牌盐，建议 32 位随机串）
-#    首启：ADMIN_USERNAME + ADMIN_PASSWORD（仅在管理员表为空时创建）
-#    建议：LOG_FILE=/app/logs/cr-pilot.log
-# 2. 准备宿主机目录（数据卷必须本地盘 + 属主给容器内 node 用户 uid 1000）
-sudo mkdir -p /data/logs/cr-pilot /data/cr-pilot
-sudo chown 1000:1000 /data/logs/cr-pilot /data/cr-pilot
-# 3. 构建并启动（含前端构建阶段，首次约 1-2 分钟）
+#    必填：AUTH_SALT（管理令牌盐，建议 32 位随机串）
+#    首启：ADMIN_USERNAME + ADMIN_PASSWORD（仅在账号表为空时创建）
+#    模型密钥：可在「AI 厂商」页配置，或保持模板里的 $LLMGW_API_KEY 并在此填值
+# 2. 构建并启动（Dockerfile 内含前端构建阶段，首次约 1-2 分钟）
 docker compose up -d --build
 
 # 健康检查
@@ -219,15 +224,33 @@ curl http://localhost:5001/health   # → {"status":"ok"}
 # 管理控制台
 # 浏览器打开 http://<host>:5001/，用 ADMIN_USERNAME / ADMIN_PASSWORD 登录
 
-# 查看日志（控制台 + /data/logs/cr-pilot/cr-pilot.log）
+# 查看日志（控制台 + 容器内 /app/logs/cr-pilot.log）
 docker compose logs -f cr-pilot
-tail -f /data/logs/cr-pilot/cr-pilot.log
+docker compose exec cr-pilot tail -f /app/logs/cr-pilot.log
 
 # 升级已有部署：把既有 yaml prompt 导入数据库（幂等）
 docker compose exec cr-pilot node scripts/import-prompts.ts
 ```
 
-**pi 凭证闭环**：镜像内置 `pi-agent/models.json` + `settings.json`（`PI_CODING_AGENT_DIR=/app/pi-agent`），其中 `apiKey` 用 `$LLMGW_API_KEY` 环境变量插值；`docker-compose.yml` 把宿主机 `.env` 挂载为 `/app/.env:ro`，应用启动时自动加载。全部配置（含模型密钥）只在一个 `.env` 文件里维护，不依赖宿主机 `~/.pi/agent` 挂载。
+**不需要手动构建前端**：Dockerfile 的 `frontend` 阶段会在容器内执行 `npm run build`，
+产物落到 `/app/dist` 并由 Express 托管。
+
+**数据与日志用 Docker 具名卷**（`cr-pilot-data`、`cr-pilot-logs`），而不是宿主机绝对路径。
+原因：bind mount 会沿用宿主机目录属主，目录不存在时 Docker 以 root 创建，而容器内以
+`node`（uid 1000）运行，会导致 SQLite 开库或写日志 `EACCES`。具名卷首次创建时复制镜像内
+目录属性，属主正确，**无需手工 `mkdir` / `chown`**。
+
+备份或迁移数据：
+
+```bash
+# 数据卷实际落在 /var/lib/docker/volumes/cr-pilot_cr-pilot-data/_data
+docker run --rm -v cr-pilot_cr-pilot-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/cr-pilot-data.tar.gz -C /data .
+```
+
+**pi 模型配置**：镜像内置 `pi-agent/models.template.json`（`PI_CODING_AGENT_DIR=/app/pi-agent`），
+数据库为空时用它兜底；有厂商配置后由数据库导出 `models.json`。`docker-compose.yml` 通过
+`env_file` 注入 `.env`，应用启动时自动加载，不依赖宿主机 `~/.pi/agent` 挂载。
 
 ## 配置 GitLab webhook
 

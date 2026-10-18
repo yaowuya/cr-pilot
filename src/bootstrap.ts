@@ -144,12 +144,14 @@ async function startApplication(input: {
     const records = createReviewRecordRepository(db);
 
     /**
-     * 把数据库里的厂商配置同步到 pi-agent/models.json 并导出密钥到环境变量。
+     * 把数据库里的厂商配置导出到 `pi-agent/models.json`，并把密钥写进环境变量。
      *
      * 两件事必须一起做：models.json 里写的是 `$LLM_KEY_XXX` 引用，若只写文件不导出
      * 环境变量，SDK 解析密钥时会拿到空值并报 No API key found。
      *
-     * 数据库里没有厂商时不动文件：老部署升级后仍用原来手写的 models.json 跑。
+     * 文件布局（D-025）：`models.json` 是运行时产物（已 gitignore），
+     * `models.template.json` 入库作为初始配置。数据库为空时用模板兜底，
+     * 保证新机器首次部署也能启动。
      */
     const agentDir = process.env.PI_CODING_AGENT_DIR?.trim() || "pi-agent";
     const syncModels = (): void => {
@@ -160,7 +162,19 @@ async function startApplication(input: {
       const result = writeModelsJson({ agentDir, providers: all, defaultProvider: providers.getDefault() });
       // written=false 表示内容与磁盘一致（无变化），不打日志避免每次启动刷屏。
       if (result.written) {
-        logger.info("已同步 LLM 厂商配置到 models.json", { 路径: result.path, 厂商数: all.length, 默认模型: result.defaultModel ?? "(无)" });
+        logger.info("已同步 LLM 厂商配置到 models.json", {
+          路径: result.path,
+          // 数据库厂商数单独说明：为 0 时文件内容来自模板兜底，
+          // 直接写「厂商数=0 已同步」会让人误以为生成了空文件。
+          数据库厂商数: all.length,
+          默认模型: result.defaultModel ?? "(沿用模板)",
+        });
+      }
+      // 数据库为空时依赖模板兜底：文件能生成但内容是模板里的厂商。
+      // 若模板也缺失则完全没有 models.json，SDK 会报「No API key found」——
+      // 那个报错与实际原因（没配厂商）不符，必须在这里显式告警。
+      if (all.length === 0) {
+        logger.warn("数据库中没有 LLM 厂商：models.json 将使用 models.template.json 的模板配置。请在「AI 厂商」页添加厂商");
       }
     };
     // 启动时同步一次：保证容器重建后 models.json 与数据库一致（数据库是唯一事实源）。

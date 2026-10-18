@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { apiKeyEnvName, buildModelsJson, writeModelsJson } from "../../../src/infrastructure/pi/models-json.ts";
@@ -98,13 +98,13 @@ test("多厂商同时写入，互不覆盖", () => {
   assert.equal(result.providers.openai.api, "openai-responses");
 });
 
-test("writeModelsJson 保留文件里已有的其他厂商，不整体覆盖", () => {
-  // 回归：生产部署依赖仓库里手写的 models.json（llmgw）。早期实现是整体
-  // 覆盖，数据库一旦有厂商就会把这份手写配置静默抹掉。
+test("以模板为底座：数据库只配一个厂商时，模板里的其他厂商保留", () => {
+  // D-025：models.json 是运行时产物（不入库），初始配置来自 models.template.json。
+  // 数据库为空时用模板兜底；数据库有配置时以模板为底座、按 name 覆盖同名项。
   const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
   try {
     writeFileSync(
-      join(dir, "models.json"),
+      join(dir, "models.template.json"),
       JSON.stringify({
         providers: {
           llmgw: { baseUrl: "https://llmgw.cwoa.net/v1", api: "openai-responses", apiKey: "$LLMGW_API_KEY", models: [{ id: "gpt-5.6-terra" }] },
@@ -117,7 +117,7 @@ test("writeModelsJson 保留文件里已有的其他厂商，不整体覆盖", (
     const written = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as {
       providers: Record<string, { apiKey: string }>;
     };
-    assert.ok(written.providers.llmgw, "手写的 llmgw 配置必须保留");
+    assert.ok(written.providers.llmgw, "模板里的 llmgw 底座必须保留");
     assert.equal(written.providers.llmgw.apiKey, "$LLMGW_API_KEY");
     assert.ok(written.providers.deepseek, "数据库里的厂商要写进去");
   } finally {
@@ -125,11 +125,11 @@ test("writeModelsJson 保留文件里已有的其他厂商，不整体覆盖", (
   }
 });
 
-test("writeModelsJson 中数据库厂商覆盖同名手写项", () => {
+test("数据库配置按 name 覆盖模板里的同名厂商", () => {
   const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
   try {
     writeFileSync(
-      join(dir, "models.json"),
+      join(dir, "models.template.json"),
       JSON.stringify({
         providers: { deepseek: { baseUrl: "https://old.example/v1", api: "openai-completions", apiKey: "$OLD", models: [{ id: "old" }] } },
       }),
@@ -141,6 +141,40 @@ test("writeModelsJson 中数据库厂商覆盖同名手写项", () => {
       providers: Record<string, { baseUrl: string }>;
     };
     assert.equal(written.providers.deepseek.baseUrl, "https://api.deepseek.com/v1", "同名项以数据库为准");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("数据库为空时用模板兜底，保证新机器首次部署可启动", () => {
+  // 没有这条兜底，新部署（数据库空）不会产出 models.json，
+  // SDK 读不到文件会报「No API key found」而不是「没配厂商」。
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
+  try {
+    writeFileSync(
+      join(dir, "models.template.json"),
+      JSON.stringify({
+        providers: { llmgw: { baseUrl: "https://x/v1", api: "openai-responses", apiKey: "$K", models: [{ id: "m" }] } },
+      }),
+      "utf8",
+    );
+    const result = writeModelsJson({ agentDir: dir, providers: [] });
+    assert.equal(result.written, true, "数据库为空但有模板时应生成文件");
+    const written = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as {
+      providers: Record<string, unknown>;
+    };
+    assert.ok(written.providers.llmgw, "内容应来自模板");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("数据库与模板都为空时不写文件，由启动日志告警", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
+  try {
+    const result = writeModelsJson({ agentDir: dir, providers: [] });
+    assert.equal(result.written, false);
+    assert.throws(() => readFileSync(join(dir, "models.json"), "utf8"), /ENOENT/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -190,5 +224,23 @@ test("providers 变化时仍会重写", () => {
     assert.equal(content.providers.deepseek.models.length, 2);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("仓库内的 models.template.json 是合法模板且已入库", () => {
+  // D-025：models.json 是运行时产物（已 gitignore），初始配置靠模板。
+  // 模板缺失会导致新部署首次启动没有可用模型配置，因此必须入库并校验。
+  const templatePath = join(process.cwd(), "pi-agent", "models.template.json");
+  assert.equal(existsSync(templatePath), true, "pi-agent/models.template.json 必须存在");
+
+  const parsed = JSON.parse(readFileSync(templatePath, "utf8")) as {
+    providers: Record<string, { baseUrl?: string; apiKey?: string; models?: unknown[] }>;
+  };
+  assert.ok(parsed.providers && Object.keys(parsed.providers).length > 0, "模板至少含一个厂商");
+  for (const [name, item] of Object.entries(parsed.providers)) {
+    assert.ok(item.baseUrl, `${name} 缺少 baseUrl`);
+    // 密钥必须是环境变量引用，不能是明文
+    assert.match(item.apiKey ?? "", /^\$[A-Z_]+$/, `${name} 的 apiKey 必须是环境变量引用`);
+    assert.ok(Array.isArray(item.models) && item.models.length > 0, `${name} 缺少模型清单`);
   }
 });

@@ -13,21 +13,30 @@ services:
     # .env 文件缺失时 docker compose 直接报错（fail-fast），不会静默空跑。
     env_file:
       - .env
-    # 覆盖/固定项：HOST/PORT/PI_CODING_AGENT_DIR 由镜像内 ENV 固定，无需在此重复。
+    # 覆盖/固定项：HOST/PORT 由镜像内 ENV 固定，这里显式再写一遍可防止
+    # .env 里的 HOST=127.0.0.1 覆盖镜像值（environment 优先级高于 env_file）——
+    # 容器内若绑到 127.0.0.1，宿主机端口映射会完全失效。
     environment:
       - HOST=0.0.0.0
       - PORT=5001
+      # 日志落盘到上面挂载的 /app/logs 卷；不设置时只输出到控制台，
+      # 挂载点等于闲置，容器重启后日志也一并丢失。
+      - LOG_FILE=/app/logs/cr-pilot.log
 
     # 注意：必须在仓库根目录执行 docker compose；:z 用于 SELinux 环境（relabel 共享卷）。
     volumes:
-      # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）
+      # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）。
+      # 只读挂载：应用只读取规则，不写入，避免容器内误改宿主机文件。
       - ./prompts:/app/prompts:ro,z
-      # 日志目录（宿主机 /data/logs/cr-pilot → 容器 /app/logs，应用按 LOG_FILE 写入）
-      - /data/logs/cr-pilot:/app/logs
-      # SQLite 数据目录（宿主机 /data/cr-pilot → 容器 /app/data）。
-      # 必须落在本地盘：WAL 模式不支持网络文件系统。
-      # 首次部署需建目录并授权：sudo mkdir -p /data/cr-pilot && sudo chown 1000:1000 /data/cr-pilot
-      - /data/cr-pilot:/app/data
+      # 日志目录。用具名卷而不是宿主机绝对路径：bind mount 会沿用宿主机目录属主，
+      # 目录不存在时 Docker 以 root 创建，而容器内以 node(uid 1000) 运行 →
+      # 写日志/permission denied。具名卷首次创建时复制镜像内目录属性，属主正确。
+      - cr-pilot-logs:/app/logs
+      # SQLite 数据目录。同上，用命名卷避免「宿主机目录属主是 root」导致开库失败。
+      # 必须落在本地盘：WAL 模式不支持网络文件系统（Docker 默认卷在 /var/lib/docker）。
+      # 如需备份或迁移，用 docker compose cp 或直接复制
+      # /var/lib/docker/volumes/cr-pilot_cr-pilot-data/_data。
+      - cr-pilot-data:/app/data
 
     # 生产环境推荐：异常退出自动重启
     restart: unless-stopped
@@ -43,4 +52,7 @@ services:
       retries: 3
       start_period: 10s
 
-# 无需额外网络/卷声明；默认 bridge 网络即可
+# 具名卷声明：由 Docker 管理，首次创建时继承镜像内目录属主（node:node）
+volumes:
+  cr-pilot-data:
+  cr-pilot-logs:
