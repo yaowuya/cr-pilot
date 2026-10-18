@@ -204,9 +204,12 @@ npm start
 前端开发（可选）：
 
 ```bash
-npm run dev:frontend   # Vite 开发服务器，自动代理 /api 与 /review/ 到 5001
+npm run dev:frontend   # Vite 开发服务器 http://localhost:5002，自动代理 /api 与 /review/ 到后端 5001
 npm run build:frontend # 构建产物到 dist/，由 Express 托管
 ```
+
+开发时前后端端口分工：**前端 5002（Vite）、后端 5001（Express）**。
+Vite 用 `strictPort: true`，5002 被占用时直接报错而不是静默切换端口。
 
 ## Docker 部署
 

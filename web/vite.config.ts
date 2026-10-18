@@ -17,7 +17,11 @@ export default defineConfig({
   plugins: [vue()],
   build: { outDir: "../dist", emptyOutDir: true },
   server: {
-    port: 5173,
+    // 开发服务器端口。与后端 5001 错开，避免端口冲突。
+    port: 5002,
+    // 端口被占用时直接报错而不是静默切到 5003：
+    // 静默换端口会让浏览器里存的旧地址失效，也容易和后端代理配置混淆。
+    strictPort: true,
     proxy: {
       // 只代理后端接口前缀。
       //
