@@ -158,6 +158,7 @@ async function startApplication(input: {
         if (provider.apiKey) process.env[apiKeyEnvName(provider.name)] = provider.apiKey;
       }
       const result = writeModelsJson({ agentDir, providers: all, defaultProvider: providers.getDefault() });
+      // written=false 表示内容与磁盘一致（无变化），不打日志避免每次启动刷屏。
       if (result.written) {
         logger.info("已同步 LLM 厂商配置到 models.json", { 路径: result.path, 厂商数: all.length, 默认模型: result.defaultModel ?? "(无)" });
       }

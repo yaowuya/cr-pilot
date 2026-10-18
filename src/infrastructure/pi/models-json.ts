@@ -106,15 +106,30 @@ export function writeModelsJson(options: {
   const merged: ModelsJson = { providers: { ...existing, ...generated.providers } };
 
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  // 内容语义未变时不写盘：models.json 是入库文件，每次启动都重新序列化会让它
+  // 因为格式差异（如 ["text"] 展开成多行）变成「已修改」，污染 git 工作区，
+  // 甚至被误提交覆盖掉手写配置。只有 providers 真的变化才落盘。
+  const nextContent = `${JSON.stringify(merged, null, 2)}\n`;
+  const changed = readTextIfExists(path) !== nextContent;
+  if (changed) writeFileSync(path, nextContent, "utf8");
 
   const defaultModel = options.defaultProvider?.defaultModel ?? options.defaultProvider?.models[0];
   if (defaultModel) {
     const settingsPath = join(options.agentDir, "settings.json");
     mkdirSync(dirname(settingsPath), { recursive: true });
-    writeFileSync(settingsPath, `${JSON.stringify({ defaultModel }, null, 2)}\n`, "utf8");
+    const nextSettings = `${JSON.stringify({ defaultModel }, null, 2)}\n`;
+    if (readTextIfExists(settingsPath) !== nextSettings) writeFileSync(settingsPath, nextSettings, "utf8");
   }
-  return { written: true, path, defaultModel };
+  return { written: changed, path, defaultModel };
+}
+
+/** 读文本文件；不存在或不可读时返回 undefined（用于「内容是否变化」判断）。 */
+function readTextIfExists(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 /**

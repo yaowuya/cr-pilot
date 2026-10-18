@@ -159,3 +159,36 @@ test("writeModelsJson 遇到损坏的旧文件时不抛错", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("内容未变化时不重写文件（保持入库文件不被格式化污染）", () => {
+  // 回归：早期实现每次启动都重新序列化 models.json，即使 providers 没变，
+  // 也会因格式差异（["text"] 展开成多行）让入库文件变成「已修改」，
+  // 污染 git 工作区，甚至被误提交覆盖掉手写配置。
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
+  try {
+    const first = writeModelsJson({ agentDir: dir, providers: [provider()] });
+    assert.equal(first.written, true, "首次写入应发生");
+
+    const before = readFileSync(join(dir, "models.json"), "utf8");
+    const second = writeModelsJson({ agentDir: dir, providers: [provider()] });
+    assert.equal(second.written, false, "内容未变不应重写");
+    assert.equal(readFileSync(join(dir, "models.json"), "utf8"), before, "文件内容必须逐字节不变");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("providers 变化时仍会重写", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cr-pilot-models-"));
+  try {
+    writeModelsJson({ agentDir: dir, providers: [provider({ models: ["a"] })] });
+    const result = writeModelsJson({ agentDir: dir, providers: [provider({ models: ["a", "b"] })] });
+    assert.equal(result.written, true, "模型清单变化必须落盘");
+    const content = JSON.parse(readFileSync(join(dir, "models.json"), "utf8")) as {
+      providers: Record<string, { models: Array<{ id: string }> }>;
+    };
+    assert.equal(content.providers.deepseek.models.length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

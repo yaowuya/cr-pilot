@@ -308,3 +308,27 @@ INFO  评论已回写 GitLab projectId=3483 iid=5327
 npm test        # node --test；全部用例不调用真实模型与 GitLab，可离线运行
 npm run typecheck
 ```
+
+## 接口文档
+
+完整 OpenAPI 3.0 规范在 [`docs/openapi.json`](docs/openapi.json)，覆盖全部 28 个接口。
+
+规范由脚本从代码生成，**不是手写**——改接口后重新生成即可，避免文档与实现漂移：
+
+```bash
+npm run build:openapi   # 生成 docs/openapi.json
+npm run sync:apifox     # 导入到 Apifox 项目「AI Code Review」
+```
+
+`sync:apifox` 需要 `APIFOX_ACCESS_TOKEN`（环境变量或 `.agent/.env`）。
+覆盖策略是「同 method+path 原地更新」，因此可重复执行而不会产生重复接口。
+
+接口按 tag 分为 8 组：系统、Webhook、认证、评审记录、Prompt 管理、AI 厂商、环境变量、管理员账号。
+
+### 权限边界
+
+- `/health`、`/review/webhook`、`/api/auth/login` 免鉴权
+- `/api/admins` 整组要求管理员权限（非管理员返回 403）
+- 其余 `/api/*` 所有登录账号可用
+
+管理员身份由部署配置 `ADMIN_USERNAME` 决定：该账号即启动引导创建的那个，其余账号都是普通账号且无法在页面上提升。改动该配置会让原管理员失去权限，启动日志会打印当前管理员账号名。
