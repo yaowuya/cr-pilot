@@ -124,6 +124,14 @@ export interface ConfigItem {
   overridden: boolean;
   /** 为 true 时页面只读展示（启动引导类键，如 DB_PATH）。 */
   readOnly: boolean;
+  /** 中文名，如「监听端口」；未登记的键为空串。 */
+  label: string;
+  /** 用途说明。 */
+  description: string;
+  /** 生效默认值；空串表示默认未设置。 */
+  defaultValue: string;
+  /** 取值提示，如单位、可选值、格式示例。 */
+  hint: string;
 }
 
 /** 管理员账号（不含任何密码字段）。 */

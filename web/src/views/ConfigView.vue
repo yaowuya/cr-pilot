@@ -57,26 +57,38 @@
       </div>
 
       <el-table v-else v-loading="loading" :data="group.rows">
-        <el-table-column label="配置项" width="260">
+        <!--
+          配置项列：中文名做标题、英文键名做副标题、用途说明再下一行。
+          只显示英文键名时运维看不出这一项是干什么的，因此说明必须与键名同列展示。
+        -->
+        <el-table-column label="配置项" min-width="360">
           <template #default="{ row }">
             <div class="key-cell">
-              <span class="key-cell__name">{{ row.key }}</span>
-              <div class="key-cell__tags">
-                <el-tag v-if="row.masked" type="warning" size="small" effect="plain">密钥</el-tag>
-                <el-tag v-if="row.readOnly" type="info" size="small" effect="plain">只读</el-tag>
-                <el-tag v-if="row.restartRequired" type="danger" size="small" effect="plain">需重启</el-tag>
-                <el-tag v-if="row.overridden" type="primary" size="small" effect="plain">已覆盖</el-tag>
+              <div class="key-cell__head">
+                <span class="key-cell__label">{{ row.label || row.key }}</span>
+                <div class="key-cell__tags">
+                  <el-tag v-if="row.masked" type="warning" size="small" effect="plain">密钥</el-tag>
+                  <el-tag v-if="row.readOnly" type="info" size="small" effect="plain">只读</el-tag>
+                  <el-tag v-if="row.restartRequired" type="danger" size="small" effect="plain">需重启</el-tag>
+                  <el-tag v-if="row.overridden" type="primary" size="small" effect="plain">已覆盖</el-tag>
+                </div>
               </div>
+              <!-- 有中文名时键名降为副标题；未登记的键本身就是标题，不重复显示 -->
+              <code v-if="row.label" class="key-cell__name">{{ row.key }}</code>
+              <p v-if="row.description" class="key-cell__desc">{{ row.description }}</p>
+              <p v-if="row.hint" class="key-cell__hint">
+                {{ row.hint }}<template v-if="row.defaultValue">；默认 {{ row.defaultValue }}</template>
+              </p>
             </div>
           </template>
         </el-table-column>
 
-        <el-table-column label="当前值" min-width="340">
+        <el-table-column label="当前值" min-width="300">
           <template #default="{ row }">
             <el-input
               v-model="row.draft"
               :type="row.masked && !row.revealed && row.draft ? 'password' : 'text'"
-              :placeholder="row.masked ? '留空表示不修改' : ''"
+              :placeholder="row.masked ? '留空表示不修改' : row.defaultValue ? `未设置（默认 ${row.defaultValue}）` : '未设置'"
               :disabled="row.readOnly"
               @input="row.dirty = true"
             >
@@ -92,7 +104,7 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="状态" width="110">
+        <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <span v-if="row.dirty && row.draft.trim() !== ''" class="status status--dirty">待保存</span>
             <span v-else class="status status--idle">未修改</span>
@@ -346,19 +358,54 @@ onMounted(() => {
   color: var(--el-text-color-regular);
 }
 
-/* 配置项列：键名在上，标签在下，避免长键名与多个标签挤在一行 */
+/*
+  配置项列：中文名 + 标签一行，英文键名一行，用途说明一行。
+  层次靠字号与颜色拉开，避免四行文字看起来一样重。
+*/
 .key-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
-.key-cell__name {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
-  font-weight: 500;
+.key-cell__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.key-cell__label {
+  font-size: 14px;
+  font-weight: 600;
   color: var(--el-text-color-primary);
+}
+
+/* 英文键名：等宽小字，作为技术标识而非主标题 */
+.key-cell__name {
+  align-self: flex-start;
+  padding: 1px 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background-color: var(--el-fill-color-light);
+  border-radius: 4px;
   word-break: break-all;
+}
+
+.key-cell__desc {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-regular);
+}
+
+/* 取值提示与默认值：最弱的一级，作为补充信息 */
+.key-cell__hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--el-text-color-placeholder);
 }
 
 .key-cell__tags {
