@@ -110,7 +110,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |
 | `QUEUE_CONCURRENCY` | `5` | 后台队列并发数：同时处理的 MR 评审任务上限 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
-| `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。compose 已固定为 `/app/logs/cr-pilot.log` 并挂载具名卷 |
+| `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。compose 已固定为 `/app/logs/cr-pilot.log`，宿主机路径 `/data/logs/cr-pilot/cr-pilot.log` |
 | `DB_PATH` | `./data/cr-pilot.db` | SQLite 数据库文件路径。容器内固定 `/app/data/cr-pilot.db`（挂载具名卷 `cr-pilot-data`）。**必须落在本地盘**：WAL 模式不支持网络文件系统 |
 | `ADMIN_USERNAME` | 空 | 首次启动引导创建的管理员用户名，仅在管理员表为空时生效 |
 | `ADMIN_PASSWORD` | 空 | 首次启动引导创建的管理员密码；留空则跳过创建（空密码无法登录），启动告警 |
@@ -248,15 +248,26 @@ docker compose exec cr-pilot node scripts/import-prompts.ts
 让既有运维脚本与书签无需改动。本项目只有一个进程，没有第二个服务，因此不需要 Nginx。
 可用 `UI_PORT=0` 关闭第二端口，只保留 5001。
 
-**数据与日志用 Docker 具名卷**（`cr-pilot-data`、`cr-pilot-logs`），而不是宿主机绝对路径。
-原因：bind mount 会沿用宿主机目录属主，目录不存在时 Docker 以 root 创建，而容器内以
-`node`（uid 1000）运行，会导致 SQLite 开库或写日志 `EACCES`。
+**挂载点**：
 
-> **注意具名卷的属主行为**：卷首次挂载到镜像内已存在的目录时，Docker 只复制目录**内容**，
-> **卷根目录的属主会被设为 root**——镜像里 `chown` 成 `node` 的设置并不生效。
-> 因此镜像带了一个 entrypoint（`docker-entrypoint.sh`）：启动时以 root 递归修正
-> `/app/data`、`/app/logs` 的属主，再用 `su-exec` 降权到 `node` 运行应用。
-> 这也意味着**不要**在 compose 里设 `user:` 为非 root，否则修正属主那一步会被跳过。
+| 容器内 | 宿主机 | 类型 | 说明 |
+|---|---|---|---|
+| `/app/logs` | `/data/logs/cr-pilot` | bind mount | 日志文件 `cr-pilot.log`，可直接 tail、归档、接入日志采集 |
+| `/app/data` | 具名卷 `cr-pilot-data` | named volume | SQLite 库。用卷而非宿主机路径：必须本地盘，且避免属主问题 |
+| `/app/prompts` | `./prompts`（仓库目录） | bind mount（只读） | 规则 yaml 与兜底 prompt |
+
+日志按路径直接查看：
+
+```bash
+tail -f /data/logs/cr-pilot/cr-pilot.log
+```
+
+> **挂载目录的属主问题**：容器以 `node`（uid 1000）运行，但两个目录的属主都不受镜像控制——
+> 具名卷首次挂载时 Docker 把**卷根目录属主设为 root**；bind mount 的宿主机目录不存在时
+> 也由 Docker 以 root 创建。因此镜像带了一个 entrypoint（`docker-entrypoint.sh`）：
+> 启动时以 root 递归修正 `/app/data`、`/app/logs` 的属主，再用 `su-exec` 降权到 `node`。
+> 这意味着**不需要手工预建目录或 chown**，但也**不要**在 compose 里设 `user:` 为非 root，
+> 否则修正属主那一步会被跳过。
 
 如果启动报 `unable to open database file`，通常是卷属主问题。排查与修复：
 

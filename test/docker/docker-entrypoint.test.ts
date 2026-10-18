@@ -49,3 +49,20 @@ test(".gitattributes 强制 shell 脚本与 Dockerfile 用 LF", () => {
   assert.match(attrs, /docker-entrypoint\.sh text eol=lf/, "entrypoint 必须 LF");
   assert.match(attrs, /Dockerfile text eol=lf/, "Dockerfile 必须 LF");
 });
+
+test("compose 把日志挂到宿主机固定路径 /data/logs/cr-pilot", () => {
+  // 运维需要按路径直接 tail / 归档日志，因此日志用 bind mount 而不是具名卷。
+  const compose = readFileSync(join(ROOT, "docker-compose.yml"), "utf8");
+  assert.match(compose, /\/data\/logs\/cr-pilot:\/app\/logs/, "日志应挂到 /data/logs/cr-pilot");
+  assert.match(compose, /LOG_FILE=\/app\/logs\/cr-pilot\.log/, "LOG_FILE 应与日志文件名一致");
+  // 日志改成 bind mount 后不该再声明具名卷
+  assert.equal(/cr-pilot-logs/.test(compose), false, "不应再残留 cr-pilot-logs 卷");
+});
+
+test("compose 的宿主机端口可用 .env 覆盖", () => {
+  // 线上常遇到端口被其他服务占用（port is already allocated），
+  // 支持用 HOST_PORT / HOST_UI_PORT 覆盖可避免改 compose 文件。
+  const compose = readFileSync(join(ROOT, "docker-compose.yml"), "utf8");
+  assert.match(compose, /\$\{HOST_PORT:-5001\}:5001/, "主端口应支持覆盖且默认 5001");
+  assert.match(compose, /\$\{HOST_UI_PORT:-5002\}:5002/, "管理界面端口应支持覆盖且默认 5002");
+});

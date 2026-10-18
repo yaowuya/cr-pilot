@@ -4,13 +4,15 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: cr-pilot
-    # 宿主机 5001 → 容器 5001（API/webhook）
-    # 宿主机 5002 → 容器 5002（管理界面，与 5001 服务完全相同）
-    # 对齐团队既有约定：5001=API、5002=UI。两个端口由同一个 Express 实例监听，
-    # 不额外起进程，也不需要 Nginx 反代。
+    # 宿主机端口 → 容器端口。
+    #
+    # 左侧（宿主机端口）支持用 .env 覆盖：线上常遇到端口被其他服务占用
+    # （报 "Bind for 0.0.0.0:5002 failed: port is already allocated"），
+    # 只需在 .env 改 HOST_PORT / HOST_UI_PORT，不必改 compose 文件。
+    # 右侧（容器端口）必须与镜像内 PORT / UI_PORT 一致，不要改。
     ports:
-      - "5001:5001"
-      - "5002:5002"
+      - "${HOST_PORT:-5001}:5001"
+      - "${HOST_UI_PORT:-5002}:5002"
 
     # 环境变量闭环：compose 原生 env_file 把 .env 全部注入容器 environment，
     # 应用无需再读文件，pi 的 $LLMGW_API_KEY 插值也一定能读到进程环境。
@@ -35,14 +37,16 @@ services:
       # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）。
       # 只读挂载：应用只读取规则，不写入，避免容器内误改宿主机文件。
       - ./prompts:/app/prompts:ro,z
-      # 日志目录。用具名卷而不是宿主机绝对路径：bind mount 会沿用宿主机目录属主，
-      # 目录不存在时 Docker 以 root 创建，而容器内以 node(uid 1000) 运行 →
-      # 写日志/permission denied。具名卷首次创建时复制镜像内目录属性，属主正确。
-      - cr-pilot-logs:/app/logs
-      # SQLite 数据目录。同上，用命名卷避免「宿主机目录属主是 root」导致开库失败。
+      # 日志目录：挂到宿主机固定路径，便于直接 tail / 归档 / 接入采集。
+      # 用 bind mount（而非具名卷）是因为运维要能按路径找到日志；
+      # 宿主机目录不存在时 Docker 会以 root 创建，但 entrypoint 启动时会
+      # 递归 chown 成 node，所以不需要手工预建目录或 chown。
+      - /data/logs/cr-pilot:/app/logs
+      # SQLite 数据目录：用命名卷避免「宿主机目录属主是 root」导致开库失败。
       # 必须落在本地盘：WAL 模式不支持网络文件系统（Docker 默认卷在 /var/lib/docker）。
       # 如需备份或迁移，用 docker compose cp 或直接复制
       # /var/lib/docker/volumes/cr-pilot_cr-pilot-data/_data。
+      # 注意：数据卷必须本地盘，不能用网络挂载（NFS 等），否则 WAL 会损坏。
       - cr-pilot-data:/app/data
 
     # 生产环境推荐：异常退出自动重启
@@ -67,7 +71,6 @@ services:
       retries: 3
       start_period: 10s
 
-# 具名卷声明：由 Docker 管理，首次创建时继承镜像内目录属主（node:node）
+# 具名卷声明：仅数据目录用卷（日志已改为宿主机 bind mount /data/logs/cr-pilot）
 volumes:
   cr-pilot-data:
-  cr-pilot-logs:
