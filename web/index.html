@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>cr-pilot 管理控制台</title>
+    <!--
+      站点图标：`public/favicon.svg` 由 Vite 原样复制到产物根目录，
+      dev server 与生产构建都从 `/favicon.svg` 提供。
+
+      用 SVG 而不是 ICO/PNG：矢量图在任意缩放与高分屏下都清晰，且单文件自包含，
+      不必为 16/32/180 等尺寸各存一份二进制。
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- 移动端添加到主屏时用同一图标，避免出现白块占位 -->
+    <link rel="apple-touch-icon" href="/favicon.svg" />
   </head>
   <body>
     <div id="app"></div>
