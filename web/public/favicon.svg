@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="cr-pilot">
+  <!--
+    站点图标：与侧边栏品牌标识（.app-sidebar__mark）保持同一视觉语言——
+    主色 #5b5bd6 → #7c7cdf 的 135° 渐变方块 + 白色 CR 字标。
+
+    用内联渐变而不是外部图片：SVG 一个文件即自包含，无需额外请求，
+    在高分屏与任意缩放下都清晰。圆角用 rx 而不是 CSS，因为 favicon
+    渲染时通常不加载外部样式。
+
+    字号 30 + 轻微加宽的字距是为标签页优化：实际显示约 16px，字形太小时
+    CR 会糊成一团，放大一点在 16px 下仍可辨认。
+  -->
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5b5bd6" />
+      <stop offset="100%" stop-color="#7c7cdf" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#brand)" />
+  <text
+    x="32"
+    y="33"
+    fill="#ffffff"
+    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif"
+    font-size="30"
+    font-weight="700"
+    letter-spacing="0.5"
+    text-anchor="middle"
+    dominant-baseline="central"
+  >CR</text>
+</svg>

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig } from "../../src/shared/config.ts";
+import { applyConfigOverrides, loadConfig } from "../../src/shared/config.ts";
 
 // 全部 GitLab 配置均可选：GITLAB_URL 从 webhook 派生，GITLAB_TOKEN 随 webhook
 // 请求头携带（对齐参考项目），不再需要任何必填环境变量。
@@ -18,6 +18,7 @@ test("loadConfig 未配置 GITLAB_URL 时为空串（从 webhook 派生）", () 
 test("loadConfig 在无环境变量时返回默认值", () => {
   assert.deepEqual(loadConfig({ GITLAB_URL: "https://gitlab.example.com" }), {
     port: 5001,
+    uiPort: 5002,
     host: "127.0.0.1",
     promptPath: "prompts/review.md",
     timeoutMs: 1200000,
@@ -30,7 +31,38 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     rulesDir: "prompts/rules",
     reviewStyle: "professional",
     queueConcurrency: 5,
+    dbPath: "./data/cr-pilot.db",
+    adminUsername: "",
+    adminPassword: "",
+    authSalt: "",
   });
+});
+
+test("loadConfig 读取数据库、初始管理员与部署盐配置", () => {
+  const config = loadConfig({
+    DB_PATH: "/var/lib/cr-pilot/db.sqlite",
+    ADMIN_USERNAME: "root",
+    ADMIN_PASSWORD: "initial-pw",
+    AUTH_SALT: "deploy-salt",
+  });
+  assert.equal(config.dbPath, "/var/lib/cr-pilot/db.sqlite");
+  assert.equal(config.adminUsername, "root");
+  assert.equal(config.adminPassword, "initial-pw");
+  assert.equal(config.authSalt, "deploy-salt");
+});
+
+test("applyConfigOverrides 让数据库覆盖值优先于环境变量", () => {
+  const env: NodeJS.ProcessEnv = { QUEUE_CONCURRENCY: "2", REVIEW_TIMEOUT_MS: "1000" };
+  applyConfigOverrides(env, { QUEUE_CONCURRENCY: "9" });
+  assert.equal(env.QUEUE_CONCURRENCY, "9");
+  assert.equal(loadConfig(env).queueConcurrency, 9, "loadConfig 必须读到覆盖后的值");
+  assert.equal(env.REVIEW_TIMEOUT_MS, "1000", "未覆盖的键保持原值");
+});
+
+test("applyConfigOverrides 空串表示清空覆盖、保留原环境变量", () => {
+  const env: NodeJS.ProcessEnv = { LOG_FILE: "/app/logs/cr-pilot.log" };
+  applyConfigOverrides(env, { LOG_FILE: "" });
+  assert.equal(env.LOG_FILE, "/app/logs/cr-pilot.log", "空串不得写入空值");
 });
 
 test("loadConfig 忽略不再支持的 GITLAB_TOKEN 与 GITLAB_WEBHOOK_SECRET", () => {
@@ -83,4 +115,18 @@ test("loadConfig 对非法日志级别与非法布尔值快速失败", () => {
 
 test("loadConfig 去掉 GITLAB_URL 尾部斜杠", () => {
   assert.equal(loadConfig({ GITLAB_URL: "https://gitlab.example.com/" }).gitlabUrl, "https://gitlab.example.com");
+});
+
+test("UI_PORT 默认 5002，可显式关闭或改端口", () => {
+  // 团队既有约定：5001=API、5002=管理界面。两个端口由同一实例提供。
+  assert.equal(loadConfig(EMPTY_ENV).uiPort, 5002);
+  assert.equal(loadConfig({ UI_PORT: "8082" }).uiPort, 8082);
+  // 0 表示关闭第二端口，不能当成非法值
+  assert.equal(loadConfig({ UI_PORT: "0" }).uiPort, 0);
+  assert.equal(loadConfig({ UI_PORT: "" }).uiPort, 5002);
+});
+
+test("UI_PORT 非法值直接抛错", () => {
+  assert.throws(() => loadConfig({ UI_PORT: "abc" }), /UI_PORT 必须是非负整数/);
+  assert.throws(() => loadConfig({ UI_PORT: "-1" }), /UI_PORT 必须是非负整数/);
 });

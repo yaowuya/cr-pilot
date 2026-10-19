@@ -4,39 +4,73 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: cr-pilot
-    # 宿主机 5001 → 容器 5001；如需只内网访问可去掉 ports，改用 network_mode: host
+    # 宿主机端口 → 容器端口。
+    #
+    # 左侧（宿主机端口）支持用 .env 覆盖：线上常遇到端口被其他服务占用
+    # （报 "Bind for 0.0.0.0:5002 failed: port is already allocated"），
+    # 只需在 .env 改 HOST_PORT / HOST_UI_PORT，不必改 compose 文件。
+    # 右侧（容器端口）必须与镜像内 PORT / UI_PORT 一致，不要改。
     ports:
-      - "5001:5001"
+      - "${HOST_PORT:-5001}:5001"
+      - "${HOST_UI_PORT:-5002}:5002"
 
     # 环境变量闭环：compose 原生 env_file 把 .env 全部注入容器 environment，
     # 应用无需再读文件，pi 的 $LLMGW_API_KEY 插值也一定能读到进程环境。
     # .env 文件缺失时 docker compose 直接报错（fail-fast），不会静默空跑。
     env_file:
       - .env
-    # 覆盖/固定项：HOST/PORT/PI_CODING_AGENT_DIR 由镜像内 ENV 固定，无需在此重复。
+    # 覆盖/固定项：HOST/PORT 由镜像内 ENV 固定，这里显式再写一遍可防止
+    # .env 里的 HOST=127.0.0.1 覆盖镜像值（environment 优先级高于 env_file）——
+    # 容器内若绑到 127.0.0.1，宿主机端口映射会完全失效。
     environment:
       - HOST=0.0.0.0
       - PORT=5001
+      # 管理界面端口：与 5001 提供相同的服务（同一个 Express 实例双监听）。
+      # 设为 0 可关闭，只保留 5001。
+      - UI_PORT=5002
+      # 日志落盘到上面挂载的 /app/logs 卷；不设置时只输出到控制台，
+      # 挂载点等于闲置，容器重启后日志也一并丢失。
+      - LOG_FILE=/app/logs/cr-pilot.log
 
     # 注意：必须在仓库根目录执行 docker compose；:z 用于 SELinux 环境（relabel 共享卷）。
     volumes:
-      # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）
+      # 规则目录与兜底 prompt（项目目录下 prompts → 容器 /app/prompts）。
+      # 只读挂载：应用只读取规则，不写入，避免容器内误改宿主机文件。
       - ./prompts:/app/prompts:ro,z
-      # 日志目录（宿主机 /data/logs/cr-pilot → 容器 /app/logs，应用按 LOG_FILE 写入）
+      # 日志目录：挂到宿主机固定路径，便于直接 tail / 归档 / 接入采集。
+      # 用 bind mount（而非具名卷）是因为运维要能按路径找到日志；
+      # 宿主机目录不存在时 Docker 会以 root 创建，但 entrypoint 启动时会
+      # 递归 chown 成 node，所以不需要手工预建目录或 chown。
       - /data/logs/cr-pilot:/app/logs
+      # SQLite 数据目录：用命名卷避免「宿主机目录属主是 root」导致开库失败。
+      # 必须落在本地盘：WAL 模式不支持网络文件系统（Docker 默认卷在 /var/lib/docker）。
+      # 如需备份或迁移，用 docker compose cp 或直接复制
+      # /var/lib/docker/volumes/cr-pilot_cr-pilot-data/_data。
+      # 注意：数据卷必须本地盘，不能用网络挂载（NFS 等），否则 WAL 会损坏。
+      - cr-pilot-data:/app/data
 
     # 生产环境推荐：异常退出自动重启
     restart: unless-stopped
+
+    # 不要设置 user: 为非 root。镜像的 entrypoint 需要 root 权限修正具名卷属主
+    # （卷根目录由 Docker 建成 root 所有），再降权到 node 运行。
+    # 若确实要指定 user，请自行保证 /app/data 与 /app/logs 可写。
 
     # 如需访问宿主机网络（如宿主机跑 GitLab），可改为 network_mode: host
     # network_mode: host
 
     # 健康检查：容器启动后每 30s 探测 /health 端点
+    # 同时探测 5002，任一端口不通都算不健康——两个端口是同一实例，
+    # 只探 5001 无法发现「第二端口没起来」这种配置事故。
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5001/health"]
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://localhost:5001/health && wget -q --spider http://localhost:5002/health
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
 
-# 无需额外网络/卷声明；默认 bridge 网络即可
+# 具名卷声明：仅数据目录用卷（日志已改为宿主机 bind mount /data/logs/cr-pilot）
+volumes:
+  cr-pilot-data:

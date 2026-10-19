@@ -1,5 +1,5 @@
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
-import type { Change, Commit, GitlabClient } from "../../domain/review-task.ts";
+import type { Change, Commit, Discussion, DiscussionPosition, DiffRefs, GitlabClient } from "../../domain/review-task.ts";
 
 export type { Change, Commit, GitlabClient };
 
@@ -79,6 +79,32 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     return (await response.json()) as T;
   };
 
+  /**
+   * 与 `request` 相同，但额外返回 `x-next-page` 头。
+   *
+   * 只有 discussions 需要翻页（同一 MR 的讨论可能跨页），单独提供而不是改造 `request`
+   * 的返回形状，避免所有既有调用点跟着改。
+   */
+  const requestWithHeaders = async <T>(
+    gitlabUrl: string,
+    gitlabToken: string,
+    path: string,
+  ): Promise<{ payload: T; nextPage: string }> => {
+    const base = (gitlabUrl || baseUrl).replace(/\/+$/, "");
+    const response = await fetchFn(`${base}${path}`, {
+      headers: { "PRIVATE-TOKEN": gitlabToken },
+      signal: AbortSignal.timeout(options.timeoutMs),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new GitlabApiError(
+        `GitLab API ${path} 返回 ${response.status}${detail ? `：${detail.slice(0, 300)}` : ""}`,
+        response.status,
+      );
+    }
+    return { payload: (await response.json()) as T, nextPage: response.headers.get("x-next-page") ?? "" };
+  };
+
   return {
     async getMergeRequestChanges(projectId, iid, gitlabUrl = "", gitlabToken = "") {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/changes?access_raw_diffs=true`;
@@ -119,6 +145,79 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
         body: JSON.stringify({ body }),
       });
       logger.info("评论已回写 GitLab", { 项目ID: projectId, MR编号: iid });
+    },
+
+    async getMergeRequestVersions(projectId, iid, gitlabUrl = "", gitlabToken = "") {
+      const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/versions`;
+      const versions = await request<Array<{ base_commit_sha?: string; start_commit_sha?: string; head_commit_sha?: string }>>(
+        gitlabUrl,
+        gitlabToken,
+        path,
+      );
+      // 取最新 diff version（数组首项）。没有版本信息时无法构造任何 position，
+      // 早失败好过逐条评论降级——调用方据此把该 MR 的 findings 全部并入汇总。
+      const latest = versions[0];
+      if (!latest?.base_commit_sha || !latest.start_commit_sha || !latest.head_commit_sha) {
+        throw new GitlabApiError(`MR !${iid} 没有 diff 版本，无法发布行内评论`, 200);
+      }
+      return {
+        baseSha: latest.base_commit_sha,
+        startSha: latest.start_commit_sha,
+        headSha: latest.head_commit_sha,
+      };
+    },
+
+    async postDiscussion(projectId, iid, body, position, gitlabUrl = "", gitlabToken = "") {
+      const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/discussions`;
+      const created = await request<{ id?: string; notes?: Array<{ id?: number; body?: string; position?: Record<string, unknown> }> }>(
+        gitlabUrl,
+        gitlabToken,
+        path,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body, position }),
+        },
+      );
+      return {
+        id: String(created.id ?? ""),
+        notes: (created.notes ?? []).map((note) => ({
+          id: Number(note.id ?? 0),
+          body: note.body ?? "",
+          position: note.position,
+        })),
+      };
+    },
+
+    async getDiscussions(projectId, iid, gitlabUrl = "", gitlabToken = "") {
+      const basePath = `/api/v4/projects/${projectId}/merge_requests/${iid}/discussions`;
+      type RawDiscussion = { id?: string; notes?: Array<{ id?: number; body?: string; position?: Record<string, unknown> }> };
+      const collected: Discussion[] = [];
+      // 同一 MR 的讨论可能跨页：必须按 x-next-page 翻页合并，否则幂等判重会漏掉
+      // 后续页上已发布的 marker，导致重复发评论。
+      let page = 1;
+      for (;;) {
+        const separator = basePath.includes("?") ? "&" : "?";
+        const { payload, nextPage } = await requestWithHeaders<RawDiscussion[]>(
+          gitlabUrl,
+          gitlabToken,
+          `${basePath}${separator}per_page=100&page=${page}`,
+        );
+        for (const item of payload) {
+          collected.push({
+            id: String(item.id ?? ""),
+            notes: (item.notes ?? []).map((note) => ({
+              id: Number(note.id ?? 0),
+              body: note.body ?? "",
+              position: note.position,
+            })),
+          });
+        }
+        if (!nextPage || payload.length === 0) break;
+        page = Number(nextPage);
+        if (!Number.isInteger(page) || page < 2) break;
+      }
+      return collected;
     },
   };
 }

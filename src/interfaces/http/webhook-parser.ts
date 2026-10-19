@@ -25,12 +25,16 @@ export function parseMergeRequestTask(
 
   const repository = isRecord(payload.repository) ? payload.repository : {};
   const token = tokenHeader?.trim();
+  // 提交人取自 payload.user（触发事件的 GitLab 账号）。缺失时不拒绝请求：
+  // 提交人是统计维度而非评审必需输入。
+  const user = isRecord(payload.user) ? payload.user : {};
   return {
     projectId,
     iid,
     fullName,
     sourceBranch: readString(attributes, "source_branch"),
     targetBranch: readString(attributes, "target_branch"),
+    committerName: readString(user, "name") || readString(user, "username"),
     gitlabUrl: deriveGitlabInstanceUrl(instanceHeader, readString(repository, "homepage")),
     gitlabToken: token || undefined,
   };

@@ -4,6 +4,18 @@ import { parseLogLevel, type LogLevel } from "./logger.ts";
 export interface AppConfig {
   /** 监听端口。默认 5001，对齐团队既有约定。 */
   port: number;
+  /**
+   * 额外的监听端口（可选）。默认 5002。
+   *
+   * 背景：团队既有部署约定「5001 = API、5002 = 管理界面」两个端口。
+   * 旧项目是 Flask + Streamlit 两个独立进程，各占一个端口；本项目前端是
+   * 由 Express 托管的静态文件，没有第二个进程。为兼容既有访问习惯
+   * （运维脚本、书签、监控都指向 5002），让同一个 Express 实例再监听一个
+   * 端口——两个端口提供完全相同的服务，不额外起进程也不引入 Nginx。
+   *
+   * 设为 0 或与 `port` 相同时不启用第二端口。
+   */
+  uiPort: number;
   /** 监听地址。默认只绑本机。 */
   host: string;
   /** 评审 prompt 兜底文件路径（无 YAML 规则时使用）。 */
@@ -28,9 +40,27 @@ export interface AppConfig {
   reviewStyle: string;
   /** 后台队列并发数：同时处理的 MR 任务上限。 */
   queueConcurrency: number;
+  /** SQLite 数据库文件路径。容器部署时挂在持久卷下。 */
+  dbPath: string;
+  /** 首次启动时创建的首个管理员用户名；账号已存在时不生效。 */
+  adminUsername: string;
+  /** 首次启动时创建的首个管理员密码；账号已存在时不生效。 */
+  adminPassword: string;
+  /**
+   * 令牌与密码盐的部署盐，来自 `AUTH_SALT`。
+   *
+   * 不入库：数据库被单独取走时，哈希无法用已知字典直接比对。为空时启动会告警
+   * ——空盐会让令牌可预测。
+   */
+  authSalt: string;
 }
 
 const DEFAULT_PORT = 5001;
+/**
+ * 管理界面的备用端口，对齐团队既有「5001=API、5002=UI」约定。
+ * 设 0 可关闭第二端口；与 PORT 相同时也会自动跳过。
+ */
+const DEFAULT_UI_PORT = 5002;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PROMPT_PATH = "prompts/review.md";
 const DEFAULT_TIMEOUT_MS = 1200000;
@@ -40,6 +70,8 @@ const DEFAULT_RULES_DIR = "prompts/rules";
 const DEFAULT_REVIEW_STYLE = "professional";
 const DEFAULT_QUEUE_CONCURRENCY = 5;
 const DEFAULT_LOG_FILE = "";
+/** 数据库默认路径：容器内解析到 WORKDIR 下的 data 目录（挂持久卷）。 */
+const DEFAULT_DB_PATH = "./data/cr-pilot.db";
 
 /**
  * 读取服务配置。
@@ -53,6 +85,8 @@ const DEFAULT_LOG_FILE = "";
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     port: readPositiveInt(env, "PORT", DEFAULT_PORT),
+    // 允许显式设为 0 来关闭：readPositiveInt 不接受 0，因此单独读取。
+    uiPort: readOptionalNonNegativeInt(env, "UI_PORT", DEFAULT_UI_PORT),
     host: env.HOST?.trim() || DEFAULT_HOST,
     promptPath: env.REVIEW_PROMPT_PATH?.trim() || DEFAULT_PROMPT_PATH,
     timeoutMs: readPositiveInt(env, "REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
@@ -65,7 +99,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     rulesDir: env.REVIEW_RULES_DIR?.trim() || DEFAULT_RULES_DIR,
     reviewStyle: env.REVIEW_STYLE?.trim() || DEFAULT_REVIEW_STYLE,
     queueConcurrency: readPositiveInt(env, "QUEUE_CONCURRENCY", DEFAULT_QUEUE_CONCURRENCY),
+    dbPath: env.DB_PATH?.trim() || DEFAULT_DB_PATH,
+    adminUsername: env.ADMIN_USERNAME?.trim() || "",
+    adminPassword: env.ADMIN_PASSWORD?.trim() || "",
+    authSalt: env.AUTH_SALT?.trim() || "",
   };
+}
+
+/**
+ * 把数据库中的配置覆盖写入环境变量（P-005「启动时 DB 优先」）。
+ *
+ * 调用顺序必须是「先应用覆盖，再 loadConfig」：loadConfig 读取的是进程环境变量
+ * 快照，覆盖写晚了就不生效。空串覆盖视为清空——不写入环境变量，保留进程原有值，
+ * 与页面「清空该覆盖」的语义一致。
+ */
+export function applyConfigOverrides(env: NodeJS.ProcessEnv, overrides: Record<string, string>): void {
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value !== "") env[key] = value;
+  }
 }
 
 /** 规范化实例 URL：去空白与尾部斜杠；空值返回空串（表示「从 webhook 派生」）。 */
@@ -80,6 +131,23 @@ function readBooleanFlag(env: NodeJS.ProcessEnv, name: string): boolean {
   if (raw === "1" || raw === "true") return true;
   if (raw === "0" || raw === "false") return false;
   throw new Error(`环境变量 ${name} 必须是 0 或 1，实际收到 ${raw}`);
+}
+
+/** 读取正整数环境变量。空值走默认值，非正整数抛错并带上变量名。 */
+/**
+ * 读取允许为 0 的端口号；0 表示「关闭该端口」。
+ *
+ * 与 `readPositiveInt` 分开是因为 UI_PORT 需要支持显式关闭：
+ * 有些部署只想要单端口，用同一个校验函数会把 0 判成非法。
+ */
+function readOptionalNonNegativeInt(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`环境变量 ${name} 必须是非负整数，实际收到 ${raw}`);
+  }
+  return value;
 }
 
 /** 读取正整数环境变量。空值走默认值，非正整数抛错并带上变量名。 */

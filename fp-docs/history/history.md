@@ -14,3 +14,21 @@
 **结构冲突：** None
 
 **归档路径：** `fp-docs/archive/2026-10-06-review-webhook/`
+
+## 2026-10-06: gitlab-integration
+
+**目标：** 接入 GitLab MR webhook，替代旧「纯代码同步接口」，实现后台串行队列分批评审并回写 MR 评论。
+
+**变更点：**
+- 端口默认 5001，`POST /review/webhook` 仅接受 GitLab `merge_request` 事件
+- `X-Gitlab-Token` 校验、旧纯代码接口停止支持（返回 400/401）
+- GitLab 客户端：拉取 changes/commits、回写 MR note、TLS 开关、重试
+- 内存串行队列：全局 Promise 链，单批失败整任务结束
+- 仓库级 YAML 规则 + 三级兜底（仓库 > default > md）
+- 分批评审：字符/4 估算 + 85% 阈值，每批独立 pi 会话，逐批评审 → 汇总 → 回写 MR 评论
+- 新增唯一运行时依赖 `yaml@^2.9.1`；删死代码 `gitlab.ts`/`prompt.ts`/对应测试
+- README 重写：配置、webhook 配置、规则目录、企微推送、日志全记录
+
+**结构冲突：** None
+
+**归档路径：** `fp-docs/archive/2026-10-06-gitlab-integration/`

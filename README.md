@@ -45,9 +45,21 @@ npm install
 
 ## 前置条件：pi 模型凭证
 
-服务在进程内嵌入 pi SDK，凭证由 pi 自身管理，不属于本项目的配置项，也不通过本服务的环境变量传入。配置目录默认为 `~/.pi/agent/`。
+模型厂商配置**由数据库管理**，在管理页面「AI 厂商」里维护（支持 OpenAI / DeepSeek /
+Anthropic / 通义千问等多厂商，可指定每个项目用哪个厂商）。服务启动时把数据库配置
+导出到 `pi-agent/models.json`，并把密钥写入进程环境变量供 pi SDK 读取。
 
-**`models.json`** 声明评审模型，自定义 endpoint 写在这里：
+配置目录由 `PI_CODING_AGENT_DIR` 指定，默认 `pi-agent/`。该目录下的文件分工：
+
+| 文件 | 是否入库 | 作用 |
+|---|---|---|
+| `models.template.json` | ✅ | **初始配置模板**。数据库为空时用它兜底，保证新机器首次部署能启动 |
+| `models.json` | ❌ 运行时生成 | 由数据库配置导出，改一次厂商就会变，故不入库（`.gitignore`） |
+| `settings.json` | ❌ 运行时生成 | 同上，记录 `defaultModel` |
+| `auth.json` | ❌ | pi SDK 的凭证缓存（含密钥） |
+| `models-store.json` | ❌ | pi SDK 的运行期缓存 |
+
+`models.template.json` 的形状：
 
 ```json
 {
@@ -55,12 +67,13 @@ npm install
     "llmgw": {
       "baseUrl": "https://llmgw.cwoa.net/v1",
       "api": "openai-responses",
+      "apiKey": "$LLMGW_API_KEY",
       "models": [
         {
           "id": "gpt-5.6-terra",
           "name": "gpt-5.6-terra",
           "input": ["text"],
-          "contextWindow": 128000,
+          "contextWindow": 1000000,
           "maxTokens": 32000,
           "reasoning": false,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
@@ -71,13 +84,8 @@ npm install
 }
 ```
 
-**`auth.json`** 存放密钥，键名与 `models.json` 的 provider 名一致：
-
-```json
-{
-  "llmgw": { "type": "api_key", "key": "<模型服务密钥>" }
-}
-```
+`apiKey` 必须是 `$环境变量名` 形式的引用，**不要写明文**——生成 `models.json` 时
+原样保留这个引用，实际密钥从数据库导出到同名环境变量。
 
 `settings.json` 的 `defaultModel` 决定默认模型。校验方式：
 
@@ -90,22 +98,103 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 
 | 环境变量 | 默认值 | 作用 |
 | --- | --- | --- |
-| `PORT` | `5001` | 监听端口 |
+| `PORT` | `5001` | 主监听端口（API 与 webhook） |
+| `UI_PORT` | `5002` | 管理界面端口，与 `PORT` 提供完全相同的服务。设 `0` 关闭第二端口 |
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `GITLAB_URL` | 无（可选） | GitLab 实例地址。缺省时从 webhook 派生：优先 `X-Gitlab-Instance` 请求头，其次 payload `repository.homepage` 的 origin；显式配置可覆盖派生值，并兜底老版本 GitLab |
 | `GITLAB_INSECURE_TLS` | `0` | 为 `1` 时跳过 GitLab TLS 证书校验（内网自签名） |
 | `GITLAB_API_TIMEOUT` | `15000` | GitLab API 单次请求超时毫秒数 |
 | `REVIEW_BATCH_MAX_TOKENS` | `120000` | 单批评审 token 预算（模型上下文 1M，可按需调大） |
-| `REVIEW_TIMEOUT_MS` | `120000` | 单批评审/汇总超时毫秒数 |
-| `REVIEW_RULES_DIR` | `prompts/rules` | 仓库规则目录 |
+| `REVIEW_TIMEOUT_MS` | `1200000` | 单批评审/汇总超时毫秒数（默认 20 分钟） |
+| `REVIEW_RULES_DIR` | `prompts/rules` | 仓库规则目录（首次启动可用导入接口或脚本写入数据库） |
 | `REVIEW_STYLE` | `professional` | 评审风格：`professional` / `sarcastic` / `gentle` / `humorous`，注入规则模板的 `{{ style }}` 与风格分支 |
 | `QUEUE_CONCURRENCY` | `5` | 后台队列并发数：同时处理的 MR 评审任务上限 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug` / `info` / `warn` / `error` / `silent` |
-| `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。Docker 部署建议 `/app/logs/cr-pilot.log`（compose 已挂载宿主机 `/data/logs/cr-pilot`） |
+| `LOG_FILE` | 空（仅控制台） | 日志文件路径：非空时日志双写控制台 + 该文件（目录自动创建）。compose 已固定为 `/app/logs/cr-pilot.log`，宿主机路径 `/data/logs/cr-pilot/cr-pilot.log` |
+| `DB_PATH` | `./data/cr-pilot.db` | SQLite 数据库文件路径。容器内固定 `/app/data/cr-pilot.db`（挂载具名卷 `cr-pilot-data`）。**必须落在本地盘**：WAL 模式不支持网络文件系统 |
+| `ADMIN_USERNAME` | 空 | 首次启动引导创建的管理员用户名，仅在管理员表为空时生效 |
+| `ADMIN_PASSWORD` | 空 | 首次启动引导创建的管理员密码；留空则跳过创建（空密码无法登录），启动告警 |
+| `AUTH_SALT` | 无（**必填**） | 令牌与密码盐的部署盐。令牌由「用户名 + 此盐」离线派生，留空等于任何人都能算出管理令牌，**服务拒绝启动**。生成：`node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` |
 
-无任何必填配置。访问令牌随 webhook 请求头 `X-Gitlab-Token` 携带（每个项目独立，对齐参考项目），`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。
+访问令牌随 webhook 请求头 `X-Gitlab-Token` 携带（每个项目独立，对齐参考项目），`GITLAB_URL` 之所以可选：现代 GitLab 的 webhook 请求头自带实例地址，服务在收到事件时派生（任务级优先于全局配置）。
 
-本地开发可用 `.env`（复制 `.env.example`），启动时自动加载；已存在的同名环境变量优先。
+本地开发可用 `.env`（复制 `.env.example`），启动时自动加载；已存在的同名环境变量优先。**数据库覆盖优先**：管理页面写入的配置存于数据库，启动时覆盖同名环境变量。
+
+### 配置生效时机
+
+管理页面的「环境变量」页保存后，配置写入数据库并在**重启容器后生效**（消费方在构造时持有快照，写入 `process.env` 不会让已构造的队列、管线、日志器与 GitLab 客户端重新读取）。页面会明确标注需重启的项；`DB_PATH`、`ADMIN_USERNAME`、`ADMIN_PASSWORD` 为只读，只能通过 `.env` 修改。
+
+配置项在页面上按用途分组展示：**AI 模型 / GitLab 集成 / 评审行为 / 服务与存储 / 账号与安全**。
+其中 AI 模型的 API 地址、密钥与模型清单**不在环境变量页编辑**——多厂商配置需要成组管理，
+统一收敛到「AI 厂商」页（见下文），环境变量页只保留跳转指引，避免两处都能改造成事实源分叉。
+
+### prompt 生效时机
+
+与配置不同，prompt 保存在数据库后**下一次评审立即生效**（评审管线每次任务都重新读取），无需重启。
+
+## Prompt 管理
+
+评审 prompt 以数据库为准，yaml 文件降级为初始导入源与兜底。三种落地方式：
+
+```bash
+# 方式 1：管理页面「Prompt 管理」→「从 yaml 导入」（推荐）
+# 方式 2：命令行脚本（读取同一 .env 与 DB_PATH，幂等可重复执行）
+npm run import:prompts
+# 方式 3：直接调用接口
+curl -X POST http://localhost:5001/api/prompts/import -H "Authorization: Bearer <token>"
+```
+
+匹配优先级：**数据库项目记录 > 数据库 `default` 记录 > `prompts/rules/*.yaml` > `prompts/review.md` 兜底**。
+
+### 多项目关联
+
+一条 prompt 可以同时关联多个 GitLab 项目，任一项目命中即使用该 prompt。页面上的「关联项目」是标签式多选框：
+
+- 从下拉选择已有项目，或直接输入新项目名回车添加
+- 点标签上的 `×` 删减关联，保存即生效
+- `default` 是全局兜底，不绑定任何项目
+
+从 yaml 导入时，`repository` 里的逗号串会被拆成多个项目。例如
+`repository: auto-ops,cw-auto-ops,auto-ops-platform` 会生成一条 prompt 关联三个项目，
+导入后仍可在页面上自由增删。
+
+## AI 厂商配置
+
+模型厂商支持配置多个，页面「AI 厂商」页管理（D-021 / D-022）：
+
+- 每个厂商独立配置 **API 地址 / API Key / 协议类型 / 模型清单 / 默认模型**
+- 内置模板：OpenAI、DeepSeek、Anthropic、通义千问、智谱 GLM、月之暗面 Kimi，以及任意 OpenAI 兼容的自定义网关
+- 保存后自动生成 `pi-agent/models.json` 并同步 `settings.json`，下一次评审即生效
+- 密钥以 `$LLM_KEY_<NAME>` 形式写入 models.json，**文件里不落明文**；实际密钥存数据库并导出到进程环境变量
+- 读取接口只回掩码（如 `sk-t****3456`），留空保存表示不修改
+
+模型选择优先级：**项目级绑定 > prompt 上指定的厂商 > 全局默认厂商 > `models.json` 既有配置**。
+
+项目级绑定在「AI 厂商 → 项目级模型绑定」里设置，可把某个项目钉到指定厂商与模型。
+
+## 管理控制台
+
+内置管理前端（Vue 3 + Vite + Element Plus），包含六个模块：管理员登录、评审记录与统计、prompt 管理、AI 厂商配置、环境变量管理、管理员账号管理。
+
+- 访问 `http://<host>:5001/` 进入控制台，未登录自动跳转登录页
+- 首次部署需在 `.env` 设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`AUTH_SALT`（`AUTH_SALT` 必填，留空拒绝启动）
+- 所有管理接口位于 `/api/*`，使用 `Authorization: Bearer <token>`（令牌由登录接口下发，存于浏览器 localStorage）
+- 管理员账号：禁止删除当前登录账号，也禁止删除最后一个管理员
+- **首屏部署检查**：启动日志会显示数据库路径与配置覆盖项数；prompt 未导入数据库时会走 yaml 兜底，可用「Prompt 管理 → 从 yaml 导入」补齐
+- 支持亮色/暗色主题切换（顶栏月亮图标），偏好存于 localStorage
+
+### 行内评论
+
+评审会为**能精确定位到行**的问题发布 GitLab 行内评论（`/discussions`，带 position），无法定位的问题仍进入汇总评论。保证内容不丢失：
+
+- 结构化输出约定已内置在 `prompts/rules/default.yaml`：模型需回显 `reviewed_head_sha`（服务端把当前 head sha 注入 user prompt 的 `{head_sha}` 占位符）
+- AI 输出按 JSON schema 校验（`new_line` 与 `old_line` 互斥，需 40 位 head sha）
+- 行号必须落在该文件的 diff 变更行上，否则降级进汇总
+- 评审期间的 head 与当前 head 不一致时全部降级进汇总
+- 单条发布失败只影响该条，其余继续；汇总评论会带上「无法定位到行的问题」段落
+- 已成功发行内评论的条目会从汇总评论中剔除，避免同一问题出现两次
+- 每条评论带 `<!-- marker:{head_sha}:{批次}:{id} -->` 幂等标记，webhook 重复触发不会刷屏
+- 其他仓库的规则文件需包含与 `default.yaml` 相同的「行内评论定位块」约定，否则该仓库一律走汇总评论
 
 ## 运行
 
@@ -113,25 +202,94 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 npm start
 ```
 
+前端开发（可选）：
+
+```bash
+npm run dev:frontend   # Vite 开发服务器 http://localhost:5173，自动代理 /api 与 /review/ 到后端 5001
+npm run build:frontend # 构建产物到 dist/，由 Express 托管
+```
+
+开发时前后端端口分工：**前端 5173（Vite dev server）、后端 5001（Express）**。
+Vite 用 `strictPort: true`，5173 被占用时直接报错而不是静默切换端口。
+注意：Vite 只在本地开发时用；Docker 部署时前端已构建成静态文件由后端 5001 托管，
+不存在 5173/5002 端口。
+
 ## Docker 部署
 
 ```bash
-# 1. 准备 .env：cp .env.example .env，填入 LLMGW_API_KEY（pi 模型密钥）
-#    Docker 部署建议同时设 LOG_FILE=/app/logs/cr-pilot.log
-# 2. 准备宿主机日志目录
-sudo mkdir -p /data/logs/cr-pilot
-# 3. 构建并启动
+# 1. 准备 .env：cp .env.example .env
+#    必填：AUTH_SALT（管理令牌盐，建议 32 位随机串）
+#    首启：ADMIN_USERNAME + ADMIN_PASSWORD（仅在账号表为空时创建）
+#    模型密钥：可在「AI 厂商」页配置，或保持模板里的 $LLMGW_API_KEY 并在此填值
+# 2. 构建并启动（Dockerfile 内含前端构建阶段，首次约 1-2 分钟）
 docker compose up -d --build
 
-# 健康检查
+# 健康检查（两个端口都提供）
 curl http://localhost:5001/health   # → {"status":"ok"}
+curl http://localhost:5002/health   # → {"status":"ok"}
 
-# 查看日志（控制台 + /data/logs/cr-pilot/cr-pilot.log）
+# 管理控制台（两个端口任选，服务内容完全相同）
+# 浏览器打开 http://<host>:5001/ 或 http://<host>:5002/，
+# 用 ADMIN_USERNAME / ADMIN_PASSWORD 登录
+
+# 查看日志（控制台 + 容器内 /app/logs/cr-pilot.log）
 docker compose logs -f cr-pilot
+docker compose exec cr-pilot tail -f /app/logs/cr-pilot.log
+
+# 升级已有部署：把既有 yaml prompt 导入数据库（幂等）
+docker compose exec cr-pilot node scripts/import-prompts.ts
+```
+
+**不需要手动构建前端**：Dockerfile 的 `frontend` 阶段会在容器内执行 `npm run build`，
+产物落到 `/app/dist` 并由 Express 托管。
+
+**双端口说明**：容器同时监听 **5001** 和 **5002**，两者由同一个 Express 实例提供服务，
+页面与 API 完全一致。这是为对齐团队既有约定（旧项目 5001=Flask API、5002=Streamlit UI），
+让既有运维脚本与书签无需改动。本项目只有一个进程，没有第二个服务，因此不需要 Nginx。
+可用 `UI_PORT=0` 关闭第二端口，只保留 5001。
+
+**挂载点**：
+
+| 容器内 | 宿主机 | 类型 | 说明 |
+|---|---|---|---|
+| `/app/logs` | `/data/logs/cr-pilot` | bind mount | 日志文件 `cr-pilot.log`，可直接 tail、归档、接入日志采集 |
+| `/app/data` | 具名卷 `cr-pilot-data` | named volume | SQLite 库。用卷而非宿主机路径：必须本地盘，且避免属主问题 |
+| `/app/prompts` | `./prompts`（仓库目录） | bind mount（只读） | 规则 yaml 与兜底 prompt |
+
+日志按路径直接查看：
+
+```bash
 tail -f /data/logs/cr-pilot/cr-pilot.log
 ```
 
-**pi 凭证闭环**：镜像内置 `pi-agent/models.json` + `settings.json`（`PI_CODING_AGENT_DIR=/app/pi-agent`），其中 `apiKey` 用 `$LLMGW_API_KEY` 环境变量插值；`docker-compose.yml` 把宿主机 `.env` 挂载为 `/app/.env:ro`，应用启动时自动加载。全部配置（含模型密钥）只在一个 `.env` 文件里维护，不依赖宿主机 `~/.pi/agent` 挂载。
+> **挂载目录的属主问题**：容器以 `node`（uid 1000）运行，但两个目录的属主都不受镜像控制——
+> 具名卷首次挂载时 Docker 把**卷根目录属主设为 root**；bind mount 的宿主机目录不存在时
+> 也由 Docker 以 root 创建。因此镜像带了一个 entrypoint（`docker-entrypoint.sh`）：
+> 启动时以 root 递归修正 `/app/data`、`/app/logs` 的属主，再用 `su-exec` 降权到 `node`。
+> 这意味着**不需要手工预建目录或 chown**，但也**不要**在 compose 里设 `user:` 为非 root，
+> 否则修正属主那一步会被跳过。
+
+如果启动报 `unable to open database file`，通常是卷属主问题。排查与修复：
+
+```bash
+# 看卷根目录属主（应为 root，entrypoint 会在启动时改）
+docker compose run --rm --entrypoint sh cr-pilot -c 'ls -ld /app/data /app/logs'
+
+# 手工修正（通常不需要，entrypoint 已处理；用于历史卷遗留 root 文件的情况）
+docker compose run --rm --user root --entrypoint sh cr-pilot -c 'chown -R node:node /app/data /app/logs'
+```
+
+备份或迁移数据：
+
+```bash
+# 数据卷实际落在 /var/lib/docker/volumes/cr-pilot_cr-pilot-data/_data
+docker run --rm -v cr-pilot_cr-pilot-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/cr-pilot-data.tar.gz -C /data .
+```
+
+**pi 模型配置**：镜像内置 `pi-agent/models.template.json`（`PI_CODING_AGENT_DIR=/app/pi-agent`），
+数据库为空时用它兜底；有厂商配置后由数据库导出 `models.json`。`docker-compose.yml` 通过
+`env_file` 注入 `.env`，应用启动时自动加载，不依赖宿主机 `~/.pi/agent` 挂载。
 
 ## 配置 GitLab webhook
 
@@ -212,3 +370,27 @@ INFO  评论已回写 GitLab projectId=3483 iid=5327
 npm test        # node --test；全部用例不调用真实模型与 GitLab，可离线运行
 npm run typecheck
 ```
+
+## 接口文档
+
+完整 OpenAPI 3.0 规范在 [`docs/openapi.json`](docs/openapi.json)，覆盖全部 28 个接口。
+
+规范由脚本从代码生成，**不是手写**——改接口后重新生成即可，避免文档与实现漂移：
+
+```bash
+npm run build:openapi   # 生成 docs/openapi.json
+npm run sync:apifox     # 导入到 Apifox 项目「AI Code Review」
+```
+
+`sync:apifox` 需要 `APIFOX_ACCESS_TOKEN`（环境变量或 `.agent/.env`）。
+覆盖策略是「同 method+path 原地更新」，因此可重复执行而不会产生重复接口。
+
+接口按 tag 分为 8 组：系统、Webhook、认证、评审记录、Prompt 管理、AI 厂商、环境变量、管理员账号。
+
+### 权限边界
+
+- `/health`、`/review/webhook`、`/api/auth/login` 免鉴权
+- `/api/admins` 整组要求管理员权限（非管理员返回 403）
+- 其余 `/api/*` 所有登录账号可用
+
+管理员身份由部署配置 `ADMIN_USERNAME` 决定：该账号即启动引导创建的那个，其余账号都是普通账号且无法在页面上提升。改动该配置会让原管理员失去权限，启动日志会打印当前管理员账号名。

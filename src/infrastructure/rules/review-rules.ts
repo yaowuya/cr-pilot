@@ -106,7 +106,22 @@ async function loadRuleFile(
   path: string,
   style: string,
 ): Promise<{ repository?: string; rule: RuleSet } | null> {
-  const parsed = parseYaml(await readFile(path, "utf8")) as unknown;
+  return parseRuleFileContent(await readFile(path, "utf8"), style);
+}
+
+/**
+ * 解析规则文件内容（导出给 prompt 导入复用）。
+ *
+ * 抽成内容级函数而不是文件级：数据库导入需要同时支持文件与内存内容，
+ * 且两处必须用同一套解析与渲染逻辑，否则导入结果会与启动时读目录不一致。
+ * `style` 用于渲染 Jinja 风格分支；导入时用默认风格，因为数据库存的是渲染后的
+ * 最终文本，风格切换不会重跑（见 `review-rules.ts` 的渲染说明）。
+ */
+export function parseRuleFileContent(
+  content: string,
+  style: string,
+): { repository?: string; rule: RuleSet } | null {
+  const parsed = parseYaml(content) as unknown;
   if (typeof parsed !== "object" || parsed === null) return null;
   const root = parsed as Record<string, unknown>;
   const prompt = root.code_review_prompt;
