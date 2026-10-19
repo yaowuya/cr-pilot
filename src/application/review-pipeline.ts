@@ -143,7 +143,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           projectId: task.projectId,
           projectName: task.fullName,
           mrIid: task.iid,
-          committerName: task.committerName ?? "",
+          // 用解析出的 MR 作者名，而不是 webhook 触发者：同一次 MR 的多次事件
+          // 触发者可能各不相同，按触发者统计会把一个人提的 MR 记到别人名下。
+          committerName,
           changeCount: outcome.changeCount ?? 0,
           batchCount: outcome.batchCount ?? 0,
           score: outcome.score ?? null,
@@ -157,6 +159,14 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         });
       };
 
+      // 解析作者名：MR webhook 只带 author_id（数字），要正确统计「谁提交的 MR」
+      // 必须再查一次用户接口。与拉取变更并发执行，避免串行增加耗时。
+      //
+      // 失败只降级不中断：token 缺 read_user 权限时会 403，此时退回触发者名字，
+      // 评审本身不该因为查不到名字而失败。降级后日志里能看出用的是兜底值。
+      let committerName = task.triggerUserName ?? "";
+      const authorNamePromise = resolveAuthorName(task);
+
       let changes: Change[];
       let commits: Commit[];
       try {
@@ -168,6 +178,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         writeRecord({ result: "failed", errorMessage: message });
         return;
       }
+      // 变更已到手，等作者名（此时通常已并发完成，不额外耗时）。
+      committerName = await authorNamePromise;
       logger.info("已拉取 MR 变更", {
         项目ID: task.projectId,
         MR编号: task.iid,
@@ -357,6 +369,45 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       });
     },
   };
+
+  /**
+   * 解析 MR 作者的显示名。
+   *
+   * MR webhook 的 `object_attributes` 只带 `author_id`（数字），不带名字，
+   * 因此需要额外调 `GET /users/:id`。这是「提交人」字段正确性的唯一来源：
+   * `payload.user` 是本次事件的**触发者**，同一次 MR 的多次事件里可能各不相同。
+   *
+   * 降级链：作者接口返回的名字 → username → 触发者名字 → 空串。
+   * 任何异常都不抛出：查名字失败只影响一个统计字段，不该让整次评审失败。
+   */
+  async function resolveAuthorName(task: MergeRequestTask): Promise<string> {
+    const fallback = task.triggerUserName ?? "";
+    if (task.authorId === undefined) {
+      // 老版本 GitLab 或精简 payload 可能没有 author_id：保持原有行为。
+      logger.debug("payload 缺少 author_id，提交人退回触发者", { 项目ID: task.projectId, MR编号: task.iid });
+      return fallback;
+    }
+    try {
+      const user = await client.getUser(task.authorId, task.gitlabUrl, task.gitlabToken);
+      const name = user.name || user.username;
+      if (!name) {
+        logger.warn("作者接口返回空名字，退回触发者", { 项目ID: task.projectId, 作者ID: task.authorId });
+        return fallback;
+      }
+      logger.info("已解析 MR 作者", { 项目ID: task.projectId, MR编号: task.iid, 作者ID: task.authorId, 作者: name });
+      return name;
+    } catch (error) {
+      // 常见原因：token 没有 read_user 权限（403）或用户已删除（404）。
+      // 退回触发者名并在日志里标注，便于事后判断记录里的名字是否可信。
+      logger.warn("解析 MR 作者失败，提交人退回触发者", {
+        项目ID: task.projectId,
+        MR编号: task.iid,
+        作者ID: task.authorId,
+        错误: error instanceof Error ? error.message : String(error),
+      });
+      return fallback;
+    }
+  }
 
   /**
    * 解析本次评审使用的规则集，并记录它来自哪里。

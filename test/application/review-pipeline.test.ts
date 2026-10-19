@@ -92,6 +92,9 @@ function fakeClient(overrides: Partial<GitlabClient> = {}): FakeClient {
     getMergeRequestVersions: async () => ({ baseSha: "b", startSha: "s", headSha: "h" }),
     postDiscussion: async () => ({ id: "d", notes: [] }),
     getDiscussions: async () => [],
+    // 默认作者可解析：既有多数用例不带 author_id，走不到这里；
+    // 带 author_id 的用例默认拿到这个名字，需要降级的用例用 overrides 覆盖。
+    getUser: async (userId: number) => ({ id: userId, name: "作者甲", username: "author-a" }),
     ...overrides,
     notes,
   };
@@ -336,7 +339,7 @@ test("评审成功时写入成功记录，含分数与文件数", async () => {
     batchMaxTokens: 6000,
     recordWriter: { insert: (record) => inserted.push(record) },
   });
-  await pipeline.run({ ...task, committerName: "张三" });
+  await pipeline.run({ ...task, triggerUserName: "张三" });
   assert.equal(inserted.length, 1);
   assert.equal(inserted[0].result, "success");
   assert.equal(inserted[0].score, 88);
@@ -740,4 +743,97 @@ test("提交给模型的 user prompt 注入当前 head sha", async () => {
   // 只断言批次调用：汇总调用（最后一次）的输入是各批结果文本，不需要 head_sha。
   assert.ok(seen[0].includes(headSha), "批次的 user prompt 必须含 head_sha，否则模型无法回显 reviewed_head_sha");
   assert.ok(!seen[0].includes("{head_sha}"), "占位符必须被替换而不是原样保留");
+});
+
+// ============ MR 作者解析（提交人字段正确性） ============
+
+test("提交人取 MR 作者而非事件触发者", async () => {
+  // 关键回归：别人评论/推代码会触发 update 事件，payload.user 是那个别人。
+  // 评审记录必须记 MR 作者，否则统计「谁提交的 MR」全是错的。
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient({
+      getUser: async (id: number) => ({ id, name: "真正的作者", username: "real-author" }),
+    }),
+    rules,
+    reviewer: reviewerReturning("批评论", "总分：90 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run({ ...task, authorId: 1751, triggerUserName: "无关的触发者" });
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].committerName, "真正的作者", "应记录 MR 作者而不是触发者");
+});
+
+test("作者接口失败时降级为触发者名字，评审不中断", async () => {
+  // token 缺 read_user 权限会 403。查不到名字只影响一个统计字段，
+  // 不能让整次评审失败——否则一个权限问题会导致评审功能全挂。
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient({
+      getUser: async () => {
+        throw new Error("GitLab API /api/v4/users/1751 返回 403");
+      },
+    }),
+    rules,
+    reviewer: reviewerReturning("批评论", "总分：70 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run({ ...task, authorId: 1751, triggerUserName: "触发者乙" });
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].result, "success", "作者查询失败不应让评审失败");
+  assert.equal(inserted[0].committerName, "触发者乙", "降级为触发者名字");
+});
+
+test("作者接口返回空名字时降级为触发者", async () => {
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient({ getUser: async (id: number) => ({ id, name: "", username: "" }) }),
+    rules,
+    reviewer: reviewerReturning("批评论", "总分：60 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run({ ...task, authorId: 1, triggerUserName: "触发者丙" });
+  assert.equal(inserted[0].committerName, "触发者丙");
+});
+
+test("没有 author_id 时不调用户接口，直接用触发者", async () => {
+  // 老版本 GitLab 或精简 payload 没有 author_id：保持原有行为，不多发一次请求。
+  let called = 0;
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient({
+      getUser: async (id: number) => {
+        called += 1;
+        return { id, name: "不该被调用", username: "x" };
+      },
+    }),
+    rules,
+    reviewer: reviewerReturning("批评论", "总分：80 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run({ ...task, triggerUserName: "触发者丁" });
+  assert.equal(called, 0, "缺 author_id 时不应调用用户接口");
+  assert.equal(inserted[0].committerName, "触发者丁");
+});
+
+test("作者接口返回 username 时优先用 name，name 空则用 username", async () => {
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient({ getUser: async (id: number) => ({ id, name: "", username: "only-username" }) }),
+    rules,
+    reviewer: reviewerReturning("批评论", "总分：85 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run({ ...task, authorId: 2, triggerUserName: "触发者" });
+  assert.equal(inserted[0].committerName, "only-username", "name 为空时退回 username");
 });
