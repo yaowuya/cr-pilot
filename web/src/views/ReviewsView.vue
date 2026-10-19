@@ -5,6 +5,12 @@
         <h1 class="page-header__title">评审记录</h1>
         <p class="page-header__desc">查看每次 MR 评审的结果、评分与耗时</p>
       </div>
+      <div class="page-header__actions">
+        <el-button @click="goStats">
+          <el-icon><TrendCharts /></el-icon>
+          查看统计分析
+        </el-button>
+      </div>
     </header>
 
     <!-- 统计卡片：图标 + 数值 + 说明。数字用等宽字体，多个卡片对齐 -->
@@ -141,17 +147,34 @@
  * 翻页只重新拉列表。分数列区分 `null`（未解析出分数）与 `0`（真实零分）。
  */
 import { computed, onMounted, reactive, ref } from "vue";
+import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Document, Refresh, Search, Star, TrendCharts, User } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
 import type { ReviewRecord, ReviewStats } from "../types.ts";
+
+const router = useRouter();
+
+/** 跳到独立的统计分析页。 */
+function goStats(): void {
+  void router.push("/stats");
+}
 
 const loading = ref(false);
 const items = ref<ReviewRecord[]>([]);
 const total = ref(0);
 const page = ref(1);
 const pageSize = ref(20);
-const stats = ref<ReviewStats>({ total: 0, projectCount: 0, committerCount: 0, avgScore: null, daily: [] });
+// 记录页只用概览与 daily，但类型上必须给全字段（统计页需要 byProject/byCommitter）
+const stats = ref<ReviewStats>({
+  total: 0,
+  projectCount: 0,
+  committerCount: 0,
+  avgScore: null,
+  daily: [],
+  byProject: [],
+  byCommitter: [],
+});
 
 const filters = reactive<{ projectId: string; committer: string; range: [string, string] | null }>({
   projectId: "",

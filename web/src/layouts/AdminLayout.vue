@@ -97,6 +97,7 @@ import {
   Setting,
   Sunny,
   SwitchButton,
+  TrendCharts,
   User,
 } from "@element-plus/icons-vue";
 import { currentIsAdmin, currentUsername, logout } from "../stores/auth.ts";
@@ -145,6 +146,7 @@ function onToggleCollapse(): void {
  */
 const allMenuItems = [
   { path: "/reviews", title: "评审记录", icon: Document, adminOnly: false },
+  { path: "/stats", title: "统计分析", icon: TrendCharts, adminOnly: false },
   { path: "/prompts", title: "Prompt 管理", icon: EditPen, adminOnly: false },
   { path: "/providers", title: "AI 厂商", icon: Cpu, adminOnly: false },
   { path: "/config", title: "环境变量", icon: Setting, adminOnly: false },
