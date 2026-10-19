@@ -5,7 +5,13 @@
  * 调用方（Express 路由与评审管线）无需 Promise 包装。
  */
 import type { DatabaseSync } from "node:sqlite";
-import type { ReviewListQuery, ReviewRecord, ReviewRecordRepository, ReviewStats } from "../../domain/review-record.ts";
+import type {
+  DimensionStat,
+  ReviewListQuery,
+  ReviewRecord,
+  ReviewRecordRepository,
+  ReviewStats,
+} from "../../domain/review-record.ts";
 
 /** 数据库行形状：列名与表定义一致（snake_case）。 */
 interface ReviewRow {
@@ -150,7 +156,59 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
         committerCount: summary.committer_count,
         avgScore: summary.avg_score,
         daily: dailyRows.map((row) => ({ date: row.day, count: row.count, avgScore: row.avg_score })),
+        byProject: aggregateByDimension(db, "project_name", where, params),
+        byCommitter: aggregateByDimension(db, "committer_name", where, params),
       } satisfies ReviewStats;
     },
   };
+}
+
+/** 分组聚合的原始行形状。 */
+interface AggregateRow {
+  name: string;
+  count: number;
+  avg_score: number | null;
+  min_score: number | null;
+  max_score: number | null;
+}
+
+/**
+ * 按单个维度聚合评审记录。
+ *
+ * 列名直接拼进 SQL（GROUP BY 不能参数化），因此只接受白名单字面量，
+ * 绝不能让外部输入流进来——那会变成注入面。
+ *
+ * `AVG`/`MIN`/`MAX` 都自动忽略 NULL，正是需要的语义：没有分数的记录
+ * 不参与分数统计，但**计入次数**。不要改成 COALESCE(score, 0)——那会把
+ * 「未解析出分数」当成 0 分，既拉低均值又制造虚假的 0 分最低值。
+ *
+ * 排序：次数降序（谁评审最多一目了然），次数相同再按名称升序，
+ * 保证刷新时顺序稳定，不会因 SQLite 内部顺序变化而跳动。
+ */
+function aggregateByDimension(
+  db: DatabaseSync,
+  column: "project_name" | "committer_name",
+  where: string,
+  params: (string | number)[],
+): DimensionStat[] {
+  const rows = db
+    .prepare(
+      `SELECT ${column} AS name,
+              COUNT(*) AS count,
+              AVG(score) AS avg_score,
+              MIN(score) AS min_score,
+              MAX(score) AS max_score
+       FROM review_records ${where}
+       GROUP BY ${column}
+       ORDER BY count DESC, name ASC`,
+    )
+    .all(...params) as unknown as AggregateRow[];
+
+  return rows.map((row) => ({
+    name: row.name,
+    count: row.count,
+    avgScore: row.avg_score,
+    minScore: row.min_score,
+    maxScore: row.max_score,
+  }));
 }

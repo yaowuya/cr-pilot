@@ -43,6 +43,25 @@ export interface ReviewListQuery {
   pageSize: number;
 }
 
+/**
+ * 单维度聚合结果（按项目或按提交人）。
+ *
+ * 供统计页的图表与明细表共用：图表看分布趋势，表格看精确值。
+ * 分数统计必须同时给 min/max：只看平均分会掩盖「有人被打了 20 分」这类信号。
+ */
+export interface DimensionStat {
+  /** 分组键：项目全名或提交人姓名。 */
+  name: string;
+  /** 评审次数。 */
+  count: number;
+  /** 平均分；该组全部记录都没有分数时为 null（不是 0）。 */
+  avgScore: number | null;
+  /** 最低分；无带分数记录时为 null。 */
+  minScore: number | null;
+  /** 最高分；无带分数记录时为 null。 */
+  maxScore: number | null;
+}
+
 /** 基础统计结果。`avgScore` 为 `null` 表示没有任何带分数的记录。 */
 export interface ReviewStats {
   total: number;
@@ -50,6 +69,10 @@ export interface ReviewStats {
   committerCount: number;
   avgScore: number | null;
   daily: { date: string; count: number; avgScore: number | null }[];
+  /** 按项目聚合，按评审次数降序。 */
+  byProject: DimensionStat[];
+  /** 按提交人聚合，按评审次数降序。 */
+  byCommitter: DimensionStat[];
 }
 
 /** 评审明细持久化端口。实现方为 infrastructure/sqlite。 */

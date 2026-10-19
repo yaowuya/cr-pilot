@@ -108,3 +108,95 @@ test("insert 保留失败原因与评论链接", () => {
   assert.equal(item.commentUrl, null);
   db.close();
 });
+
+// ============ 按项目 / 按提交人 两维度聚合 ============
+
+test("byProject 聚合次数与分数（min/avg/max），null 分数不计入", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ projectId: 1, projectName: "group/a", score: 60 }));
+  repo.insert(record({ projectId: 1, projectName: "group/a", score: 80 }));
+  // 这条没有分数：应计入次数，但不能参与 avg/min/max
+  repo.insert(record({ projectId: 1, projectName: "group/a", score: null }));
+  repo.insert(record({ projectId: 2, projectName: "group/b", score: 90 }));
+
+  const stats = repo.getStats({});
+  const projectA = stats.byProject.find((item) => item.name === "group/a");
+  assert.ok(projectA);
+  assert.equal(projectA.count, 3, "无分数的记录也要计入次数");
+  assert.equal(projectA.avgScore, 70, "只对有分数的记录求均值");
+  assert.equal(projectA.minScore, 60, "null 不得被当成 0 分最低值");
+  assert.equal(projectA.maxScore, 80);
+
+  const projectB = stats.byProject.find((item) => item.name === "group/b");
+  assert.ok(projectB);
+  assert.equal(projectB.count, 1);
+  assert.equal(projectB.avgScore, 90);
+  db.close();
+});
+
+test("byCommitter 聚合与 byProject 相互独立", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  // 同一人提交多个项目
+  repo.insert(record({ projectId: 1, projectName: "group/a", committerName: "张三", score: 70 }));
+  repo.insert(record({ projectId: 2, projectName: "group/b", committerName: "张三", score: 90 }));
+  // 同一项目多人提交
+  repo.insert(record({ projectId: 1, projectName: "group/a", committerName: "李四", score: 50 }));
+
+  const stats = repo.getStats({});
+  const zhangsan = stats.byCommitter.find((item) => item.name === "张三");
+  assert.ok(zhangsan);
+  assert.equal(zhangsan.count, 2);
+  assert.equal(zhangsan.avgScore, 80);
+  assert.equal(zhangsan.minScore, 70);
+  assert.equal(zhangsan.maxScore, 90);
+
+  const projectA = stats.byProject.find((item) => item.name === "group/a");
+  assert.ok(projectA);
+  assert.equal(projectA.count, 2, "group/a 有两条记录（张三 + 李四）");
+  assert.equal(projectA.avgScore, 60);
+  db.close();
+});
+
+test("两维度都按次数降序、名称升序稳定排序", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  // b 项目 1 次，a 项目 2 次，c 项目 1 次 → 期望 a(2) 在前，b/c(各1) 按名称升序
+  repo.insert(record({ projectId: 1, projectName: "group/b", committerName: "乙" }));
+  repo.insert(record({ projectId: 2, projectName: "group/a", committerName: "甲" }));
+  repo.insert(record({ projectId: 2, projectName: "group/a", committerName: "甲" }));
+  repo.insert(record({ projectId: 3, projectName: "group/c", committerName: "丙" }));
+
+  const stats = repo.getStats({});
+  assert.deepEqual(
+    stats.byProject.map((item) => item.name),
+    ["group/a", "group/b", "group/c"],
+    "次数降序，同次数按名称升序",
+  );
+  db.close();
+});
+
+test("空表时两维度返回空数组而不是 undefined", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  const stats = repo.getStats({});
+  assert.deepEqual(stats.byProject, []);
+  assert.deepEqual(stats.byCommitter, []);
+  db.close();
+});
+
+test("时间筛选同时作用于两维度聚合", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ projectName: "group/a", startedAt: 1000, score: 50 }));
+  repo.insert(record({ projectName: "group/a", startedAt: 9000, score: 90 }));
+
+  // 只统计 5000 之后的记录
+  const stats = repo.getStats({ from: 5000 });
+  const projectA = stats.byProject.find((item) => item.name === "group/a");
+  assert.ok(projectA);
+  assert.equal(projectA.count, 1, "筛选条件必须应用到分组聚合");
+  assert.equal(projectA.avgScore, 90);
+  db.close();
+});
