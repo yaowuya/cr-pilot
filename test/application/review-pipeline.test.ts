@@ -75,6 +75,17 @@ test("拆分后每批保留文件路径", () => {
 
 // ============ backend-006：编排 ============
 
+/**
+ * 判定这次 reviewer 调用是不是「汇总」阶段。
+ *
+ * 不能用 includes("合并"/"汇总") 判断：批次调用的 system prompt 现在会被管线
+ * 追加「输出格式（系统要求）」契约段，其中出现「汇总」字样，导致批次被误判为汇总。
+ * 改用它独有的开头语——只有 SUMMARY_SUFFIX 含「你之前分批评审了同一变更的各部分」。
+ */
+function isSummaryCall(systemPrompt: string): boolean {
+  return systemPrompt.includes("你之前分批评审了同一变更的各部分");
+}
+
 interface FakeClient extends GitlabClient {
   notes: string[];
 }
@@ -211,7 +222,7 @@ test("汇总输出带代码块包裹时，回写前剥离围栏", async () => {
     reviewer: {
       // 批评审返回普通文本；汇总返回被 ```markdown 包裹的最终评论。
       review: async ({ systemPrompt }) => ({
-        text: systemPrompt.includes("合并") ? "```markdown\n## 问题清单\n- [一般] a\n\n## 结论\n\n可合入。\n```" : "批评论",
+        text: isSummaryCall(systemPrompt) ? "```markdown\n## 问题清单\n- [一般] a\n\n## 结论\n\n可合入。\n```" : "批评论",
         model: "m",
       }),
     },
@@ -246,7 +257,7 @@ test("评分低于阈值且配置 webhook 时推送企微", async () => {
     reviewer: {
       // 汇总返回带总分的低分评审。
       review: async ({ systemPrompt }) => ({
-        text: systemPrompt.includes("合并") ? "## 问题清单\n- [严重] x\n\n总分:65分" : "批评论",
+        text: isSummaryCall(systemPrompt) ? "## 问题清单\n- [严重] x\n\n总分:65分" : "批评论",
         model: "m",
       }),
     },
@@ -276,7 +287,7 @@ test("评分不低于阈值时不推送企微", async () => {
     rules: wecomRules,
     reviewer: {
       review: async ({ systemPrompt }) => ({
-        text: systemPrompt.includes("合并") ? "总分:85分" : "批评论",
+        text: isSummaryCall(systemPrompt) ? "总分:85分" : "批评论",
         model: "m",
       }),
     },
@@ -303,7 +314,7 @@ test("企微推送失败不影响评审回写", async () => {
     rules: wecomRules,
     reviewer: {
       review: async ({ systemPrompt }) => ({
-        text: systemPrompt.includes("合并") ? "总分:60分" : "批评论",
+        text: isSummaryCall(systemPrompt) ? "总分:60分" : "批评论",
         model: "m",
       }),
     },
@@ -323,7 +334,7 @@ const headSha = "a".repeat(40);
 function reviewerReturning(batchText: string, summaryText: string): Reviewer {
   return {
     review: async ({ systemPrompt }) => ({
-      text: systemPrompt.includes("合并") || systemPrompt.includes("汇总") ? summaryText : batchText,
+      text: isSummaryCall(systemPrompt) ? summaryText : batchText,
       model: "m",
     }),
   };
@@ -836,4 +847,152 @@ test("作者接口返回 username 时优先用 name，name 空则用 username", 
   });
   await pipeline.run({ ...task, authorId: 2, triggerUserName: "触发者" });
   assert.equal(inserted[0].committerName, "only-username", "name 为空时退回 username");
+});
+
+// ============ Markdown 兜底：prompt 缺结构化块时仍能发行内评论 ============
+
+test("模型只输出 Markdown（无 JSON 块）时，从正文反推并发布行内评论", async () => {
+  // 根因场景：仓库级 prompt 漏了「行内评论定位块」要求（gitignored、各自维护），
+  // 模型只输出 Markdown。此时不能直接降级——正文里的「位置：文件:行号」信息是齐的。
+  const { client, posted } = inlineClient({ diff: twoAddedLines });
+  const markdown = [
+    "代码审查报告",
+    "",
+    "P0：第二条有问题",
+    "- 位置： `a.ts:2`",
+    "- 问题：这里明显不对。",
+    "",
+    "总分：80 分",
+  ].join("\n");
+
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(markdown, "总分：80 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+
+  assert.equal(posted.length, 1, "应从 Markdown 反推出 1 条可定位问题");
+  assert.equal(posted[0].position.new_line, 2);
+  assert.match(posted[0].body, /第二条有问题|这里明显不对/);
+  // 反推的 finding 也必须带 marker，保证重跑幂等
+  assert.match(posted[0].body, /<!-- marker:/);
+});
+
+test("Markdown 里没有可定位信息时仍降级进汇总，不丢失内容", async () => {
+  const { client, posted, notes } = inlineClient({ diff: twoAddedLines });
+  const markdown = "代码整体质量不错，未发现可定位的具体问题。\n\n总分：95 分";
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(markdown, "总分：95 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+  assert.equal(posted.length, 0, "无可定位信息时不应强行发行内评论");
+  assert.equal(notes.length, 1);
+  assert.match(notes[0], /代码整体质量不错/, "原文必须保留在汇总评论里");
+});
+
+test("Markdown 反推出的行号不在 diff 变更行时，该条降级进汇总", async () => {
+  // 反推是启发式的，行号可能指向未变更的行；position 校验必须照样拦下
+  const { client, posted, notes } = inlineClient({ diff: twoAddedLines });
+  const markdown = ["P1：越界行号", "- 位置： `a.ts:999`", "", "总分：70 分"].join("\n");
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(markdown, "总分：70 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+  assert.equal(posted.length, 0, "越界行号不得强行发行内评论");
+  assert.equal(notes.length, 1);
+});
+
+// ============ 行内评论的结构化契约由管线统一注入 ============
+
+test("批次调用的 system prompt 自动带结构化输出契约，无需 prompt 文件配合", async () => {
+  // 机制保证：无论仓库级 prompt 写成什么样，管线都追加 JSON 定位块要求。
+  // 线上出现过只有 default.yaml 写了这段、其余仓库没写，导致行内评论全失效。
+  const promptsSeen: string[] = [];
+  const client = fakeClient();
+  const pipeline = createReviewPipeline({
+    client,
+    // 故意用一个「完全没提结构化输出」的极简 prompt，模拟仓库级 yaml 遗漏
+    rules: { resolve: () => ({ systemPrompt: "你是评审专家", userPrompt: "评：{diffs_text}" }) },
+    reviewer: {
+      review: async ({ systemPrompt }) => {
+        promptsSeen.push(systemPrompt);
+        return { text: "批评论", model: "m" };
+      },
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+
+  const batchCall = promptsSeen.find((p) => !isSummaryCall(p));
+  assert.ok(batchCall, "应有批次调用");
+  assert.match(batchCall, /输出格式（系统要求/, "必须注入契约标题");
+  assert.match(batchCall, /reviewed_head_sha/, "必须要求回显 head_sha");
+  assert.match(batchCall, /"findings"/, "必须要求 findings 数组");
+  assert.match(batchCall, /你是评审专家/, "原有 prompt 内容必须保留");
+});
+
+test("汇总调用不带结构化契约，避免要求模型在汇总阶段再输出 JSON", () => {
+  // 汇总阶段输出的是最终 Markdown 评论正文，加定位块要求会让模型多吐一段 JSON
+  const promptsSeen: string[] = [];
+  const client = fakeClient();
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: {
+      review: async ({ systemPrompt }) => {
+        promptsSeen.push(systemPrompt);
+        return { text: "总分：80 分", model: "m" };
+      },
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  return pipeline.run(task).then(() => {
+    const summaryCall = promptsSeen.find((p) => isSummaryCall(p));
+    assert.ok(summaryCall, "应有汇总调用");
+    assert.equal(
+      summaryCall.includes("输出格式（系统要求"),
+      false,
+      "汇总调用不应带定位块契约",
+    );
+  });
+});
+
+test("user 消息末尾自动补充 head_sha，即使 prompt 模板没有占位符", async () => {
+  // 仓库级 prompt 普遍没写 {head_sha}；不补的话模型拿不到值，
+  // reviewed_head_sha 只能编造或为空，定位块整体校验失败。
+  const userMessages: string[] = [];
+  const client = fakeClient({
+    getMergeRequestVersions: async () => ({ baseSha: "b", startSha: "s", headSha: headSha }),
+  });
+  const pipeline = createReviewPipeline({
+    client,
+    // 模板里刻意不含 {head_sha}
+    rules: { resolve: () => ({ systemPrompt: "S", userPrompt: "评：{diffs_text}" }) },
+    reviewer: {
+      review: async ({ code }) => {
+        userMessages.push(code);
+        return { text: "批评论", model: "m" };
+      },
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+  });
+  await pipeline.run(task);
+
+  const batchMessage = userMessages.find((m) => !m.includes("你之前分批评审"));
+  assert.ok(batchMessage);
+  assert.match(batchMessage, new RegExp(`head_sha.*${headSha}`), "必须把 head_sha 传给模型");
 });

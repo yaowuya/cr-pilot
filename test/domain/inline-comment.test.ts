@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildMarker, buildPosition, parseDiffLines, parseReviewJson } from "../../src/domain/inline-comment.ts";
+import {
+  buildMarker,
+  buildPosition,
+  parseDiffLines,
+  parseFindingsFromMarkdown,
+  parseReviewJson,
+} from "../../src/domain/inline-comment.ts";
 
 test("parseDiffLines 区分新增行与删除行", () => {
   const diff = [
@@ -125,4 +131,101 @@ test("buildPosition 在 old_line 锚点时不带 new_line", () => {
   });
   assert.equal("new_line" in position, false);
   assert.equal("old_line" in position ? position.old_line : undefined, 3);
+});
+
+// ============ Markdown 反推行内评论位置 ============
+
+/** 模拟「prompt 缺结构化块」时模型的真实输出：纯 Markdown，含位置行。 */
+const MARKDOWN_REVIEW = `代码审查报告
+
+审查范围：本次变更涉及后端权限与通知组。
+
+---
+
+P0：部分拓扑权限被错误扩大为整个业务权限
+- 位置： \`apps/task_mgmt/service/dynamic_topo_service.py:429-434\`
+- 问题：权限判断缺失，导致越权读取。
+- 建议：使用实际授权节点集合查询。
+
+---
+
+P1：通知组搜索存在 N+1 查询
+- 位置： \`apps/system_mgmt/filters/notice_group_filter.py:22\`
+- 问题：循环内查询关联关系。
+`;
+
+test("从 Markdown 正文反推出 findings", () => {
+  const parsed = parseFindingsFromMarkdown(MARKDOWN_REVIEW, { headSha: "a".repeat(40) });
+  assert.ok(parsed, "应能识别出可定位的问题");
+  assert.equal(parsed.findings.length, 2);
+  assert.equal(parsed.reviewedHeadSha, "a".repeat(40), "head_sha 由调用方注入");
+
+  const first = parsed.findings[0];
+  assert.equal(first.path, "apps/task_mgmt/service/dynamic_topo_service.py");
+  assert.equal(first.line, 429, "区间取起始行作为锚点");
+  assert.equal(first.lineKey, "new_line");
+  assert.equal(first.severity, "critical", "P0 映射为 critical");
+  assert.match(first.body, /拓扑权限/, "body 应包含问题说明");
+});
+
+test("P 级映射到 schema 的 severity 枚举", () => {
+  const text = [
+    "P0：甲",
+    "- 位置： a/b.py:1",
+    "P1：乙",
+    "- 位置： a/c.py:2",
+    "P2：丙",
+    "- 位置： a/d.py:3",
+    "P3：丁",
+    "- 位置： a/e.py:4",
+  ].join("\n");
+  const parsed = parseFindingsFromMarkdown(text);
+  assert.ok(parsed);
+  assert.deepEqual(
+    parsed.findings.map((f) => f.severity),
+    ["critical", "high", "medium", "low"],
+  );
+});
+
+test("同一位置的重复条目只取一次", () => {
+  // 正文里常在摘要和详情各写一次位置，重复发布没有意义
+  const text = ["P1：摘要里提一次", "- 位置： a/b.py:10", "", "P1：详情再说", "- 位置： a/b.py:10"].join("\n");
+  const parsed = parseFindingsFromMarkdown(text);
+  assert.ok(parsed);
+  assert.equal(parsed.findings.length, 1);
+});
+
+test("id 稳定：同一位置每次生成相同 id，保证 marker 幂等", () => {
+  const a = parseFindingsFromMarkdown(MARKDOWN_REVIEW);
+  const b = parseFindingsFromMarkdown(MARKDOWN_REVIEW);
+  assert.ok(a && b);
+  assert.deepEqual(
+    a.findings.map((f) => f.id),
+    b.findings.map((f) => f.id),
+    "同输入必须得到相同 id，否则重跑会重复发行内评论",
+  );
+});
+
+test("非路径位置（函数名）不产生 finding", () => {
+  // prompt 允许「函数/类名」这种写法，但无法用于 position，必须跳过
+  const text = ["P1：某问题", "- 位置： `get_all_scope_host_ids` 函数"].join("\n");
+  assert.equal(parseFindingsFromMarkdown(text), null);
+});
+
+test("没有任何位置时返回 null，交由调用方降级", () => {
+  assert.equal(parseFindingsFromMarkdown("代码看起来没问题，没有发现可定位的问题。"), null);
+});
+
+test("混合路径风格都能识别", () => {
+  const text = [
+    "P2：甲",
+    "- 位置: app.py:10",
+    "P2：乙",
+    "**位置**： `lib/util.ts:20`",
+  ].join("\n");
+  const parsed = parseFindingsFromMarkdown(text);
+  assert.ok(parsed);
+  assert.equal(parsed.findings.length, 2);
+  assert.equal(parsed.findings[0].path, "app.py");
+  assert.equal(parsed.findings[1].path, "lib/util.ts");
 });

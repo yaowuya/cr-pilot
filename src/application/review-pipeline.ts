@@ -4,6 +4,7 @@ import {
   buildMarker,
   buildPosition,
   parseDiffLines,
+  parseFindingsFromMarkdown,
   parseReviewJson,
   type DiffLineSets,
   type ParsedReview,
@@ -85,6 +86,54 @@ export function describePromptSource(source: PromptSource): string {
 
 /** 汇总 prompt 的系统提示后缀，要求模型把各批结果合并成一份最终评论。 */
 const SUMMARY_SUFFIX = "\n\n你之前分批评审了同一变更的各部分。下面按批序给出各批评审结果，请把它们合并成一份最终评论：去重、按严重程度排序、保留各条问题的位置与证据、合并评分并给出总分。每个问题小节必须包含「位置」「问题（有问题的代码块，带语言标记）」「建议（改进后的代码块，带语言标记）」，问题之间用 --- 分隔。输出结构与格式完全遵循上述规则的要求；只输出纯 Markdown 评论正文，不要用 ``` 代码块包裹整个评论，不要加任何前言或后缀。";
+
+/**
+ * 行内评论的结构化输出契约：由管线统一追加到 system prompt 末尾。
+ *
+ * 为什么不写在 prompt 文件里（这里踩过坑）：
+ * 行内评论是**管线的功能**，它依赖模型输出机器可读的 JSON 定位块。而 prompt 是
+ * 运维各自维护的内容（仓库级 yaml 还 gitignored），要求每个人在自己的评审规范里
+ * 抄一段「必须输出 JSON」既不现实也无法保证一致——线上就出现过只有 default.yaml
+ * 写了、其余仓库都没写，导致行内评论全部降级进汇总评论、MR 上只有一条评论。
+ *
+ * 因此把契约放在代码里：无论 prompt 怎么写、谁来写，只要走这条管线就一定带上这段
+ * 要求。职责边界变清晰了——prompt 只负责「怎么评审」，管线负责「输出成什么结构」。
+ *
+ * 追加在 system prompt 末尾而非开头：它是输出格式约束，放在评审规范之后符合阅读
+ * 顺序，也不会覆盖各仓库 prompt 自己在开头定义的人设。
+ */
+const INLINE_COMMENT_CONTRACT = `
+
+---
+
+## 输出格式（系统要求，优先级高于上文任何格式说明）
+
+完成评审后，除 Markdown 报告正文外，**必须**在正文末尾追加一个 fenced JSON 代码块，
+供系统自动发布 GitLab 行内评论。这是机器解析的必需字段，不是可选项。
+
+\`\`\`json
+{
+  "reviewed_head_sha": "本轮输入中给出的 head_sha，原样回显",
+  "summary": { "body": "本批次总体小结" },
+  "findings": [
+    {
+      "id": "短唯一标识（字母数字下划线）",
+      "severity": "critical | high | medium | low | info",
+      "path": "变更后的文件路径",
+      "new_line": 新文件中的行号,
+      "body": "该问题的简要说明"
+    }
+  ]
+}
+\`\`\`
+
+约束：
+- \`reviewed_head_sha\` 必须与用户消息中给出的 head_sha 完全一致；拿不到就留空串，**不要编造**。
+- 每个 finding 的 \`new_line\` 与 \`old_line\` 二选一：新增/修改行用 \`new_line\`，删除行用 \`old_line\`。
+- 行号必须是 diff 中**实际变更**的行，否则该条会被降级到汇总评论。
+- 无法确定行号的问题只写进报告正文，不要放进 findings。
+- 没有可定位问题时输出 \`"findings": []\`。
+- JSON 块之外保留完整的 Markdown 报告正文（人读的那份）。`;
 
 /** 一次发布尝试的结果：成功发布的 finding id/正文与需并入汇总的文本。 */
 interface InlinePublishOutcome {
@@ -231,11 +280,18 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       for (const [index, batch] of batches.entries()) {
         const diffsText = batch.map((change) => `diff --git a/${change.oldPath} b/${change.newPath}\n${change.diff}`).join("\n\n");
         // 仓库规则的 user_prompt 是用户消息全文模板：渲染占位符后作为本轮用户消息。
-        const userMessage = renderUserPrompt(ruleSet.userPrompt, { diffsText, commitsText, headSha: refs?.headSha });
+        // 末尾再补一段 head_sha 上下文：不是每条仓库 prompt 都写了 {head_sha} 占位符，
+        // 而没有这个值模型无法回显 reviewed_head_sha，定位块会整体校验失败。
+        // 放在末尾而不是开头：head_sha 是辅助信息，不该挤占 diff 正文的位置。
+        const userMessage = renderUserPrompt(ruleSet.userPrompt, { diffsText, commitsText, headSha: refs?.headSha }) +
+          (refs
+            ? `\n\n---\n本次评审的 head_sha（供输出格式要求中的 reviewed_head_sha 原样回显）：${refs.headSha}`
+            : "");
         const batchStartedAt = Date.now();
         try {
           const result = await reviewer.review({
-            systemPrompt: ruleSet.systemPrompt,
+            // 统一追加结构化契约：行内评论依赖它，不能寄望每条 prompt 都写。
+            systemPrompt: ruleSet.systemPrompt + INLINE_COMMENT_CONTRACT,
             code: userMessage,
             context: undefined,
             signal: AbortSignal.timeout(timeoutMs),
@@ -507,8 +563,26 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     const parsedList: { review: ParsedReview; source: string; batchIndex: number }[] = [];
     batchResults.forEach((raw, index) => {
       const parsed = parseReviewJson(raw);
-      if (parsed) parsedList.push({ review: parsed, source: raw, batchIndex: index });
-      else fallback.push(raw);
+      if (parsed) {
+        parsedList.push({ review: parsed, source: raw, batchIndex: index });
+        return;
+      }
+      // JSON 解析失败时的兜底：从 Markdown 正文反推「位置：文件:行号」。
+      // 仓库级 prompt 可能漏掉「行内评论定位块」要求（gitignored、各自维护），
+      // 那时模型只输出 Markdown。正文里本来就写了位置，能从文本再捞一遍，
+      // 捞不到的仍留在 fallback 里并入汇总评论，不会丢内容。
+      const fromMarkdown = parseFindingsFromMarkdown(raw, { headSha: input.refs?.headSha });
+      if (fromMarkdown && fromMarkdown.findings.length > 0) {
+        logger.info("结构化块缺失，已从 Markdown 反推行内评论位置", {
+          项目ID: input.task.projectId,
+          MR编号: input.task.iid,
+          批次: `${index + 1}/${batchResults.length}`,
+          识别条数: fromMarkdown.findings.length,
+        });
+        parsedList.push({ review: fromMarkdown, source: raw, batchIndex: index });
+        return;
+      }
+      fallback.push(raw);
     });
     if (parsedList.length === 0) return { published, publishedBodies, fallback };
 
