@@ -219,6 +219,19 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       }
       return collected;
     },
+
+    async getUser(userId, gitlabUrl = "", gitlabToken = "") {
+      // MR webhook 的 object_attributes 只带 author_id（数字），作者名必须另外查。
+      // 用 /api/v4/users/:id 而不是 /projects/:id/members/:id：
+      // 后者要求目标用户仍是该项目成员，而 MR 作者可能已经离开项目。
+      type RawUser = { id?: number; name?: string; username?: string };
+      const payload = await request<RawUser>(gitlabUrl, gitlabToken, `/api/v4/users/${userId}`);
+      return {
+        id: Number(payload.id ?? userId),
+        name: payload.name ?? "",
+        username: payload.username ?? "",
+      };
+    },
   };
 }
 
