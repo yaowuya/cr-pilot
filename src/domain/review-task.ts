@@ -46,12 +46,22 @@ export interface MergeRequestTask {
   sourceBranch: string;
   targetBranch: string;
   /**
-   * 提交人显示名，取自 webhook payload 的 `user.name`。
+   * MR 作者的 GitLab 用户 ID，取自 `object_attributes.author_id`。
    *
-   * 缺失时为空串：评审记录是统计维度之一，但提交人不是评审的必需输入，
-   * 因此不因缺失而拒绝请求。
+   * 与 `triggerUserName` 严格区分：一次 MR 会产生多次 webhook（创建、更新、
+   * 评论、打标签、CI 状态变化），每次触发者可能不同，但 MR 作者始终是同一人。
+   * 评审记录要统计「谁提交的 MR」，必须用这个字段而不是触发者。
+   *
+   * payload 里只有作者 ID、没有名字，名字需另外调 GitLab API 解析。
    */
-  committerName?: string;
+  authorId?: number;
+  /**
+   * 事件触发者的显示名，取自 webhook payload 的 `user.name`。
+   *
+   * 仅作为作者名解析失败时的兜底：查用户接口可能因 token 无 read_user 权限
+   * 而返回 403，此时至少还能记下「是谁触发了这次评审」。
+   */
+  triggerUserName?: string;
   /** 该事件来源的 GitLab 实例地址（webhook 派生）；缺省时客户端回落到全局配置。 */
   gitlabUrl?: string;
   /** 该事件携带的 GitLab 访问令牌（webhook 请求头 X-Gitlab-Token）。 */
@@ -124,6 +134,26 @@ export interface GitlabClient {
   ): Promise<Discussion>;
   /** 拉取该 MR 的全部讨论，用于幂等判重与发布后校验。 */
   getDiscussions(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Discussion[]>;
+  /**
+   * 按用户 ID 查 GitLab 用户，用于把 MR 作者 ID 解析成显示名。
+   *
+   * 为什么需要单独查：MR webhook 的 `object_attributes` 只带 `author_id`
+   * （数字），不带作者名字。要正确统计「谁提交的 MR」就必须多调这一次接口。
+   *
+   * 实现方在失败时应抛出异常，由调用方决定降级——不要在这里吞掉错误，
+   * 否则调用方无法区分「用户不存在」与「网络抖动」。
+   */
+  getUser(userId: number, gitlabUrl?: string, gitlabToken?: string): Promise<GitlabUser>;
+}
+
+/** GitLab 用户的对外可见信息（只取展示需要的字段）。 */
+export interface GitlabUser {
+  /** 数字用户 ID。 */
+  id: number;
+  /** 显示名，如「郭豪[guohao]」；可能为空串。 */
+  name: string;
+  /** 登录名，如 `guohao`；name 为空时用它兜底。 */
+  username: string;
 }
 
 /**

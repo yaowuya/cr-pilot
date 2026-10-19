@@ -178,3 +178,138 @@ export function buildPosition(input: {
   };
   return input.lineKey === "new_line" ? { ...base, new_line: input.line } : { ...base, old_line: input.line };
 }
+
+/**
+ * 从纯 Markdown 评审正文里反推可定位的 findings（零 IO 纯函数）。
+ *
+ * 为什么需要这条兜底：行内评论依赖模型输出结构化 JSON 块，而那个要求写在
+ * prompt 里。仓库级 prompt 是运维各自维护的（且 gitignored），很容易漏掉
+ * 「行内评论定位块」这段——一旦漏了，模型只输出 Markdown，行内评论全部
+ * 降级进汇总评论，功能等于失效。
+ *
+ * 因此这里从 Markdown 里再解析一次：评审正文的问题条目本来就要写
+ * `位置：文件路径:行号`，信息是齐的，只是格式不固定。
+ *
+ * 只作为 JSON 解析失败时的补充，不做替代：JSON 是显式契约、字段更可靠；
+ * 正则是启发式，能捞多少算多少，捞不到的仍然留在汇总评论里不丢失。
+ *
+ * 识别的形态（对齐 prompt 对「位置」的要求）：
+ * - `- 位置： apps/x/y.py:429-434`（列表项 + 全角冒号 + 反引号可选）
+ * - `**位置**： \`apps/x/y.py:22\``
+ * - `位置: app.py:10`（半角冒号）
+ */
+export function parseFindingsFromMarkdown(
+  text: string,
+  options: { headSha?: string } = {},
+): ParsedReview | null {
+  const lines = text.split("\n");
+  const findings: ParsedFinding[] = [];
+  // severity 从问题标题里取：`P0：xxx` / `### P1: xxx` / `**P2**：xxx`
+  let currentSeverity = "medium";
+  // 最近一次出现的「位置」所属的问题标题，用于给 finding 起可读的 body。
+  let currentTitle = "";
+  const usedIds = new Set<string>();
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index] ?? "";
+    const line = rawLine.trim();
+
+    // 标题/条目行：更新当前问题标题与严重级别。
+    const heading = /^(?:#{1,6}\s*)?(?:[-*]\s+)?\*{0,2}P([0-3])\*{0,2}\s*[:：]\s*(.+)$/i.exec(line);
+    if (heading) {
+      currentSeverity = severityFromLevel(Number(heading[1]));
+      currentTitle = heading[2].trim();
+      continue;
+    }
+    // 没有 P 级标记但像标题的行（### xxx），也记下来便于 body 可读。
+    const plainHeading = /^#{1,6}\s+(.+)$/.exec(line);
+    if (plainHeading) {
+      currentTitle = plainHeading[1].trim();
+      continue;
+    }
+
+    const location = parseLocation(line);
+    if (!location) continue;
+
+    // 同一位置只取第一条：正文里常先出现在摘要、再出现在详情，重复没意义。
+    const key = `${location.path}:${location.lineKey}:${location.line}`;
+    if (usedIds.has(key)) continue;
+    usedIds.add(key);
+
+    // id 用位置派生：同一位置重跑得到同一 marker，发布幂等。
+    const id = `md_${hashKey(key)}`;
+    findings.push({
+      id,
+      severity: currentSeverity,
+      path: location.path,
+      body: buildMarkdownFindingBody(currentTitle, lines, index),
+      lineKey: location.lineKey,
+      line: location.line,
+    });
+  }
+
+  if (findings.length === 0) return null;
+  return {
+    // head_sha 由调用方注入（Markdown 里没有这个信息），用于幂等 marker。
+    reviewedHeadSha: options.headSha ?? "",
+    summaryBody: "",
+    findings,
+  };
+}
+
+/** 把 P0~P3 映射到 schema 的 severity 枚举。 */
+function severityFromLevel(level: number): string {
+  // schema 只有 critical/high/medium/low/info 五档，此外一律 medium。
+  if (level === 0) return "critical";
+  if (level === 1) return "high";
+  if (level === 2) return "medium";
+  return "low";
+}
+
+/**
+ * 从一行里解析「位置」。
+ *
+ * 行号支持 `:10` 与 `:429-434`（区间取起始行，因为 GitLab 的 position 只要锚点）。
+ * 删除行用 old_line 的语义在这里无法从文本判断，统一按新增行处理——
+ * 校验阶段会检查该行是否落在 diff 的新增行集合里，不满足就降级，不会误发。
+ */
+function parseLocation(line: string): { path: string; line: number; lineKey: "new_line" | "old_line" } | null {
+  // 匹配 `位置`（可带加粗/冒号变体）后跟 路径:行号，路径可被反引号包裹
+  const match = /(?:^|[-*]\s*)\*{0,2}位置\*{0,2}\s*[:：]\s*`?([^\s`]+?):(\d+)(?:-(\d+))?`?\s*$/i.exec(line);
+  if (!match) return null;
+  const path = match[1] ?? "";
+  const lineNo = Number(match[2]);
+  // 只接受看起来像文件路径的值：排除「函数/类名」这类非路径写法
+  if (!path || !path.includes("/") && !path.includes(".")) return null;
+  if (!Number.isInteger(lineNo) || lineNo <= 0) return null;
+  return { path, line: lineNo, lineKey: "new_line" };
+}
+
+/** 用问题标题作为 finding 正文，后接问题描述的前几行，便于在行内评论里读懂。 */
+function buildMarkdownFindingBody(title: string, lines: string[], locationIndex: number): string {
+  const parts: string[] = [];
+  if (title) parts.push(`**${title}**`);
+  // 取「位置」之后、下一个分隔符之前的若干行作为说明（跳过列表标记与空行）。
+  const collected: string[] = [];
+  for (let i = locationIndex + 1; i < lines.length && collected.length < 12; i += 1) {
+    const text = (lines[i] ?? "").trim();
+    if (!text) {
+      if (collected.length > 0) break;
+      continue;
+    }
+    if (/^(?:---+|\*\*\*+)$/.test(text)) break;
+    if (/^[-*]\s+\*{0,2}(?:位置|问题|建议)/.test(text)) break;
+    collected.push(text);
+  }
+  if (collected.length > 0) parts.push(collected.join("\n"));
+  return parts.join("\n\n") || "（详见汇总评论）";
+}
+
+/** 稳定的短哈希：同一位置每次得到相同 id，保证 marker 幂等。 */
+function hashKey(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
