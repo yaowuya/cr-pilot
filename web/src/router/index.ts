@@ -26,6 +26,7 @@ const routes: RouteRecordRaw[] = [
     redirect: "/reviews",
     children: [
       { path: "reviews", name: "reviews", component: () => import("../views/ReviewsView.vue") },
+      { path: "stats", name: "stats", component: () => import("../views/StatsView.vue") },
       { path: "prompts", name: "prompts", component: () => import("../views/PromptsView.vue") },
       { path: "providers", name: "providers", component: () => import("../views/ProvidersView.vue") },
       { path: "config", name: "config", component: () => import("../views/ConfigView.vue") },

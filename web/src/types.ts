@@ -24,6 +24,20 @@ export interface ReviewRecord {
   finishedAt: number;
 }
 
+/** 单维度聚合结果（按项目或按提交人）。 */
+export interface DimensionStat {
+  /** 分组键：项目全名或提交人姓名。 */
+  name: string;
+  /** 评审次数。 */
+  count: number;
+  /** 平均分；该组全部记录都没有分数时为 null（不是 0）。 */
+  avgScore: number | null;
+  /** 最低分；无带分数记录时为 null。 */
+  minScore: number | null;
+  /** 最高分；无带分数记录时为 null。 */
+  maxScore: number | null;
+}
+
 /** 基础统计。`avgScore` 为 null 表示没有任何带分数的记录。 */
 export interface ReviewStats {
   total: number;
@@ -31,6 +45,10 @@ export interface ReviewStats {
   committerCount: number;
   avgScore: number | null;
   daily: { date: string; count: number; avgScore: number | null }[];
+  /** 按项目聚合，按评审次数降序。 */
+  byProject: DimensionStat[];
+  /** 按提交人聚合，按评审次数降序。 */
+  byCommitter: DimensionStat[];
 }
 
 /** prompt 列表摘要：不含正文。 */
