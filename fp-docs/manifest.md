@@ -7,7 +7,7 @@
 - **Name**: cr-pilot
 - **Description**: pi 驱动的 GitLab 代码评审服务。GitLab MR webhook 触发后，服务在后台拉取变更、按仓库自定义 prompt 分批评审、汇总成一份评论并回写到 MR。
 - **Root Path**: `D:/01-code/cr-pilot`
-- **Language/Stack**: TypeScript (Node 22+, ES modules)，pi SDK (`@earendil-works/pi-coding-agent`)，Express 5
+- **Language/Stack**: TypeScript (Node 22+, ES modules)，pi SDK (`@earendil-works/pi-coding-agent`)，Express 5；前端为 Vue 3 + Vite 6 + Element Plus（`web/`）
 
 ## External Project Docs
 
@@ -28,12 +28,12 @@
 | File | Exists | Note |
 |---|---|---|
 | `fp-docs/manifest.md` | ✅ | This file |
-| `fp-docs/settings/agent.md` | ❌ | Optional; will create on explicit approval |
-| `fp-docs/settings/frontend.md` | ❌ | Optional; no frontend detected |
-| `fp-docs/settings/backend.md` | ❌ | Optional; will offer after manifest |
-| `fp-docs/settings/prototype-style.md` | ❌ | Optional; no frontend |
-| `fp-docs/intel/project-facts.md` | ❌ | Optional; created on explicit discovery approval |
-| `fp-docs/intel/.freshness.json` | ❌ | Metadata for generated facts only |
+| `fp-docs/settings/agent.md` | ✅ | 通用工作流策略；前后端细节分别维护 |
+| `fp-docs/settings/frontend.md` | ✅ | Vue preset，仅适用于 `web/` |
+| `fp-docs/settings/backend.md` | ✅ | Express / TypeScript，preset 为 none |
+| `fp-docs/settings/prototype-style.md` | ✅ | 现有源码视觉基线；不代表已创建原型基座 |
+| `fp-docs/intel/project-facts.md` | ❌ | 本轮不生成，用户选择保持轻量 |
+| `fp-docs/intel/.freshness.json` | ❌ | 本轮不生成，未创建项目事实缓存 |
 | `fp-docs/intel/unknowns.md` | ❌ | Human-owned, lazy |
 | `fp-docs/intel/decisions.md` | ❌ | Human-owned, lazy |
 
@@ -41,23 +41,26 @@
 
 | Item | Value |
 |---|---|
-| CLI Available | ✅ v1.6.0 |
-| Project Graph | ✅ Built (32 files, 341 nodes, 1042 edges) |
-| Manifest Code Map | ❌ Not created (needs explicit approval) |
-| MCP Configured | ❌ Not configured |
+| CLI Available | ✅ v1.6.2（2026-10-20 实测） |
+| Project Graph | ✅ 已建图：93 files、1,577 nodes、3,959 edges；无待同步变化 |
+| Manifest Code Map | `.codegraph/`；仅作候选导航，使用前实时校验 |
+| MCP Configured | 本轮跳过；用户选择仅建图，未修改用户级配置 |
 
 *CodeGraph 为可选导航层，失败不阻塞 init。*
 
 ## Frontend Applicability
 
-- **Status**: No frontend detected (pure backend Node.js service)
-- **Detected Frameworks**: None
-- **Prototype Base**: Not applicable
+- **Status**: 已确认 Web 前端，appRoot 为 `web/`
+- **Detected Frameworks**: Vue `^3.5.13`、Vite `^6.0.7`、Element Plus `^2.9.1`（依赖声明范围）
+- **Evidence**: `web/package.json`、`web/src/main.ts`、`web/vite.config.ts`
+- **Prototype Base**: 本轮未创建；可选原型阶段因安装资源缺失停止，修复后可另行运行 `/fp-prototype-init`
 
 ## Initialization Log
 
 - `2026-10-07`: Created manifest (first-time `fp-init` on pre-existing fp-docs without manifest)
 - `fp-docs/history/`, `fp-docs/archive/`, `fp-docs/changes/` already present from prior work
+- `2026-10-20`：仅为当前项目建立 CodeGraph，并按批准修正前端与代码图记录；历史变更状态未复核。
+- `2026-10-20`：按逐项批准创建四个 settings；未生成 intel；原型阶段因插件校验脚本缺失停止，未创建基座。
 
 ## Next Steps
 
