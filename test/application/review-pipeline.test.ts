@@ -235,8 +235,14 @@ test("汇总输出带代码块包裹时，回写前剥离围栏", async () => {
   assert.match(client.notes[0], /^## 问题清单/);
 });
 
-test("评分低于阈值且配置 webhook 时推送企微", async () => {
-  const client = fakeClient();
+test("评分低于阈值且配置 webhook 时推送企微，末行提及 MR 作者而非触发者", async () => {
+  const authorLookups: [number, string | undefined, string | undefined][] = [];
+  const client = fakeClient({
+    getUser: async (id, gitlabUrl, gitlabToken) => {
+      authorLookups.push([id, gitlabUrl, gitlabToken]);
+      return { id, name: "真正的作者", username: "real-author" };
+    },
+  });
   const sent: string[] = [];
   const wecomNotifier = {
     send: async (_url: string, markdown: string) => {
@@ -265,10 +271,82 @@ test("评分低于阈值且配置 webhook 时推送企微", async () => {
     batchMaxTokens: 6000,
     wecomNotifier,
   });
-  await pipeline.run(task);
+  await pipeline.run({
+    ...task,
+    authorId: 1751,
+    triggerUserName: "unrelated-trigger",
+    gitlabUrl: "https://gitlab.example.com",
+    gitlabToken: "test-token",
+  });
   assert.equal(sent.length, 1);
   assert.match(sent[0], /代码评审提醒/);
   assert.match(sent[0], /65 分/);
+  assert.ok(sent[0].endsWith("\n\n<@real-author>"), "必须使用作者账号且将提及放在最底部");
+  assert.equal(sent[0].includes("<@unrelated-trigger>"), false);
+  assert.equal(sent[0].includes("<@真正的作者>"), false, "显示名不是企微账号");
+  assert.deepEqual(authorLookups, [[1751, "https://gitlab.example.com", "test-token"]], "复用同一次作者查询及任务级实例信息");
+});
+
+test("无法确认作者账号时照常推送企微，但不提及触发者", async (t) => {
+  const cases: {
+    name: string;
+    authorId?: number;
+    getUser: GitlabClient["getUser"];
+  }[] = [
+    {
+      name: "缺少 author_id",
+      getUser: async () => { throw new Error("不应调用用户接口"); },
+    },
+    {
+      name: "作者查询失败",
+      authorId: 1751,
+      getUser: async () => { throw new Error("用户接口返回 403"); },
+    },
+    {
+      name: "只有作者显示名，没有账号",
+      authorId: 1751,
+      getUser: async (id) => ({ id, name: "作者甲", username: "" }),
+    },
+    {
+      name: "作者信息全为空",
+      authorId: 1751,
+      getUser: async (id) => ({ id, name: "", username: "" }),
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      let authorLookups = 0;
+      const client = fakeClient({
+        getUser: async (id, url, token) => {
+          authorLookups += 1;
+          return scenario.getUser(id, url, token);
+        },
+      });
+      const sent: string[] = [];
+      const pipeline = createReviewPipeline({
+        client,
+        rules: {
+          resolve: () => ({
+            systemPrompt: "SYS",
+            userPrompt: "评：{diffs_text}",
+            wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t",
+            wecomScoreThreshold: 70,
+          }),
+        } as ReviewRules,
+        reviewer: reviewerReturning("批评论", "总分：60 分"),
+        logger: createSilentLogger(),
+        batchMaxTokens: 6000,
+        wecomNotifier: { send: async (_url, markdown) => { sent.push(markdown); } },
+      });
+
+      await pipeline.run({ ...task, authorId: scenario.authorId, triggerUserName: "unrelated-trigger" });
+      assert.equal(client.notes.length, 1, "作者信息缺失不能影响 MR 评论回写");
+      assert.equal(sent.length, 1, "原来的低分通知仍须发送");
+      assert.equal(sent[0].includes("<@"), false, "不能用触发者或显示名冒充作者账号");
+      assert.equal(authorLookups, scenario.authorId === undefined ? 0 : 1);
+    });
+  }
 });
 
 test("评分不低于阈值时不推送企微", async () => {

@@ -123,6 +123,59 @@ test("企微消息带可点击的 MR 链接", () => {
   assert.match(message, /\[👉 查看 MR 与完整评审\]\(https:\/\/code\.cwoa\.net\/a\/b\/-\/merge_requests\/5391\)/);
 });
 
+test("企微消息在 MR 链接下方单独一行提及提交人", () => {
+  const mrUrl = "https://code.cwoa.net/a/b/-/merge_requests/5391";
+  const message = buildWecomMessage({
+    projectId: 1,
+    iid: 5391,
+    fullName: "a/b",
+    sourceBranch: "f",
+    targetBranch: "m",
+    score: 58,
+    comment: "P0：x",
+    mrUrl,
+    authorUsername: " author.a-1 ",
+  });
+
+  assert.ok(message.endsWith(`[👉 查看 MR 与完整评审](${mrUrl})\n\n<@author.a-1>`));
+  assert.equal(message.split("\n").at(-1), "<@author.a-1>");
+  assert.equal(message.includes("```"), false, "成员提及不能放进代码块，否则不会触发提醒");
+});
+
+test("无 MR 链接时，提交人提及仍是最后一行", () => {
+  const message = buildWecomMessage({
+    projectId: 1,
+    iid: 1,
+    fullName: "a/b",
+    sourceBranch: "f",
+    targetBranch: "m",
+    score: 50,
+    comment: "整体看起来没问题。",
+    mrUrl: null,
+    authorUsername: "author-a",
+  });
+
+  assert.ok(message.endsWith("详见 MR 评论\n\n<@author-a>"));
+  assert.equal(message.includes("查看 MR"), false);
+});
+
+test("缺少或不安全的作者账号时保持原通知，不提及全员或注入其他成员", () => {
+  const input = {
+    projectId: 1,
+    iid: 1,
+    fullName: "a/b",
+    sourceBranch: "f",
+    targetBranch: "m",
+    score: 50,
+    comment: "P1：y",
+    mrUrl: "https://x/a/b/-/merge_requests/1",
+  };
+  const withoutMention = buildWecomMessage(input);
+  for (const authorUsername of [undefined, "", " \t ", "all", "ALL", "<@all>", "author>\n<@all", "张三", "two users"]) {
+    assert.equal(buildWecomMessage({ ...input, authorUsername }), withoutMention, `无效账号：${authorUsername}`);
+  }
+});
+
 test("无 mrUrl 时不输出链接行，也不留空行尾巴", () => {
   const message = buildWecomMessage({
     projectId: 1,

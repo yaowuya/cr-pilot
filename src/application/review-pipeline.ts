@@ -208,13 +208,12 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         });
       };
 
-      // 解析作者名：MR webhook 只带 author_id（数字），要正确统计「谁提交的 MR」
-      // 必须再查一次用户接口。与拉取变更并发执行，避免串行增加耗时。
+      // 解析作者：MR webhook 只带 author_id（数字），要正确统计提交人并提及其账号，
+      // 必须再查一次用户接口。与拉取变更并发执行，复用结果而不为企微多发一次请求。
       //
-      // 失败只降级不中断：token 缺 read_user 权限时会 403，此时退回触发者名字，
-      // 评审本身不该因为查不到名字而失败。降级后日志里能看出用的是兜底值。
+      // 失败只降级不中断：统计仍可退回触发者名字，但通知不能把触发者当成 MR 作者。
       let committerName = task.triggerUserName ?? "";
-      const authorNamePromise = resolveAuthorName(task);
+      const authorPromise = resolveAuthor(task);
 
       let changes: Change[];
       let commits: Commit[];
@@ -227,8 +226,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         writeRecord({ result: "failed", errorMessage: message });
         return;
       }
-      // 变更已到手，等作者名（此时通常已并发完成，不额外耗时）。
-      committerName = await authorNamePromise;
+      // 变更已到手，等作者信息（此时通常已并发完成，不额外耗时）。
+      const author = await authorPromise;
+      committerName = author.name;
       logger.info("已拉取 MR 变更", {
         项目ID: task.projectId,
         MR编号: task.iid,
@@ -383,6 +383,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             fullName: task.fullName,
             sourceBranch: task.sourceBranch,
             targetBranch: task.targetBranch,
+            authorUsername: author.username,
             score,
             comment: finalComment,
             // 摘要消息附 MR 链接，接收者点一下就能看完整评审。
@@ -427,17 +428,18 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   };
 
   /**
-   * 解析 MR 作者的显示名。
+   * 一次查询解析 MR 作者的显示名与账号，分别供评审记录和企微提及使用。
    *
    * MR webhook 的 `object_attributes` 只带 `author_id`（数字），不带名字，
    * 因此需要额外调 `GET /users/:id`。这是「提交人」字段正确性的唯一来源：
    * `payload.user` 是本次事件的**触发者**，同一次 MR 的多次事件里可能各不相同。
    *
-   * 降级链：作者接口返回的名字 → username → 触发者名字 → 空串。
-   * 任何异常都不抛出：查名字失败只影响一个统计字段，不该让整次评审失败。
+   * 显示名降级链：作者接口返回的名字 → username → 触发者名字 → 空串。
+   * 账号只取真实作者的 username；查询失败或缺失时留空，不能提及无关触发者。
+   * 任何异常都不抛出，避免作者查询失败中断评审和原有通知。
    */
-  async function resolveAuthorName(task: MergeRequestTask): Promise<string> {
-    const fallback = task.triggerUserName ?? "";
+  async function resolveAuthor(task: MergeRequestTask): Promise<{ name: string; username: string }> {
+    const fallback = { name: task.triggerUserName ?? "", username: "" };
     if (task.authorId === undefined) {
       // 老版本 GitLab 或精简 payload 可能没有 author_id：保持原有行为。
       logger.debug("payload 缺少 author_id，提交人退回触发者", { 项目ID: task.projectId, MR编号: task.iid });
@@ -451,7 +453,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         return fallback;
       }
       logger.info("已解析 MR 作者", { 项目ID: task.projectId, MR编号: task.iid, 作者ID: task.authorId, 作者: name });
-      return name;
+      return { name, username: user.username };
     } catch (error) {
       // 常见原因：token 没有 read_user 权限（403）或用户已删除（404）。
       // 退回触发者名并在日志里标注，便于事后判断记录里的名字是否可信。
@@ -801,7 +803,8 @@ export function buildMergeRequestUrl(task: {
  * 塞进去既难看又触发 4096 字节截断，关键信息（评分、问题数量、去哪儿看）
  * 反而被挤掉。详细内容在 MR 评论里，这里只给一个跳转链接。
  *
- * 只使用企微支持的 markdown 子集：标题、加粗、链接与正文。
+ * 只使用企微支持的 markdown 子集；已知作者账号时在最底部单独一行提及成员。
+ * 作者账号缺失或不安全时省略提及，摘要和链接仍照常发送。
  */
 export function buildWecomMessage(input: {
   projectId: number;
@@ -814,6 +817,8 @@ export function buildWecomMessage(input: {
   comment: string;
   /** MR 的 GitLab 地址；缺失时不输出链接行。 */
   mrUrl?: string | null;
+  /** MR 作者的 GitLab 用户名；部署约定与企微 userid 一致，缺失时不提及。 */
+  authorUsername?: string;
 }): string {
   const counts = countFindingsBySeverity(input.comment);
   const lines = [
@@ -837,6 +842,13 @@ export function buildWecomMessage(input: {
 
   if (input.mrUrl) {
     lines.push("", `[👉 查看 MR 与完整评审](${input.mrUrl})`);
+  }
+
+  // 企微 Markdown 用 <@userid> 真正提及成员，显示名或普通 @文本不能替代。
+  // 仅接受 GitLab 账号字符，并排除全员标记 all，防止误提及全群或注入其他成员。
+  const authorUsername = input.authorUsername?.trim();
+  if (authorUsername && /^[a-zA-Z0-9_.-]+$/.test(authorUsername) && authorUsername.toLowerCase() !== "all") {
+    lines.push("", `<@${authorUsername}>`);
   }
   return lines.join("\n");
 }
