@@ -2,6 +2,7 @@ node_modules/
 *.log
 .idea/
 .apifox/
+.archify/
 .mcp.json
 
 # Local runtime secrets; commit .env.example instead.
