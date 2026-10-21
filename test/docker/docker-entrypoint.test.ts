@@ -40,6 +40,27 @@ test("Dockerfile 安装 su-exec 并声明 entrypoint", () => {
   assert.match(dockerfile, /chmod \+x/, "脚本必须有执行权限");
 });
 
+test("Dockerfile 在装 su-exec 前可切换 apk 镜像源", () => {
+  // 回归：官方源 dl-cdn.alpinelinux.org 在部分网络下 TLS 握手失败，apk 拿不到
+  // 索引后会把缺包误报成 "su-exec (no such package)"；必须能整体换成可用镜像源。
+  const dockerfile = readFileSync(join(ROOT, "Dockerfile"), "utf8");
+
+  const argMatch = dockerfile.match(/^ARG APK_MIRROR=(\S+)$/m);
+  assert.ok(argMatch, "需声明 APK_MIRROR 构建参数并给出默认镜像源");
+
+  const rewrite = dockerfile.match(/sed -i "([^"]+)" \/etc\/apk\/repositories/);
+  assert.ok(rewrite, "安装前需重写 /etc/apk/repositories");
+  // 只替换 "://主机" 段，保留 /alpine/vX.Y/main|community 路径：
+  // 这样基础镜像升级 Alpine 主版本时不用改这里。
+  assert.ok(rewrite[1].includes("://[^/]*/alpine/"), "只应替换仓库地址的主机段");
+  assert.equal(rewrite[1].includes(argMatch[1]), false, "sed 表达式不应硬编码默认镜像源");
+
+  // 顺序保证：先换源再装包。
+  const rewriteAt = dockerfile.indexOf(rewrite[0]);
+  const apkAddAt = dockerfile.search(/apk add[^\n]*su-exec/);
+  assert.ok(rewriteAt > 0 && apkAddAt > rewriteAt, "必须先重写源再 apk add");
+});
+
 test(".gitattributes 强制 shell 脚本与 Dockerfile 用 LF", () => {
   const path = join(ROOT, ".gitattributes");
   assert.equal(existsSync(path), true, "缺少 .gitattributes");

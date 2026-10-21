@@ -78,9 +78,19 @@ COPY --chown=node:node --from=frontend /app/dist ./dist
 # 数据与日志目录：两者都是 compose 里的具名卷挂载点，必须在镜像内预建。
 RUN mkdir -p /app/data /app/logs && chown -R node:node /app/data /app/logs
 
+# apk 镜像源：官方源 dl-cdn.alpinelinux.org 在部分网络（国内直连、公司代理）下
+# TLS 握手失败，apk 拿不到索引后会把缺包误报成 "su-exec (no such package)"。
+# 装包前把 /etc/apk/repositories 里的主机名替换为指定镜像源：只换 "://主机:端口" 段，
+# 保留 /alpine/vX.Y/{main,community} 路径，基础镜像换 Alpine 主版本时无需改这里。
+# 海外或内网构建可 --build-arg APK_MIRROR=<镜像主机名> 覆盖；留空则沿用基础镜像自带的源。
+ARG APK_MIRROR=mirrors.aliyun.com
+
 # su-exec：极小的降权工具（~10KB），用于 entrypoint 以 root 修完属主后切回 node。
 # Alpine 不预装 gosu，su-exec 是官方推荐替代。
-RUN apk add --no-cache su-exec
+RUN if [ -n "${APK_MIRROR}" ]; then \
+      sed -i "s|://[^/]*/alpine/|://${APK_MIRROR}/alpine/|g" /etc/apk/repositories; \
+    fi \
+    && apk add --no-cache su-exec
 
 # 启动脚本：以 root 修正卷属主后降权运行。
 #

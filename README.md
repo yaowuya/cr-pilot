@@ -243,6 +243,19 @@ docker compose exec cr-pilot node scripts/import-prompts.ts
 **不需要手动构建前端**：Dockerfile 的 `frontend` 阶段会在容器内执行 `npm run build`，
 产物落到 `/app/dist` 并由 Express 托管。
 
+**构建时 apk 拉取失败**：runner 阶段要装 `su-exec`（entrypoint 降权用）。若日志出现
+`WARNING: fetching https://dl-cdn.alpinelinux.org/...: TLS: unspecified error`，随后紧跟
+`ERROR: unable to select packages: su-exec (no such package)`，说明是索引拉取失败而非包名错误
+（缺包是拿不到索引后的连锁报错）。镜像默认把 apk 源换成阿里云
+（`ARG APK_MIRROR=mirrors.aliyun.com`；只替换仓库地址的 `://主机` 段，保留
+`/alpine/vX.Y/main|community` 路径）。海外或内网环境可覆盖：
+
+```bash
+docker compose build --build-arg APK_MIRROR=dl-cdn.alpinelinux.org   # 回到官方源
+docker compose build --build-arg APK_MIRROR=<内网 apk 镜像主机名，可带 :端口>
+docker compose build --build-arg APK_MIRROR=                          # 留空：沿用基础镜像自带源
+```
+
 **双端口说明**：容器同时监听 **5001** 和 **5002**，两者由同一个 Express 实例提供服务，
 页面与 API 完全一致。这是为对齐团队既有约定（旧项目 5001=Flask API、5002=Streamlit UI），
 让既有运维脚本与书签无需改动。本项目只有一个进程，没有第二个服务，因此不需要 Nginx。
