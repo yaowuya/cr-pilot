@@ -2066,13 +2066,77 @@
         }
       }
     },
+    "/api/verify/wecom-bots": {
+      "get": {
+        "tags": [
+          "功能自检"
+        ],
+        "summary": "已配置的企微机器人列表",
+        "description": "扫描规则文件里的 `wecom_webhook_url`，按地址去重后返回可选的群机器人。\n\n**密钥保护**：webhook 地址含 `key=` 密钥，响应只给派生 `id` 与脱敏后的 `maskedKey`，不下发原始地址。\n\n多个规则文件复用同一地址时合并为一个机器人，`repositories` 列出全部关联仓库。",
+        "operationId": "listWecomBots",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "机器人列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WecomBot"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未携带令牌或令牌无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "缺少访问令牌"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "规则目录读取失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "读取规则目录失败"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/verify/wecom": {
       "post": {
         "tags": [
           "功能自检"
         ],
         "summary": "提交企微推送验证任务",
-        "description": "组装一条带 `[验证]` 前缀的消息发送到群机器人，确认配置可用。\n\n**默认只预览**：`confirmSend` 不为 `true` 时只组装消息、不发送。真实发群不可撤销，必须显式确认。\n\n**测试提交人**：必须传 `gitlabUsername`，服务端按现有企微映射解析提及对象；配置 userid 时真实提及，仅配置姓名时输出纯文本 `@姓名`。无映射时任务失败，不发送、不猜测其他人。\n\n`webhook` 可覆盖规则文件里的群地址，用于发到测试群。",
+        "description": "组装一条带 `[验证]` 前缀的消息发送到群机器人，确认配置可用。\n\n**默认只预览**：`confirmSend` 不为 `true` 时只组装消息、不发送。真实发群不可撤销，必须显式确认。\n\n**测试提交人**：必须传 `gitlabUsername`，服务端按现有企微映射解析提及对象；配置 userid 时真实提及，仅配置姓名时输出纯文本 `@姓名`。无映射时任务失败，不发送、不猜测其他人。\n\n**企微机器人**：必须传 `webhookId`（来自 `GET /api/verify/wecom-bots`）。真实地址由服务端按当前配置解析，接口不接受任意 URL，避免把自检当作任意地址出口。",
         "operationId": "submitVerifyWecom",
         "security": [
           {
@@ -2086,7 +2150,8 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "gitlabUsername"
+                  "gitlabUsername",
+                  "webhookId"
                 ],
                 "properties": {
                   "gitlabUsername": {
@@ -2096,15 +2161,16 @@
                     "description": "被测提交人的 GitLab 账号，必须已登记企微映射",
                     "example": "code-author"
                   },
+                  "webhookId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{12}$",
+                    "description": "要发送到的企微机器人 id，来自机器人列表接口",
+                    "example": "a1b2c3d4e5f6"
+                  },
                   "confirmSend": {
                     "type": "boolean",
                     "description": "为 true 才真实发送到群",
                     "example": true
-                  },
-                  "webhook": {
-                    "type": "string",
-                    "description": "覆盖规则文件里的群机器人地址",
-                    "example": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
                   }
                 }
               }
@@ -2131,14 +2197,14 @@
             }
           },
           "400": {
-            "description": "提交人账号缺失或 webhook 非法",
+            "description": "提交人或机器人参数缺失/非法",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 },
                 "example": {
-                  "error": "请选择有效的测试提交人（GitLab 账号）"
+                  "error": "请选择要测试的企微机器人"
                 }
               }
             }
@@ -3663,6 +3729,36 @@
             "items": {
               "$ref": "#/components/schemas/AdoptionDimensionRow"
             }
+          }
+        }
+      },
+      "WecomBot": {
+        "type": "object",
+        "required": [
+          "id",
+          "maskedKey",
+          "repositories"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "由 webhook 地址派生的稳定标识",
+            "example": "a1b2c3d4e5f6"
+          },
+          "maskedKey": {
+            "type": "string",
+            "description": "脱敏后的 webhook key，仅保留末 4 位",
+            "example": "****7af"
+          },
+          "repositories": {
+            "type": "array",
+            "description": "关联该机器人的仓库全名",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "cw-bcms-backend"
+            ]
           }
         }
       },

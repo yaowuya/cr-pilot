@@ -100,3 +100,71 @@ test("既有 CLI 未提供提交人时保留预览能力，但明确提示未验
   assert.match(outcome.detail, /未验证 @ 提交人/);
   assert.equal(sent.length, 0);
 });
+
+// ============ 企微机器人选择 ============
+
+/** 用临时规则目录构造验证器，避免依赖仓库真实 webhook。 */
+async function botHarness(t: TestContext, rules: Record<string, string>) {
+  const { mkdtemp, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "crp-bots-"));
+  t.after(async () => {
+    const { rm } = await import("node:fs/promises");
+    await rm(dir, { recursive: true, force: true });
+  });
+  // 规则文件必须含 code_review_prompt，否则加载器按结构非法跳过（与真实规则一致）。
+  const prompt = "code_review_prompt:\n  system_prompt: SYS\n  user_prompt: \"评：{diffs_text}\"\n";
+  await writeFile(join(dir, "default.yaml"), `wecom_score_threshold: 80\n${prompt}`, "utf8");
+  for (const [name, body] of Object.entries(rules)) await writeFile(join(dir, `${name}.yaml`), `${body}${prompt}`, "utf8");
+  const sent: string[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    sent.push(String(init?.body));
+    return new Response(JSON.stringify({ errcode: 0 }), { status: 200 });
+  });
+  const config = { ...loadConfig({}), rulesDir: dir };
+  return { verifier: createFeatureVerifier({ config, logger: createSilentLogger() }), sent };
+}
+
+test("机器人列表按 webhook 去重，并只暴露脱敏 key", async (t) => {
+  const { verifier } = await botHarness(t, {
+    "team-a": 'repository: "group/a,group/b"\nwecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=aaaa1111-bbbb"\n',
+    "team-a-copy": 'repository: "group/c"\nwecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=aaaa1111-bbbb"\n',
+    "team-b": 'repository: "group/d"\nwecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=cccc2222-dddd"\n',
+    "no-hook": 'repository: "group/e"\nwecom_webhook_url: ""\n',
+  });
+  const bots = await verifier.listWecomBots();
+  assert.equal(bots.length, 2, "同一地址的多条规则只算一个机器人");
+  const raw = JSON.stringify(bots);
+  assert.equal(raw.includes("aaaa1111"), false, "不能下发完整 webhook key");
+  assert.equal(raw.includes("cccc2222"), false);
+  assert.equal(raw.includes("qyapi.weixin.qq.com"), false, "不能下发 webhook 地址");
+  const merged = bots.find((bot) => bot.repositories.includes("group/a"));
+  assert.ok(merged);
+  assert.deepEqual([...merged.repositories].sort(), ["group/a", "group/b", "group/c"], "复用地址的仓库合并到同一机器人");
+  assert.equal(merged.maskedKey, "****bbbb");
+});
+
+test("按机器人 id 发送，地址由服务端解析", async (t) => {
+  const { verifier, sent } = await botHarness(t, {
+    "team-a": 'repository: "group/a"\nwecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=aaaa1111-bbbb"\n',
+    "team-b": 'repository: "group/b"\nwecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=cccc2222-dddd"\n',
+  });
+  const bots = await verifier.listWecomBots();
+  const target = bots.find((bot) => bot.repositories.includes("group/b"));
+  assert.ok(target);
+  const outcome = await verifier.verifyWecom({ webhookId: target.id, gitlabUsername: undefined, dryRun: false });
+  assert.equal(outcome.success, true);
+  assert.match(outcome.detail, /机器人 \*\*\*\*dddd/);
+  assert.equal(sent.length, 1);
+});
+
+test("未知机器人 id 直接失败，不发送任何消息", async (t) => {
+  const { verifier, sent } = await botHarness(t, {
+    "team-a": 'repository: "group/a"\nwecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=aaaa1111-bbbb"\n',
+  });
+  const outcome = await verifier.verifyWecom({ webhookId: "000000000000", dryRun: false });
+  assert.equal(outcome.success, false);
+  assert.match(outcome.message, /机器人/);
+  assert.equal(sent.length, 0);
+});

@@ -152,3 +152,14 @@ test("企微自检的 OpenAPI 契约要求明确选择测试提交人", () => {
   assert.ok(schema.required.includes("gitlabUsername"));
   assert.ok(schema.properties.gitlabUsername);
 });
+
+test("OpenAPI 暴露机器人列表并要求 webhookId", () => {
+  const spec = JSON.parse(readFileSync("docs/openapi.json", "utf8")) as {
+    paths: Record<string, { post?: { requestBody: { content: Record<string, { schema: { required: string[] } }> } } }>;
+    components: { schemas: Record<string, unknown> };
+  };
+  assert.ok(spec.paths["/api/verify/wecom-bots"], "必须暴露机器人列表接口");
+  assert.ok(spec.components.schemas.WecomBot, "必须定义机器人模型");
+  const schema = spec.paths["/api/verify/wecom"].post!.requestBody.content["application/json"].schema;
+  assert.ok(schema.required.includes("webhookId"), "发送必须指定机器人 id");
+});
