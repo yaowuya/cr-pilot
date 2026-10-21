@@ -22,6 +22,8 @@ const config = {
   adminUsername: "",
   adminPassword: "",
   authSalt: "test-salt",
+  adoptionTrackingEnabled: false,
+  adoptionSyncIntervalMs: 600000,
   gitlabUrl: "https://gitlab.example.com",
   gitlabInsecureTls: false,
   gitlabApiTimeoutMs: 1000,
@@ -49,7 +51,8 @@ function makeDeps(logger: ReturnType<typeof createLogger>): ServerDeps {
     logger: createSilentLogger(),
     batchMaxTokens: 6000,
   });
-  return { queue, pipeline, logger };
+  // 追踪入口是装配必填项：缺省时 createApp 会把追踪事件降级成完整评审。
+  return { queue, pipeline, logger, enqueueTracking: () => {} };
 }
 
 test("startServer 装配后监听并可关闭，打印监听日志", async () => {

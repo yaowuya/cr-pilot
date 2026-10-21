@@ -16,6 +16,13 @@ export interface AppDeps {
   /** 把 MR 任务转成后台队列任务的入口。 */
   enqueue: WebhookEnqueue;
   /**
+   * 采纳追踪登记入口：收到「MR 有新提交」的 update 事件时调用。
+   *
+   * 与 `enqueue` 分开是刻意的：追踪只重新判定已有建议的采纳状态，不该走完整评审
+   * 队列。缺省时退化为 `enqueue`，保证未装配追踪的部署行为不变。
+   */
+  enqueueTracking?: WebhookEnqueue;
+  /**
    * 管理 API 路由：键为挂载路径（如 `/api/reviews`），值为对应 Router。
    *
    * 用映射而不是逐个可选字段：新增一组路由只改组合根，不必改本文件的签名。
@@ -84,6 +91,21 @@ export function createApp(deps: AppDeps): Express {
       // 访问令牌随 webhook 请求头携带（对齐参考项目）：缺失时无法拉取/回写，直接拒绝。
       logger.warn("webhook 缺少 X-Gitlab-Token", { status: 400 });
       res.status(400).json({ error: "缺少 X-Gitlab-Token 请求头（GitLab 访问令牌）" });
+      return;
+    }
+
+    // 有新提交的 update 事件只登记采纳追踪，不重复跑评审；
+    // 未装配追踪入口时退化为原评审队列，避免行为静默丢失。
+    const isTracking = task.eventKind === "tracking";
+    if (isTracking && deps.enqueueTracking) {
+      deps.enqueueTracking(task);
+      logger.info("MR 新提交已登记采纳追踪", {
+        项目ID: task.projectId,
+        MR编号: task.iid,
+        项目全名: task.fullName,
+        处理耗时毫秒: Date.now() - receivedAt,
+      });
+      res.json({ message: `merge_request !${task.iid} 已进入采纳追踪` });
       return;
     }
 

@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createReviewPipeline, type MergeRequestTask } from "../../src/application/review-pipeline.ts";
+import { createReviewPipeline, type MergeRequestTask, type PendingFinding } from "../../src/application/review-pipeline.ts";
 import { estimateTokens, splitChangesIntoBatches } from "../../src/domain/change.ts";
+import { fingerprintLine } from "../../src/domain/review-finding.ts";
 import { stripMarkdownFences } from "../../src/domain/review-rules.ts";
 import type { Change } from "../../src/domain/review-task.ts";
 import type { GitlabClient } from "../../src/domain/review-task.ts";
@@ -101,6 +102,8 @@ function fakeClient(overrides: Partial<GitlabClient> = {}): FakeClient {
     // 默认给出行内评论相关方法的可用替身：既有用例不关心行内评论，缺省实现让
     // 管线走「全部 finding 降级进汇总」的路径（版本查询返回空 SHA 会整体降级）。
     getMergeRequestVersions: async () => ({ baseSha: "b", startSha: "s", headSha: "h" }),
+    getLatestHeadSha: async () => "h",
+    getFileRaw: async () => "",
     postDiscussion: async () => ({ id: "d", notes: [] }),
     getDiscussions: async () => [],
     // 默认作者可解析：既有多数用例不带 author_id，走不到这里；
@@ -683,6 +686,135 @@ function inlineClient(options: {
 
 /** 两行新增的 diff：合法 new_line 为 1、2。 */
 const twoAddedLines = "@@ -0,0 +1,2 @@\n+one\n+two";
+
+// ============ 采纳追踪：建议明细落库 ============
+
+/** 收集建议明细的写入端口，模拟仓储返回自增记录 ID。 */
+function findingWriterHarness() {
+  const inserted: (Omit<PendingFinding, "recordId"> & { recordId: number })[] = [];
+  return {
+    inserted,
+    writer: { insert: (finding: PendingFinding) => { inserted.push(finding); } },
+    /** 记录写入返回 1，让管线认为拿到了记录 ID。 */
+    recordWriter: { insert: () => 1 },
+  };
+}
+
+test("行内评论发布成功后写入建议明细与指纹", async () => {
+  const { client } = inlineClient({ diff: twoAddedLines });
+  const harness = findingWriterHarness();
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(
+      JSON.stringify({
+        reviewed_head_sha: headSha,
+        summary: { body: "总分：80 分" },
+        findings: [{ id: "f1", severity: "high", path: "a.ts", new_line: 2, body: "第二条有问题" }],
+      }),
+      "总分：80 分",
+    ),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: harness.recordWriter,
+    findingWriter: harness.writer,
+  });
+
+  await pipeline.run(task);
+  assert.equal(harness.inserted.length, 1);
+  const saved = harness.inserted[0];
+  assert.equal(saved.recordId, 1, "必须关联评审记录");
+  assert.equal(saved.codeFingerprint, fingerprintLine("two"), "指纹取被评论行文本");
+  assert.equal(saved.discussionId, "d1");
+  assert.equal(saved.noteId, 1);
+  assert.equal(saved.outcome, "pending");
+});
+
+test("降级进汇总的建议写入空指纹，用于统计不可追踪", async () => {
+  const { client } = inlineClient({ diff: twoAddedLines });
+  const harness = findingWriterHarness();
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(
+      JSON.stringify({
+        reviewed_head_sha: headSha,
+        summary: { body: "总分：80 分" },
+        findings: [{ id: "f1", severity: "high", path: "a.ts", new_line: 99, body: "越界行号" }],
+      }),
+      "总分：80 分",
+    ),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: harness.recordWriter,
+    findingWriter: harness.writer,
+  });
+
+  await pipeline.run(task);
+  assert.equal(harness.inserted.length, 1);
+  assert.equal(harness.inserted[0].codeFingerprint, "", "未发布行内评论时不能有指纹");
+  assert.equal(harness.inserted[0].discussionId, null);
+});
+
+test("行内评论发布失败时也记录空指纹建议", async () => {
+  const { client } = inlineClient({ diff: twoAddedLines, postFails: () => true });
+  const harness = findingWriterHarness();
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(
+      JSON.stringify({
+        reviewed_head_sha: headSha,
+        summary: { body: "总分：80 分" },
+        findings: [{ id: "f1", severity: "high", path: "a.ts", new_line: 2, body: "发布会失败" }],
+      }),
+      "总分：80 分",
+    ),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: harness.recordWriter,
+    findingWriter: harness.writer,
+  });
+
+  await pipeline.run(task);
+  assert.equal(harness.inserted.length, 1);
+  assert.equal(harness.inserted[0].codeFingerprint, "");
+});
+
+test("未注入 findingWriter 或记录无 ID 时不写建议，既有行为不变", async () => {
+  const { client } = inlineClient({ diff: twoAddedLines });
+  const harness = findingWriterHarness();
+  const reviewJson = JSON.stringify({
+    reviewed_head_sha: headSha,
+    summary: { body: "总分：80 分" },
+    findings: [{ id: "f1", severity: "high", path: "a.ts", new_line: 2, body: "x" }],
+  });
+
+  // 场景一：没有 findingWriter
+  const pipelineWithoutWriter = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(reviewJson, "总分：80 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: harness.recordWriter,
+  });
+  await pipelineWithoutWriter.run(task);
+
+  // 场景二：recordWriter 返回 void，拿不到记录 ID
+  const pipelineWithoutRecordId = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(reviewJson, "总分：80 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: () => {} },
+    findingWriter: harness.writer,
+  });
+  await pipelineWithoutRecordId.run(task);
+
+  assert.equal(harness.inserted.length, 0);
+});
 
 test("行内评论按 finding 逐条发布并带 marker", async () => {
   const { client, posted, notes } = inlineClient({ diff: twoAddedLines });

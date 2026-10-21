@@ -63,7 +63,7 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
 
   return {
     insert(record) {
-      insertStatement.run(
+      const result = insertStatement.run(
         record.projectId,
         record.projectName,
         record.mrIid,
@@ -80,6 +80,9 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
         record.startedAt,
         record.finishedAt,
       );
+      // 返回自增 ID：评审建议明细以 record_id 外键关联本表，
+      // 不返回 ID 会让建议明细永远无法建立关联（采纳追踪静默失效）。
+      return Number(result.lastInsertRowid);
     },
 
     getList(query) {

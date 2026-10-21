@@ -10,6 +10,7 @@ import { createPiReviewer } from "./infrastructure/pi/reviewer.ts";
 import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
 import { createWecomNotifier } from "./infrastructure/wecom/wecom-notifier.ts";
 import { createReviewPipeline } from "./application/review-pipeline.ts";
+import { createAdoptionTracker } from "./application/adoption-tracker.ts";
 import { startServer } from "./interfaces/http/server.ts";
 import { openDatabase } from "./infrastructure/sqlite/database.ts";
 import { createAdminRepository } from "./infrastructure/sqlite/admin-repo.ts";
@@ -18,6 +19,7 @@ import { createWecomContactRepository } from "./infrastructure/sqlite/wecom-cont
 import { createPromptRepository } from "./infrastructure/sqlite/prompt-repo.ts";
 import { createLlmProviderRepository } from "./infrastructure/sqlite/llm-provider-repo.ts";
 import { createReviewRecordRepository } from "./infrastructure/sqlite/review-record-repo.ts";
+import { createReviewFindingRepository } from "./infrastructure/sqlite/review-finding-repo.ts";
 import { apiKeyEnvName, writeModelsJson } from "./infrastructure/pi/models-json.ts";
 import { createAuthMiddleware, createRequireAdmin } from "./interfaces/http/auth-middleware.ts";
 import { createStaticAssets } from "./interfaces/http/static-assets.ts";
@@ -139,13 +141,14 @@ async function startApplication(input: {
     const reviewer = createPiReviewer({ logger });
     const wecomNotifier = createWecomNotifier({ logger });
 
-    // 持久化适配器：五个仓储共用同一连接（D-018 单连接 + WAL）。
+    // 持久化适配器：六个仓储共用同一连接（D-018 单连接 + WAL）。
     // adminUsername 传入用于计算角色（D-024）：只有它指定的账号是管理员。
     const admins = createAdminRepository(db, config.authSalt, config.adminUsername);
     const prompts = createPromptRepository(db);
     const providers = createLlmProviderRepository(db);
     const records = createReviewRecordRepository(db);
     const wecomContacts = createWecomContactRepository(db);
+    const findings = createReviewFindingRepository(db);
 
     /**
      * 把数据库里的厂商配置导出到 `pi-agent/models.json`，并把密钥写进环境变量。
@@ -214,7 +217,27 @@ async function startApplication(input: {
       promptSource: prompts,
       llmProviders: providers,
       wecomContacts,
+      findingWriter: findings,
+      // 追踪定时任务拿不到 webhook 请求头的令牌，因此用部署盐加密后随建议持久化。
+      secretKey: config.authSalt,
     });
+
+    // 采纳追踪：独立的定时任务，不进评审队列——它只重新判定已有建议，
+    // 与真实评审争抢并发槽位会拖慢评审响应。
+    const adoptionTracker = createAdoptionTracker({ findings, client, logger, secretKey: config.authSalt });
+    if (config.adoptionTrackingEnabled) {
+      const timer = setInterval(() => {
+        // runOnce 内部已消化所有异常，这里再兜一层防止未处理 rejection 终止进程。
+        void adoptionTracker.runOnce().catch((error: unknown) => {
+          logger.warn("采纳追踪轮次异常", { 错误: error instanceof Error ? error.message : String(error) });
+        });
+      }, config.adoptionSyncIntervalMs);
+      // unref：定时器不应阻止进程退出（测试与优雅停机都依赖这一点）。
+      timer.unref();
+      logger.info("采纳追踪已启用", { 间隔毫秒: config.adoptionSyncIntervalMs });
+    } else {
+      logger.info("采纳追踪已关闭：ADOPTION_TRACKING_ENABLED=false");
+    }
 
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
     // 管理员权限门：只挂在账号管理路由上，其余管理页所有登录账号都能用。
@@ -226,12 +249,20 @@ async function startApplication(input: {
         queue,
         pipeline,
         logger,
+        // 有新提交时只登记追踪，不重复跑完整评审。追踪轮次由定时器驱动，
+        // 这里只记日志；定时器保证最终会被处理。
+        enqueueTracking: (task) => {
+          logger.info("MR 有新提交，等待下一轮采纳追踪", {
+            项目ID: task.projectId,
+            MR编号: task.iid,
+          });
+        },
         authMiddleware,
         // 登录免鉴权；me 自带鉴权（否则无法用于校验本地令牌）。
         publicApiRoutes: { "/api/auth": createAuthRouter({ admins, authSalt: config.authSalt, authMiddleware }) },
         apiRoutes: {
           "/api/admins": createAdminsRouter({ admins, requireAdmin }),
-          "/api/reviews": createReviewsRouter({ records }),
+          "/api/reviews": createReviewsRouter({ records, findings }),
           "/api/config": createConfigRouter({ config: configRepo }),
           "/api/wecom-contacts": createWecomContactsRouter({ contacts: wecomContacts }),
           "/api/prompts": createPromptsRouter({ prompts, providers, rulesDir: config.rulesDir }),

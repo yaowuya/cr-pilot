@@ -5,6 +5,7 @@
  */
 import { Router } from "express";
 import type { ReviewRecordRepository } from "../../../domain/review-record.ts";
+import type { ReviewFindingRepository } from "../../../domain/review-finding.ts";
 
 /** 单页最大条数：防止一次拉全表拖垮服务与前端。 */
 const MAX_PAGE_SIZE = 200;
@@ -12,6 +13,13 @@ const MAX_PAGE_SIZE = 200;
 /** 评审记录路由依赖。 */
 export interface ReviewsRouterDeps {
   records: ReviewRecordRepository;
+  /**
+   * 评审建议仓储（采纳统计用）。
+   *
+   * 可选：未装配时 `/adoption` 返回空统计而不是报错——既有部署升级到本版本
+   * 但尚未开启追踪时，页面仍应可用。
+   */
+  findings?: ReviewFindingRepository;
 }
 
 /** 读取可选正整数查询参数；未提供返回 undefined，非法返回 null（由调用方转 400）。 */
@@ -88,6 +96,30 @@ export function createReviewsRouter(deps: ReviewsRouterDeps): Router {
       return;
     }
     res.json(deps.records.getStats({ from: from ?? undefined, to: to ?? undefined }));
+  });
+
+  // 采纳统计：与 /stats 同级，复用同一鉴权；路径放在 "/" 之前注册，
+  // 避免将来加入 /:id 形式时被动态段吞掉。
+  router.get("/adoption", (req, res) => {
+    const from = readOptionalPositiveInt(req.query.from);
+    const to = readOptionalPositiveInt(req.query.to);
+    const projectId = readOptionalPositiveInt(req.query.projectId);
+    if (from === null || to === null || projectId === null) {
+      res.status(400).json({ error: "查询参数必须是正整数" });
+      return;
+    }
+    // 未装配建议仓储时给出空结构，让前端显示空态而不是请求失败。
+    if (!deps.findings) {
+      res.json({
+        total: { tracked: 0, adopted: 0, rate: null },
+        untrackable: { fallback: 0, unknown: 0 },
+        byProject: [],
+        byCommitter: [],
+        bySeverity: [],
+      });
+      return;
+    }
+    res.json(deps.findings.getAdoptionStats({ from: from ?? undefined, to: to ?? undefined, projectId: projectId ?? undefined }));
   });
 
   return router;

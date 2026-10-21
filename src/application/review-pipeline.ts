@@ -6,9 +6,12 @@ import {
   parseDiffLines,
   parseFindingsFromMarkdown,
   parseReviewJson,
+  readDiffLine,
   type DiffLineSets,
   type ParsedReview,
 } from "../domain/inline-comment.ts";
+import { fingerprintLine } from "../domain/review-finding.ts";
+import { sealSecret } from "../shared/secret-box.ts";
 import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
 import type { ReviewRecord } from "../domain/review-record.ts";
 import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
@@ -16,6 +19,42 @@ import type { PromptRepository, StoredPrompt } from "../domain/review-prompt.ts"
 import type { Change, Commit, DiffRefs, GitlabClient, MergeRequestTask, Reviewer, WecomNotifier } from "../domain/review-task.ts";
 
 export type { MergeRequestTask };
+
+/**
+ * 待写入的建议明细（不含自增 id，由仓储生成）。
+ *
+ * 单独声明而不直接复用 `Omit<ReviewFinding, "id">`：管线只需要知道要写什么，
+ * 不应依赖仓储实体的全部字段，避免领域模型演进时被迫同步改管线签名。
+ */
+export interface PendingFinding {
+  recordId: number;
+  projectId: number;
+  mrIid: number;
+  marker: string;
+  findingId: string;
+  severity: string;
+  path: string;
+  line: number;
+  lineKey: "new_line" | "old_line";
+  baseSha: string;
+  headSha: string;
+  /** 被评论行的指纹；空串表示降级并入汇总，无法追踪。 */
+  codeFingerprint: string;
+  /** 任务级 GitLab 实例地址；追踪时按它还原目标实例。 */
+  gitlabUrl: string;
+  /** 任务级访问令牌密文；追踪时解密使用。 */
+  gitlabTokenSealed: string;
+  discussionId: string | null;
+  noteId: number | null;
+  outcome: "pending";
+  trackedAt: null;
+  createdAt: number;
+}
+
+/** 建议明细写入端口；只声明管线需要的单次写入。 */
+export interface ReviewFindingWriter {
+  insert(finding: PendingFinding): void;
+}
 
 /**
  * 企微联系人映射的查询端口。
@@ -38,7 +77,13 @@ export interface ReviewPipeline {
  * 一个 `insert` 替身即可），也让「记录只能追加」这一约束在类型上可见。
  */
 export interface ReviewRecordWriter {
-  insert(record: ReviewRecord): void;
+  /**
+   * 写入一条评审记录。
+   *
+   * 返回记录 ID 时，评审建议会用它做外键关联；返回 `void`（既有实现与测试替身）
+   * 表示调用方拿不到 ID，此时不写建议明细，保持原有行为。
+   */
+  insert(record: ReviewRecord): number | void;
 }
 
 interface PipelineDeps {
@@ -64,6 +109,19 @@ interface PipelineDeps {
    * 现有调用方（含测试）不传即保持「不额外依赖」的行为。
    */
   wecomContacts?: WecomContactLookup;
+  /**
+   * 评审建议明细写入端口。
+   *
+   * 缺省时不写建议明细，采纳统计因而没有数据——既有调用方与测试不传即保持原行为。
+   */
+  findingWriter?: ReviewFindingWriter;
+  /**
+   * 加密任务级 GitLab 令牌的密钥（部署盐）。
+   *
+   * 追踪在请求之外运行，必须持久化令牌才能访问 GitLab；存密文而非明文。
+   * 缺省时令牌以空串写入，追踪会按「无凭据」跳过，不会发起未鉴权请求。
+   */
+  secretKey?: string;
 }
 
 /** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致（20 分钟）。 */
@@ -162,6 +220,13 @@ interface InlinePublishOutcome {
    */
   publishedBodies: Set<string>;
   fallback: string[];
+  /**
+   * 待落库的建议明细（未带 recordId，由调用方补齐）。
+   *
+   * 成功发布与降级项都会产生条目：降级项没有行锚点，指纹为空，
+   * 落库后才能在统计里如实计入「不可追踪」，而不是凭空消失。
+   */
+  findings: Omit<PendingFinding, "recordId">[];
 }
 
 /**
@@ -182,6 +247,17 @@ interface InlinePublishOutcome {
 export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   const { client, rules, reviewer, logger, batchMaxTokens } = deps;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  /**
+   * 加密任务级 GitLab 令牌，供追踪定时任务使用。
+   *
+   * 没有部署盐时返回空串：宁可让追踪按「无凭据」跳过，也不把明文令牌写进库。
+   */
+  function sealToken(token: string | undefined): string {
+    const trimmed = token?.trim();
+    if (!trimmed || !deps.secretKey) return "";
+    return sealSecret(trimmed, deps.secretKey);
+  }
 
   /**
    * 解析提交人的企微提及目标。
@@ -215,7 +291,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       logger.info("管线开始处理 MR", { 项目ID: task.projectId, MR编号: task.iid, 项目全名: task.fullName });
 
       /**
-       * 写入评审记录。
+       * 写入评审记录并返回记录 ID（拿不到时为 `undefined`）。
        *
        * `score` 传 `number | null`：`parseReviewScore` 无匹配时返回 0，而 0 分与
        * 「未解析出分数」在统计上必须区分——直接写 0 会把平均值拉低。调用方负责
@@ -228,9 +304,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         commentUrl?: string | null;
         changeCount?: number;
         batchCount?: number;
-      }): void => {
-        if (!deps.recordWriter) return;
-        deps.recordWriter.insert({
+      }): number | undefined => {
+        if (!deps.recordWriter) return undefined;
+        const inserted = deps.recordWriter.insert({
           projectId: task.projectId,
           projectName: task.fullName,
           mrIid: task.iid,
@@ -248,6 +324,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           startedAt,
           finishedAt: Date.now(),
         });
+        // 记录 ID 只用于给建议明细做外键；拿不到就退化为不写建议，
+        // 保证既有 recordWriter 实现（返回 void）行为不变。
+        return typeof inserted === "number" ? inserted : undefined;
       };
 
       // 解析作者：MR webhook 只带 author_id（数字），要正确统计提交人并提及其账号，
@@ -458,7 +537,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         总耗时毫秒: Date.now() - startedAt,
         行内评论数: inline.published.size,
       });
-      writeRecord({
+      const recordId = writeRecord({
         result: "success",
         // 0 表示未解析出分数：写 null 而非 0，避免污染平均分统计。
         score: finalScore > 0 ? finalScore : null,
@@ -466,8 +545,37 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         changeCount: changes.length,
         batchCount: batches.length,
       });
+      // 建议明细必须在记录写入后落库：它用 record_id 做外键，且统计按记录关联提交人。
+      // 拿不到记录 ID（未注入 recordWriter 或实现返回 void）时跳过，保持既有行为。
+      if (recordId !== undefined) writeFindings(recordId, inline.findings);
     },
   };
+
+  /**
+   * 把本次评审的建议明细写入仓储。
+   *
+   * 单条写入失败只记日志：建议明细是统计用的从属数据，不能因为一条写失败
+   * 让已完成的评审回写变成失败。整体异常也只记录，不影响主流程。
+   */
+  function writeFindings(recordId: number, findings: Omit<PendingFinding, "recordId">[]): void {
+    if (!deps.findingWriter) return;
+    let written = 0;
+    for (const finding of findings) {
+      try {
+        deps.findingWriter.insert({ ...finding, recordId });
+        written += 1;
+      } catch (error) {
+        logger.warn("写入评审建议明细失败，跳过该条", {
+          记录ID: recordId,
+          建议: finding.findingId,
+          错误: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (written > 0) {
+      logger.info("已写入评审建议明细", { 记录ID: recordId, 建议数: written, 建议总数: findings.length });
+    }
+  }
 
   /**
    * 一次查询解析 MR 作者的显示名与账号，分别供评审记录和企微提及使用。
@@ -603,6 +711,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     const published = new Set<string>();
     const publishedBodies = new Set<string>();
     const fallback: string[] = [];
+    const findings: Omit<PendingFinding, "recordId">[] = [];
     const { task, changes, batchResults } = input;
 
     // 没有 reviewJson 时无从判断，全部按「不可定位」处理。
@@ -630,11 +739,11 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       }
       fallback.push(raw);
     });
-    if (parsedList.length === 0) return { published, publishedBodies, fallback };
+    if (parsedList.length === 0) return { published, publishedBodies, fallback, findings };
 
     const refs = input.refs;
     if (!refs) {
-      return { published, publishedBodies, fallback: fallback.concat(parsedList.map((item) => item.source)) };
+      return { published, publishedBodies, fallback: fallback.concat(parsedList.map((item) => item.source)), findings };
     }
 
     // 路径 → 合法行号集合。重命名文件同时以 oldPath 与 newPath 为键，
@@ -684,9 +793,55 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         const sets = change ? lineSets.get(finding.path) : undefined;
         if (!change || !sets) {
           fallback.push(renderFallbackFinding(finding));
+          // 文件不在本次变更内同样没有行锚点：记录一条空指纹建议，
+          // 让统计能区分「不可追踪」与「还没追踪」。
+          findings.push({
+            projectId: task.projectId,
+            mrIid: task.iid,
+            marker: buildMarker(refs.headSha, markerId),
+            findingId: finding.id,
+            severity: finding.severity,
+            path: finding.path,
+            line: finding.line,
+            lineKey: finding.lineKey,
+            baseSha: refs.baseSha,
+            headSha: refs.headSha,
+            codeFingerprint: "",
+            discussionId: null,
+            noteId: null,
+            outcome: "pending",
+            trackedAt: null,
+            createdAt: Date.now(),
+            gitlabUrl: task.gitlabUrl ?? "",
+            gitlabTokenSealed: sealToken(task.gitlabToken),
+          });
           continue;
         }
         const allowed = finding.lineKey === "new_line" ? sets.added : sets.removed;
+        // 指纹取被评论行在 diff 中的文本；取不到说明该行无法还原，
+        // 落库时留空并在统计里计为不可追踪，而不是猜测。
+        const lineText = readDiffLine(change.diff, finding.lineKey, finding.line);
+        const baseFinding = {
+          projectId: task.projectId,
+          mrIid: task.iid,
+          marker: buildMarker(refs.headSha, markerId),
+          findingId: finding.id,
+          severity: finding.severity,
+          path: finding.path,
+          line: finding.line,
+          lineKey: finding.lineKey,
+          baseSha: refs.baseSha,
+          headSha: refs.headSha,
+          createdAt: Date.now(),
+          outcome: "pending" as const,
+          trackedAt: null,
+          codeFingerprint: "",
+          discussionId: null,
+          noteId: null,
+          gitlabUrl: task.gitlabUrl ?? "",
+          gitlabTokenSealed: sealToken(task.gitlabToken),
+        };
+
         if (!allowed.has(finding.line)) {
           logger.warn("finding 行号不是 diff 变更行，降级进汇总", {
             项目ID: task.projectId,
@@ -695,19 +850,23 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             行号: finding.line,
           });
           fallback.push(renderFallbackFinding(finding));
+          // 该条进入汇总评论后没有行锚点，但仍要在统计里体现为不可追踪。
+          findings.push(baseFinding);
           continue;
         }
 
-        const marker = buildMarker(refs.headSha, markerId);
+        const marker = baseFinding.marker;
         if ([...existing].some((body) => body.includes(marker))) {
-          // 已发布过（webhook 重复触发）：计入 published，使汇总评论不重复该条，但不重新发布。
+          // 已发布过（webhook 重复触发）：计入 published，使汇总评论不重复该条，
+          // 但不重新发布。建议明细同样跳过：重复触发不是新建议，重复落库会让
+          // 同一版本的建议被计两次。
           published.add(markerId);
           publishedBodies.add(finding.body);
           continue;
         }
 
         try {
-          await client.postDiscussion(
+          const created = await client.postDiscussion(
             task.projectId,
             task.iid,
             `${finding.body}\n\n${marker}`,
@@ -723,6 +882,12 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           );
           published.add(markerId);
           publishedBodies.add(finding.body);
+          findings.push({
+            ...baseFinding,
+            codeFingerprint: lineText === null ? "" : fingerprintLine(lineText),
+            discussionId: created.id || null,
+            noteId: created.notes[0]?.id ?? null,
+          });
         } catch (error) {
           logger.warn("单条行内评论发布失败，改并入汇总", {
             项目ID: task.projectId,
@@ -731,6 +896,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             错误: error instanceof Error ? error.message : String(error),
           });
           fallback.push(renderFallbackFinding(finding));
+          // 未发布成功即没有行锚点，指纹留空：统计条数要如实反映这部分缺口。
+          findings.push({ ...baseFinding, codeFingerprint: "", discussionId: null, noteId: null });
         }
       }
     }
@@ -740,7 +907,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     // （marker 保证下次评审跳过）。
     await verifyPublishedPositions({ task, refs, logger });
 
-    return { published, publishedBodies, fallback };
+    return { published, publishedBodies, fallback, findings };
   }
 
   /**

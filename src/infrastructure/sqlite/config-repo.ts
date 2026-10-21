@@ -46,6 +46,10 @@ export const RESTART_REQUIRED_KEYS: ReadonlySet<string> = new Set([
   "LOG_LEVEL",
   "REVIEW_STYLE",
   "AUTH_SALT",
+  // 追踪开关与间隔在组合根构造时读取一次（定时器按该值创建），
+  // 页面保存后不重启不会生效，必须标记为需重启。
+  "ADOPTION_TRACKING_ENABLED",
+  "ADOPTION_SYNC_INTERVAL_MS",
 ]);
 
 /**

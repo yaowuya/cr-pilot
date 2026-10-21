@@ -12,6 +12,20 @@ export interface ServerDeps extends Partial<Pick<AppDeps, "apiRoutes" | "publicA
   queue: TaskQueue;
   pipeline: ReviewPipeline;
   logger: Logger;
+  /**
+   * 采纳追踪登记入口：MR 有新提交时调用，不走评审队列。
+   *
+   * 必须由组合根注入。缺省时 `createApp` 会把追踪事件降级成完整评审，
+   * 因此这属于装配必填项，不是可选优化。
+   */
+  enqueueTracking: AppDeps["enqueueTracking"] & {};
+  /**
+   * 立即执行一轮采纳追踪（可选）。
+   *
+   * 有新提交时先跑一轮，让统计尽量及时；跑不起来也不影响事件登记，
+   * 周期性定时器会兜底。
+   */
+  runAdoptionTracking?: () => void;
 }
 
 /** 监听结果：主端口服务器，以及可选的第二端口服务器。 */
@@ -49,6 +63,9 @@ export async function startServer(
     enqueue: (task) => {
       queue.push(() => pipeline.run(task));
     },
+    // 追踪事件不进评审队列：它只重新判定已有建议，与真实评审争抢并发槽位
+    // 会延长评审等待时间，也会让同一 MR 被重复评审。
+    enqueueTracking: deps.enqueueTracking,
     apiRoutes: deps.apiRoutes,
     publicApiRoutes: deps.publicApiRoutes,
     authMiddleware: deps.authMiddleware,

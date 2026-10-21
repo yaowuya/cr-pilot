@@ -57,6 +57,40 @@ export function parseDiffLines(diff: string): DiffLineSets {
   return { added, removed, visibleNew, visibleOld };
 }
 
+/**
+ * 按 `lineKey` 与行号从 diff 中取出被评论行的文本（零 IO 纯函数）。
+ *
+ * 采纳追踪需要为「AI 评论的那一行」建指纹，而行内评论的锚点只是行号。
+ * 从 diff 里还原该行文本比再调一次文件接口更省事，也不会因评审期间的新提交
+ * 而取到不同内容。取不到时返回 `null`，由调用方把指纹留空（计为不可追踪）。
+ */
+export function readDiffLine(diff: string, lineKey: "new_line" | "old_line", line: number): string | null {
+  let oldLine: number | undefined;
+  let newLine: number | undefined;
+  for (const raw of diff.split("\n")) {
+    const hunk = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      continue;
+    }
+    if (oldLine === undefined || newLine === undefined) continue;
+    if (raw.startsWith("+++") || raw.startsWith("---")) continue;
+    const isAdded = raw.startsWith("+");
+    const isRemoved = raw.startsWith("-");
+    // 目标侧匹配：新增行看新行号，删除行看旧行号，context 行两侧都可命中。
+    if (!isRemoved && lineKey === "new_line" && newLine === line) return raw.slice(1);
+    if (!isAdded && lineKey === "old_line" && oldLine === line) return raw.slice(1);
+    if (isAdded) newLine += 1;
+    else if (isRemoved) oldLine += 1;
+    else {
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+  return null;
+}
+
 /** 单条 finding 的定位信息。lineKey 决定发 new_line 还是 old_line。 */
 export interface ParsedFinding {
   id: string;

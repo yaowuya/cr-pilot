@@ -34,6 +34,8 @@ const MANAGEABLE_KEYS: ReadonlySet<string> = new Set([
   "ADMIN_PASSWORD",
   "AUTH_SALT",
   "DB_PATH",
+  "ADOPTION_TRACKING_ENABLED",
+  "ADOPTION_SYNC_INTERVAL_MS",
 ]);
 
 /** 需要正整数取值的键；`0` 或非数字会让 `loadConfig` 在下次启动抛错。 */
@@ -43,10 +45,11 @@ const POSITIVE_INT_KEYS: ReadonlySet<string> = new Set([
   "REVIEW_BATCH_MAX_TOKENS",
   "QUEUE_CONCURRENCY",
   "GITLAB_API_TIMEOUT",
+  "ADOPTION_SYNC_INTERVAL_MS",
 ]);
 
 /** 只接受 0/1 的布尔键。 */
-const BOOLEAN_KEYS: ReadonlySet<string> = new Set(["GITLAB_INSECURE_TLS"]);
+const BOOLEAN_KEYS: ReadonlySet<string> = new Set(["GITLAB_INSECURE_TLS", "ADOPTION_TRACKING_ENABLED"]);
 
 /** 枚举取值的键。 */
 const ENUM_KEYS: Record<string, readonly string[]> = {
@@ -124,6 +127,19 @@ const CONFIG_DOCS: Record<string, ConfigDoc> = {
       "登录令牌与密码哈希的部署盐。留空等于任何人都能离线算出管理员令牌，服务会拒绝启动",
     defaultValue: "",
     hint: "必填；建议 32 位随机 hex",
+  },
+  ADOPTION_TRACKING_ENABLED: {
+    label: "启用采纳追踪",
+    description:
+      "追踪 AI 评审建议在后续提交中是否真的改了代码。开启后每条建议会追加少量 GitLab 文件读取与讨论查询",
+    defaultValue: "true",
+    hint: "true / false；关闭后已有数据保留但不再更新",
+  },
+  ADOPTION_SYNC_INTERVAL_MS: {
+    label: "采纳追踪间隔",
+    description: "多久扫描一次待追踪建议。间隔越短数据越新，GitLab 调用量越大",
+    defaultValue: "600000",
+    hint: "毫秒；600000 = 10 分钟",
   },
   GITLAB_URL: {
     label: "GitLab 实例地址",

@@ -70,3 +70,36 @@ test("关键字段缺失时仍返回 null（作者字段不影响必填校验）
     "缺 iid 应返回 null",
   );
 });
+
+// ============ 采纳追踪：新提交事件识别 ============
+
+test("update 事件且带 oldrev 时标记为追踪", () => {
+  const task = parseMergeRequestTask(
+    payload({ object_attributes: { iid: 7, author_id: 1, action: "update", oldrev: "abc123", source_branch: "a", target_branch: "b" } }),
+  );
+  assert.ok(task);
+  assert.equal(task.eventKind, "tracking", "推送新提交只需追踪采纳状态");
+});
+
+test("open 事件维持完整评审", () => {
+  const task = parseMergeRequestTask(
+    payload({ object_attributes: { iid: 7, author_id: 1, action: "open", source_branch: "a", target_branch: "b" } }),
+  );
+  assert.ok(task);
+  assert.equal(task.eventKind, "review");
+});
+
+test("update 但没有 oldrev（如改标题）仍走完整评审", () => {
+  // 改标题/描述也是 update 事件，但没有新提交，不能因此跳过评审。
+  const task = parseMergeRequestTask(
+    payload({ object_attributes: { iid: 7, author_id: 1, action: "update", source_branch: "a", target_branch: "b" } }),
+  );
+  assert.ok(task);
+  assert.equal(task.eventKind, "review");
+});
+
+test("缺 action 时默认按评审处理", () => {
+  const task = parseMergeRequestTask(payload());
+  assert.ok(task);
+  assert.equal(task.eventKind, "review");
+});

@@ -35,7 +35,15 @@ export interface DiffRefs {
 /** Discussions API 的行内讨论；notes[].position 用于发布后回读校验。 */
 export interface Discussion {
   id: string;
-  notes: { id: number; body: string; position?: Record<string, unknown> }[];
+  notes: {
+    id: number;
+    body: string;
+    position?: Record<string, unknown>;
+    /** 该条评论是否可被标记解决（只有行内评论为 true）。 */
+    resolvable?: boolean;
+    /** 是否已被标记解决；采纳追踪的辅助信号。缺失按 false 处理。 */
+    resolved?: boolean;
+  }[];
 }
 
 /** 一个待处理的 MR 任务：webhook 分派后进入队列。 */
@@ -66,6 +74,16 @@ export interface MergeRequestTask {
   gitlabUrl?: string;
   /** 该事件携带的 GitLab 访问令牌（webhook 请求头 X-Gitlab-Token）。 */
   gitlabToken?: string;
+  /**
+   * 本次事件的用途：触发完整评审，还是只为采纳追踪登记一次「有新提交」。
+   *
+   * `update` 事件且带 `oldrev` 表示 MR 有新提交：此时只需重新判定已有建议的
+   * 采纳状态，不该再跑一次完整评审——重复评审会浪费模型算力，也会重复发评论
+   * （虽然 marker 会去重，但结果与耗时都无意义）。
+   *
+   * 缺省视为 `review`，保证既有调用方与测试行为不变。
+   */
+  eventKind?: "review" | "tracking";
 }
 
 /**
@@ -134,6 +152,28 @@ export interface GitlabClient {
   ): Promise<Discussion>;
   /** 拉取该 MR 的全部讨论，用于幂等判重与发布后校验。 */
   getDiscussions(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Discussion[]>;
+  /**
+   * 取该 MR 当前最新的 head sha。
+   *
+   * 采纳追踪用它判断「评审之后有没有新提交」：与建议记录里的 head_sha 相同
+   * 说明目标行不可能变化，可以直接跳过，省掉逐条文件读取。
+   */
+  getLatestHeadSha(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<string>;
+  /**
+   * 读取某文件在指定 head 下的原始内容。
+   *
+   * 追踪判定需要「评审后这一行现在长什么样」，diff 无法还原完整文件上下文，
+   * 因此取 raw 文件。文件在该版本不存在时应抛出异常，由调用方记为 unknown，
+   * 不要返回空串——空串会被误判为「整行被删除」。
+   */
+  getFileRaw(
+    projectId: number,
+    iid: number,
+    path: string,
+    headSha: string,
+    gitlabUrl?: string,
+    gitlabToken?: string,
+  ): Promise<string>;
   /**
    * 按用户 ID 查 GitLab 用户，用于把 MR 作者 ID 解析成显示名。
    *

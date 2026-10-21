@@ -757,6 +757,36 @@ paths["/api/config"] = {
   },
 };
 
+// ============ 采纳统计 ============
+
+paths["/api/reviews/adoption"] = {
+  get: {
+    tags: ["评审记录"],
+    summary: "评审建议采纳统计",
+    description: [
+      "统计 AI 评审建议在后续提交中是否真的改了代码。",
+      "",
+      "**口径**：采纳率 = 代码已变化的建议数 ÷ 可统计建议数。指纹只能证明目标行变了，不能证明改得对，因此该指标是「代码变化率」。",
+      "",
+      "**不可统计部分单列**：`fallback` 为降级并入汇总评论的建议（无行锚点），`unknown` 为文件被删除或大重构导致无法定位的建议，二者均不计入分母。",
+      "",
+      "**历史数据**：功能上线前的评审没有建议明细，统计只覆盖上线后的数据。",
+    ].join("\n"),
+    operationId: "getAdoptionStats",
+    security: [{ [BEARER]: [] }],
+    parameters: [
+      { name: "from", in: "query", required: false, schema: { type: "integer" }, description: "起始时间（Unix 毫秒）" },
+      { name: "to", in: "query", required: false, schema: { type: "integer" }, description: "结束时间（Unix 毫秒）" },
+      { name: "projectId", in: "query", required: false, schema: { type: "integer" }, description: "只看指定项目" },
+    ],
+    responses: {
+      200: jsonResponse("采纳统计", { $ref: "#/components/schemas/AdoptionStats" }),
+      400: errorResponse("查询参数非法", { error: "查询参数必须是正整数" }),
+      401: COMMON_ERRORS[401],
+    },
+  },
+};
+
 // ============ 企微映射 ============
 
 paths["/api/wecom-contacts"] = {
@@ -1244,6 +1274,44 @@ const schemas: Record<string, JsonObject> = {
       username: { type: "string", example: "admin" },
       isAdmin: { type: "boolean", description: "是否管理员（由 ADMIN_USERNAME 决定，不存数据库）", example: true },
       createdAt: { type: "integer", description: "Unix 毫秒", example: 1792226620931 },
+    },
+  },
+
+  AdoptionDimensionRow: {
+    type: "object",
+    required: ["name", "tracked", "adopted", "rate"],
+    properties: {
+      name: { type: "string", example: "group/app" },
+      tracked: { type: "integer", description: "可统计建议数（不含 unknown 与不可追踪项）", example: 12 },
+      adopted: { type: "integer", description: "代码已变化的建议数", example: 7 },
+      rate: { type: "number", nullable: true, description: "采纳率 0-1；分母为 0 时为 null", example: 0.583 },
+    },
+  },
+
+  AdoptionStats: {
+    type: "object",
+    required: ["total", "untrackable", "byProject", "byCommitter", "bySeverity"],
+    properties: {
+      total: {
+        type: "object",
+        required: ["tracked", "adopted", "rate"],
+        properties: {
+          tracked: { type: "integer", example: 30 },
+          adopted: { type: "integer", example: 18 },
+          rate: { type: "number", nullable: true, example: 0.6 },
+        },
+      },
+      untrackable: {
+        type: "object",
+        required: ["fallback", "unknown"],
+        properties: {
+          fallback: { type: "integer", description: "降级并入汇总评论、无行锚点的建议数", example: 4 },
+          unknown: { type: "integer", description: "文件被删除或无法定位的建议数", example: 2 },
+        },
+      },
+      byProject: { type: "array", items: { $ref: "#/components/schemas/AdoptionDimensionRow" } },
+      byCommitter: { type: "array", items: { $ref: "#/components/schemas/AdoptionDimensionRow" } },
+      bySeverity: { type: "array", items: { $ref: "#/components/schemas/AdoptionDimensionRow" } },
     },
   },
 

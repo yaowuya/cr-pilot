@@ -35,6 +35,8 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     adminUsername: "",
     adminPassword: "",
     authSalt: "",
+    adoptionTrackingEnabled: true,
+    adoptionSyncIntervalMs: 600000,
   });
 });
 
@@ -129,4 +131,23 @@ test("UI_PORT 默认 5002，可显式关闭或改端口", () => {
 test("UI_PORT 非法值直接抛错", () => {
   assert.throws(() => loadConfig({ UI_PORT: "abc" }), /UI_PORT 必须是非负整数/);
   assert.throws(() => loadConfig({ UI_PORT: "-1" }), /UI_PORT 必须是非负整数/);
+});
+
+test("采纳追踪默认开启且间隔 10 分钟", () => {
+  // 追踪是本功能的核心，默认必须开启；关闭属于部署侧的显式降级。
+  assert.equal(loadConfig(EMPTY_ENV).adoptionTrackingEnabled, true);
+  assert.equal(loadConfig(EMPTY_ENV).adoptionSyncIntervalMs, 600000);
+});
+
+test("采纳追踪可关闭并调整间隔", () => {
+  assert.equal(loadConfig({ ADOPTION_TRACKING_ENABLED: "false" }).adoptionTrackingEnabled, false);
+  assert.equal(loadConfig({ ADOPTION_TRACKING_ENABLED: "0" }).adoptionTrackingEnabled, false);
+  assert.equal(loadConfig({ ADOPTION_TRACKING_ENABLED: "true" }).adoptionTrackingEnabled, true);
+  assert.equal(loadConfig({ ADOPTION_SYNC_INTERVAL_MS: "60000" }).adoptionSyncIntervalMs, 60000);
+});
+
+test("采纳追踪配置非法值直接抛错", () => {
+  assert.throws(() => loadConfig({ ADOPTION_TRACKING_ENABLED: "maybe" }), /ADOPTION_TRACKING_ENABLED/);
+  assert.throws(() => loadConfig({ ADOPTION_SYNC_INTERVAL_MS: "abc" }), /ADOPTION_SYNC_INTERVAL_MS/);
+  assert.throws(() => loadConfig({ ADOPTION_SYNC_INTERVAL_MS: "0" }), /ADOPTION_SYNC_INTERVAL_MS/);
 });

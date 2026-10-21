@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { openDatabase } from "../../../src/infrastructure/sqlite/database.ts";
 import { createConfigRepository } from "../../../src/infrastructure/sqlite/config-repo.ts";
 import { createConfigRouter } from "../../../src/interfaces/http/api/config.ts";
@@ -118,4 +119,14 @@ test("历史遗留覆盖项即使没有说明也不报错", async () => {
   assert.equal(legacy.label, "", "未登记说明的键 label 为空串而非报错");
   assert.equal(legacy.description, "");
   db.close();
+});
+
+test("OpenAPI 包含采纳统计接口与其数据模型", () => {
+  const spec = JSON.parse(readFileSync("docs/openapi.json", "utf8")) as {
+    paths: Record<string, unknown>;
+    components: { schemas: Record<string, unknown> };
+  };
+  assert.ok(spec.paths["/api/reviews/adoption"], "必须暴露采纳统计接口");
+  assert.ok(spec.components.schemas.AdoptionStats, "必须定义采纳统计模型");
+  assert.ok(spec.components.schemas.AdoptionDimensionRow, "必须定义维度聚合模型");
 });

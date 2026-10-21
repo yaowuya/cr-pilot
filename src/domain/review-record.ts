@@ -77,7 +77,14 @@ export interface ReviewStats {
 
 /** 评审明细持久化端口。实现方为 infrastructure/sqlite。 */
 export interface ReviewRecordRepository {
-  insert(record: ReviewRecord): void;
+  /**
+   * 写入一条评审记录，返回数据库生成的自增 ID。
+   *
+   * 必须返回 ID：评审建议明细用 `record_id` 外键关联本表，拿不到 ID 就无法
+   * 建立关联，采纳追踪会退化成「有评论但没有建议明细」。返回 `number | void`
+   * 是为了兼容既有测试替身，但生产实现必须返回真实 ID。
+   */
+  insert(record: ReviewRecord): number | void;
   getList(query: ReviewListQuery): { items: ReviewRecord[]; total: number };
   getStats(query: { from?: number; to?: number }): ReviewStats;
 }
