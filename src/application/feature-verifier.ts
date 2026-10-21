@@ -19,7 +19,8 @@ import { createPiReviewer } from "../infrastructure/pi/reviewer.ts";
 import { createWecomNotifier } from "../infrastructure/wecom/wecom-notifier.ts";
 import { loadReviewRules } from "../infrastructure/rules/review-rules.ts";
 import { parseReviewScore, type RuleSet } from "../domain/review-rules.ts";
-import { buildWecomMessage } from "./review-pipeline.ts";
+import type { WecomContactRepository } from "../domain/wecom-contact.ts";
+import { buildWecomMessage, renderWecomMention, type WecomMentionTarget } from "./review-pipeline.ts";
 
 /**
  * 验证用的样例 diff。
@@ -81,6 +82,16 @@ export interface VerifyTask {
 export interface FeatureVerifierDeps {
   config: AppConfig;
   logger: Logger;
+  /** 与正式通知共用的提交人映射；只查询，不写入，也不从登录账号推断提交人。 */
+  wecomContacts?: Pick<WecomContactRepository, "findByGitlabUsername">;
+}
+
+/** 企微自检输入；页面提交 GitLab 账号，实际提醒对象必须在服务端查映射。 */
+export interface VerifyWecomOptions {
+  webhookOverride?: string;
+  dryRun?: boolean;
+  /** 被测提交人的 GitLab 账号；省略仅兼容既有 CLI 的无提及验证。 */
+  gitlabUsername?: string;
 }
 
 /** 验证用例端口。 */
@@ -91,9 +102,10 @@ export interface FeatureVerifier {
    * 执行一次企微发送验证。
    *
    * `webhookOverride` 为空时按规则文件里的地址发送；`dryRun` 为 true 时只组装
-   * 消息不发送，供页面在用户确认前预览。
+   * 消息不发送。提供 `gitlabUsername` 时读取现有映射并验证末行提及；映射不存在
+   * 则失败而不发送，不能把 GitLab 账号直接当企微 userid。
    */
-  verifyWecom(options?: { webhookOverride?: string; dryRun?: boolean }): Promise<VerifyOutcome>;
+  verifyWecom(options?: VerifyWecomOptions): Promise<VerifyOutcome>;
 }
 
 /** 一次验证的结构化结果。 */
@@ -142,8 +154,13 @@ async function findRulesetWithWebhook(
   );
 }
 
-/** 构造一条明显标记为测试的企微消息，避免被误认为真实评审提醒。 */
-export function buildVerifyMessage(input: { score: number; comment: string; ranAt: Date }): string {
+/** 包装正式通知模板，保留提交人的末行提及，并明确标记为测试消息。 */
+export function buildVerifyMessage(input: {
+  score: number;
+  comment: string;
+  ranAt: Date;
+  mention?: WecomMentionTarget;
+}): string {
   const base = buildWecomMessage({
     projectId: 0,
     iid: 0,
@@ -153,6 +170,7 @@ export function buildVerifyMessage(input: { score: number; comment: string; ranA
     score: input.score,
     comment: input.comment,
     mrUrl: null,
+    mention: input.mention,
   });
   const stamp = input.ranAt.toLocaleString("zh-CN", { hour12: false });
   // 前缀 + 时间戳：群里一眼能看出这是验证消息，不是某次真实评审。
@@ -214,6 +232,20 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
     async verifyWecom(options = {}) {
       const startedAt = Date.now();
       try {
+        let mention: WecomMentionTarget | undefined;
+        let mentionDescription = "未选择测试提交人，本次未验证 @ 提交人。";
+        if (options.gitlabUsername !== undefined) {
+          const gitlabUsername = options.gitlabUsername.trim();
+          if (!gitlabUsername) throw new Error("请选择测试提交人");
+          // 自检没有真实 MR 作者，必须由用户选人，再从服务端映射解析，不能猜登录者
+          // 或默认取第一条映射。每次执行都重新查，避免页面加载后映射被改动或删除。
+          const contact = deps.wecomContacts?.findByGitlabUsername(gitlabUsername);
+          if (!contact) throw new Error("找不到该提交人的企微映射，请先在「企微映射」页登记或刷新列表");
+          mention = { userId: contact.wecomUserId, name: contact.wecomName };
+          const rendered = renderWecomMention(mention);
+          if (!rendered) throw new Error("该提交人的企微映射无法生成安全的提及，请检查姓名与 userid");
+          mentionDescription = rendered.startsWith("<@") ? "真实成员提醒" : "仅中文姓名展示，不触发成员提醒";
+        }
         let webhookUrl = options.webhookOverride?.trim() ?? "";
         let source = "命令行指定的地址";
         if (!webhookUrl) {
@@ -230,13 +262,13 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
           };
         }
 
-        const message = buildVerifyMessage({ score: 60, comment: "P1：样例问题，用于验证消息组装。", ranAt: new Date() });
+        const message = buildVerifyMessage({ score: 60, comment: "P1：样例问题，用于验证消息组装。", ranAt: new Date(), mention });
         const bytes = new TextEncoder().encode(message).length;
         if (options.dryRun) {
           return {
             success: true,
             message: `消息已组装，${bytes} 字节（未发送）`,
-            detail: message,
+            detail: `提及方式：${mentionDescription}\n\n${message}`,
             durationMs: Date.now() - startedAt,
           };
         }
@@ -246,7 +278,7 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
         return {
           success: true,
           message: `企微消息已发送（${bytes} 字节）`,
-          detail: `目标：${source}\n\n${message}`,
+          detail: `目标：${source}\n提及方式：${mentionDescription}\n\n${message}`,
           durationMs: Date.now() - startedAt,
         };
       } catch (error) {

@@ -141,3 +141,14 @@ test("OpenAPI 包含功能自检接口与任务模型", () => {
   assert.ok(spec.paths["/api/verify/tasks/{id}"], "必须暴露任务查询接口");
   assert.ok(spec.components.schemas.VerifyTask, "必须定义任务模型");
 });
+
+test("企微自检的 OpenAPI 契约要求明确选择测试提交人", () => {
+  const spec = JSON.parse(readFileSync("docs/openapi.json", "utf8")) as {
+    paths: Record<string, { post: { requestBody: { required: boolean; content: Record<string, { schema: { required: string[]; properties: Record<string, unknown> } }> } } }>;
+  };
+  const body = spec.paths["/api/verify/wecom"].post.requestBody;
+  assert.equal(body.required, true);
+  const schema = body.content["application/json"].schema;
+  assert.ok(schema.required.includes("gitlabUsername"));
+  assert.ok(schema.properties.gitlabUsername);
+});

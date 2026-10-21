@@ -129,6 +129,12 @@ export function createVerifyRouter(deps: VerifyRouterDeps): Router {
 
   router.post("/wecom", (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const gitlabUsername = typeof body.gitlabUsername === "string" ? body.gitlabUsername.trim() : "";
+    // 自检没有真实 MR 作者；必须显式选人，不能把无提及的消息当作 @ 功能验证成功。
+    if (!gitlabUsername || !/^[a-zA-Z0-9_.-]+$/.test(gitlabUsername)) {
+      res.status(400).json({ error: "请选择有效的测试提交人（GitLab 账号）" });
+      return;
+    }
     // 真实发群是不可撤销动作，必须由调用方显式确认；缺省只做预览。
     const confirmSend = body.confirmSend === true;
     const webhookOverride = typeof body.webhook === "string" ? body.webhook.trim() : "";
@@ -141,7 +147,7 @@ export function createVerifyRouter(deps: VerifyRouterDeps): Router {
       return;
     }
     const { id } = submit("wecom", async (taskId) => {
-      store.finish(taskId, await deps.verifier.verifyWecom({ webhookOverride, dryRun: !confirmSend }));
+      store.finish(taskId, await deps.verifier.verifyWecom({ webhookOverride, dryRun: !confirmSend, gitlabUsername }));
     });
     res.json({ taskId: id });
   });

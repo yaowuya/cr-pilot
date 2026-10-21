@@ -2072,7 +2072,7 @@
           "功能自检"
         ],
         "summary": "提交企微推送验证任务",
-        "description": "组装一条带 `[验证]` 前缀的消息发送到群机器人，确认配置可用。\n\n**默认只预览**：`confirmSend` 不为 `true` 时只组装消息、不发送。真实发群不可撤销，必须显式确认。\n\n`webhook` 可覆盖规则文件里的群地址，用于发到测试群。",
+        "description": "组装一条带 `[验证]` 前缀的消息发送到群机器人，确认配置可用。\n\n**默认只预览**：`confirmSend` 不为 `true` 时只组装消息、不发送。真实发群不可撤销，必须显式确认。\n\n**测试提交人**：必须传 `gitlabUsername`，服务端按现有企微映射解析提及对象；配置 userid 时真实提及，仅配置姓名时输出纯文本 `@姓名`。无映射时任务失败，不发送、不猜测其他人。\n\n`webhook` 可覆盖规则文件里的群地址，用于发到测试群。",
         "operationId": "submitVerifyWecom",
         "security": [
           {
@@ -2080,12 +2080,22 @@
           }
         ],
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "gitlabUsername"
+                ],
                 "properties": {
+                  "gitlabUsername": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[a-zA-Z0-9_.-]+$",
+                    "description": "被测提交人的 GitLab 账号，必须已登记企微映射",
+                    "example": "code-author"
+                  },
                   "confirmSend": {
                     "type": "boolean",
                     "description": "为 true 才真实发送到群",
@@ -2121,14 +2131,14 @@
             }
           },
           "400": {
-            "description": "webhook 非法",
+            "description": "提交人账号缺失或 webhook 非法",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 },
                 "example": {
-                  "error": "webhook 必须是 http(s) 地址"
+                  "error": "请选择有效的测试提交人（GitLab 账号）"
                 }
               }
             }
