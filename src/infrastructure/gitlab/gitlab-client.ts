@@ -105,6 +105,28 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     return { payload: (await response.json()) as T, nextPage: response.headers.get("x-next-page") ?? "" };
   };
 
+  /**
+   * 读取纯文本响应。
+   *
+   * 仓库 raw 文件接口返回的不是 JSON，`request` 里的 `response.json()` 会直接失败，
+   * 因此单独抽一个最小实现，不做通用化抽象——目前只有 `getFileRaw` 需要。
+   */
+  const requestText = async (gitlabUrl: string, gitlabToken: string, path: string): Promise<string> => {
+    const base = (gitlabUrl || baseUrl).replace(/\/+$/, "");
+    const response = await fetchFn(`${base}${path}`, {
+      headers: { "PRIVATE-TOKEN": gitlabToken },
+      signal: AbortSignal.timeout(options.timeoutMs),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new GitlabApiError(
+        `GitLab API ${path} 返回 ${response.status}${detail ? `：${detail.slice(0, 300)}` : ""}`,
+        response.status,
+      );
+    }
+    return response.text();
+  };
+
   return {
     async getMergeRequestChanges(projectId, iid, gitlabUrl = "", gitlabToken = "") {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/changes?access_raw_diffs=true`;
@@ -191,7 +213,8 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
 
     async getDiscussions(projectId, iid, gitlabUrl = "", gitlabToken = "") {
       const basePath = `/api/v4/projects/${projectId}/merge_requests/${iid}/discussions`;
-      type RawDiscussion = { id?: string; notes?: Array<{ id?: number; body?: string; position?: Record<string, unknown> }> };
+      type RawNote = { id?: number; body?: string; position?: Record<string, unknown>; resolvable?: boolean; resolved?: boolean };
+      type RawDiscussion = { id?: string; notes?: RawNote[] };
       const collected: Discussion[] = [];
       // 同一 MR 的讨论可能跨页：必须按 x-next-page 翻页合并，否则幂等判重会漏掉
       // 后续页上已发布的 marker，导致重复发评论。
@@ -210,6 +233,10 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
               id: Number(note.id ?? 0),
               body: note.body ?? "",
               position: note.position,
+              // 采纳追踪需要解决状态：GitLab 返回该字段，历史实现丢弃了它。
+              // 缺失时按 false：不能把「接口没给」当成「已解决」。
+              resolvable: note.resolvable === true,
+              resolved: note.resolved === true,
             })),
           });
         }
@@ -218,6 +245,25 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
         if (!Number.isInteger(page) || page < 2) break;
       }
       return collected;
+    },
+
+    async getLatestHeadSha(projectId, iid, gitlabUrl = "", gitlabToken = "") {
+      // 直接读 versions 而不复用对象方法：`getFileRaw`/`getLatestHeadSha` 可能在
+      // 解构后单独传递（追踪器只依赖这两个方法），此时 `this` 不可靠。
+      const payload = await request<{ head_commit_sha?: string }>(
+        gitlabUrl,
+        gitlabToken,
+        `/api/v4/projects/${projectId}/merge_requests/${iid}/versions`,
+      );
+      return payload.head_commit_sha ?? "";
+    },
+
+    async getFileRaw(projectId, iid, path, headSha, gitlabUrl = "", gitlabToken = "") {
+      // 用 ref 取该提交下的文件快照：采纳追踪要比较「评审之后这行变成什么样」，
+      // 直接读分支当前内容会受未提交到该 MR 的改动干扰。
+      // 路径必须整体编码，否则 `src/a/b.ts` 的斜杠会被当成路径分隔而 404。
+      const encoded = encodeURIComponent(path);
+      return requestText(gitlabUrl, gitlabToken, `/api/v4/projects/${projectId}/repository/files/${encoded}/raw?ref=${encodeURIComponent(headSha)}`);
     },
 
     async getUser(userId, gitlabUrl = "", gitlabToken = "") {
