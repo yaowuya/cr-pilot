@@ -11,6 +11,7 @@ import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
 import { createWecomNotifier } from "./infrastructure/wecom/wecom-notifier.ts";
 import { createReviewPipeline } from "./application/review-pipeline.ts";
 import { createAdoptionTracker } from "./application/adoption-tracker.ts";
+import { createFeatureVerifier } from "./application/feature-verifier.ts";
 import { startServer } from "./interfaces/http/server.ts";
 import { openDatabase } from "./infrastructure/sqlite/database.ts";
 import { createAdminRepository } from "./infrastructure/sqlite/admin-repo.ts";
@@ -27,6 +28,7 @@ import { createAdminsRouter } from "./interfaces/http/api/admins.ts";
 import { createAuthRouter } from "./interfaces/http/api/auth.ts";
 import { createConfigRouter } from "./interfaces/http/api/config.ts";
 import { createWecomContactsRouter } from "./interfaces/http/api/wecom-contacts.ts";
+import { createVerifyRouter } from "./interfaces/http/api/verify.ts";
 import { createPromptsRouter } from "./interfaces/http/api/prompts.ts";
 import { createProvidersRouter } from "./interfaces/http/api/providers.ts";
 import { createReviewsRouter } from "./interfaces/http/api/reviews.ts";
@@ -239,6 +241,9 @@ async function startApplication(input: {
       logger.info("采纳追踪已关闭：ADOPTION_TRACKING_ENABLED=false");
     }
 
+    // 功能自检：页面按钮触发，验证 AI 评审与企微推送是否可用。
+    const verifier = createFeatureVerifier({ config, logger });
+
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
     // 管理员权限门：只挂在账号管理路由上，其余管理页所有登录账号都能用。
     const requireAdmin = createRequireAdmin();
@@ -265,6 +270,7 @@ async function startApplication(input: {
           "/api/reviews": createReviewsRouter({ records, findings }),
           "/api/config": createConfigRouter({ config: configRepo }),
           "/api/wecom-contacts": createWecomContactsRouter({ contacts: wecomContacts }),
+          "/api/verify": createVerifyRouter({ verifier }),
           "/api/prompts": createPromptsRouter({ prompts, providers, rulesDir: config.rulesDir }),
           "/api/providers": createProvidersRouter({ providers, onChanged: syncModels }),
         },

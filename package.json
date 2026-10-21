@@ -15,7 +15,10 @@
     "dev:frontend": "npm --prefix web run dev",
     "import:prompts": "node scripts/import-prompts.ts",
     "build:openapi": "node scripts/build-openapi.ts",
-    "sync:apifox": "node scripts/sync-apifox.ts"
+    "sync:apifox": "node scripts/sync-apifox.ts",
+    "verify:ai": "node scripts/verify-features.ts ai",
+    "verify:wecom": "node scripts/verify-features.ts wecom",
+    "verify:all": "node scripts/verify-features.ts all"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.4",

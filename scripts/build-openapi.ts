@@ -757,6 +757,81 @@ paths["/api/config"] = {
   },
 };
 
+// ============ 功能自检 ============
+
+paths["/api/verify/ai"] = {
+  post: {
+    tags: ["功能自检"],
+    summary: "提交 AI 评审验证任务",
+    description: [
+      "用一段固定样例 diff 真实调用一次模型，检查能否返回评审正文并解析出总分。",
+      "",
+      "**异步执行**：AI 评审约需 1 分钟，接口立即返回 `taskId`，需轮询 `GET /api/verify/tasks/{id}` 取结果。",
+      "",
+      "**限流**：同一时间只允许一个 AI 验证任务，重复提交返回 409。",
+    ].join("\n"),
+    operationId: "submitVerifyAi",
+    security: [{ [BEARER]: [] }],
+    responses: {
+      200: jsonResponse("任务已提交", { type: "object", required: ["taskId"], properties: { taskId: { type: "string", example: "8f3c..." } } }),
+      401: COMMON_ERRORS[401],
+      409: errorResponse("已有 AI 验证在执行", { error: "已有 AI 验证正在执行，请等待完成" }),
+    },
+  },
+};
+
+paths["/api/verify/wecom"] = {
+  post: {
+    tags: ["功能自检"],
+    summary: "提交企微推送验证任务",
+    description: [
+      "组装一条带 `[验证]` 前缀的消息发送到群机器人，确认配置可用。",
+      "",
+      "**默认只预览**：`confirmSend` 不为 `true` 时只组装消息、不发送。真实发群不可撤销，必须显式确认。",
+      "",
+      "`webhook` 可覆盖规则文件里的群地址，用于发到测试群。",
+    ].join("\n"),
+    operationId: "submitVerifyWecom",
+    security: [{ [BEARER]: [] }],
+    requestBody: {
+      required: false,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object",
+            properties: {
+              confirmSend: { type: "boolean", description: "为 true 才真实发送到群", example: true },
+              webhook: { type: "string", description: "覆盖规则文件里的群机器人地址", example: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx" },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      200: jsonResponse("任务已提交", { type: "object", required: ["taskId"], properties: { taskId: { type: "string" } } }),
+      400: errorResponse("webhook 非法", { error: "webhook 必须是 http(s) 地址" }),
+      401: COMMON_ERRORS[401],
+      409: errorResponse("已有企微验证在执行", { error: "已有企微验证正在执行，请等待完成" }),
+    },
+  },
+};
+
+paths["/api/verify/tasks/{id}"] = {
+  get: {
+    tags: ["功能自检"],
+    summary: "查询验证任务状态",
+    description: "轮询验证结果。任务只存内存，进程重启后丢失；超过 1 小时或超过 20 条会被清理。",
+    operationId: "getVerifyTask",
+    security: [{ [BEARER]: [] }],
+    parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+    responses: {
+      200: jsonResponse("任务状态与结果", { $ref: "#/components/schemas/VerifyTask" }),
+      401: COMMON_ERRORS[401],
+      404: errorResponse("任务不存在或已过期", { error: "任务不存在或已过期" }),
+    },
+  },
+};
+
 // ============ 采纳统计 ============
 
 paths["/api/reviews/adoption"] = {
@@ -1315,6 +1390,21 @@ const schemas: Record<string, JsonObject> = {
     },
   },
 
+  VerifyTask: {
+    type: "object",
+    required: ["id", "kind", "status", "message", "detail", "durationMs", "startedAt", "finishedAt"],
+    properties: {
+      id: { type: "string", example: "8f3c2a1e-..." },
+      kind: { type: "string", enum: ["ai", "wecom"], example: "ai" },
+      status: { type: "string", enum: ["running", "success", "failed"], example: "success" },
+      message: { type: "string", description: "结论或错误原因", example: "AI 评审通过，解析出 17 分" },
+      detail: { type: "string", description: "详细输出摘要", example: "# 代码审查报告…" },
+      durationMs: { type: "integer", description: "耗时毫秒；未结束时为 0", example: 72432 },
+      startedAt: { type: "integer", description: "Unix 毫秒" },
+      finishedAt: { type: "integer", nullable: true, description: "Unix 毫秒；未结束时为 null" },
+    },
+  },
+
   WecomContact: {
     type: "object",
     required: ["gitlabUsername", "wecomName", "wecomUserId", "updatedAt"],
@@ -1371,6 +1461,7 @@ const spec = {
     { name: "AI 厂商", description: "多 LLM 厂商配置与项目级模型绑定" },
     { name: "环境变量", description: "运行期配置管理" },
     { name: "企微映射", description: "GitLab 账号到企微成员的映射，决定通知里 @ 谁" },
+    { name: "功能自检", description: "不用等真实 MR，验证 AI 评审与企微推送链路" },
     { name: "管理员账号", description: "账号增删（仅管理员）" },
   ],
   paths,

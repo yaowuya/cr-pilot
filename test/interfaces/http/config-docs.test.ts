@@ -130,3 +130,14 @@ test("OpenAPI 包含采纳统计接口与其数据模型", () => {
   assert.ok(spec.components.schemas.AdoptionStats, "必须定义采纳统计模型");
   assert.ok(spec.components.schemas.AdoptionDimensionRow, "必须定义维度聚合模型");
 });
+
+test("OpenAPI 包含功能自检接口与任务模型", () => {
+  const spec = JSON.parse(readFileSync("docs/openapi.json", "utf8")) as {
+    paths: Record<string, unknown>;
+    components: { schemas: Record<string, unknown> };
+  };
+  assert.ok(spec.paths["/api/verify/ai"], "必须暴露 AI 验证接口");
+  assert.ok(spec.paths["/api/verify/wecom"], "必须暴露企微验证接口");
+  assert.ok(spec.paths["/api/verify/tasks/{id}"], "必须暴露任务查询接口");
+  assert.ok(spec.components.schemas.VerifyTask, "必须定义任务模型");
+});
