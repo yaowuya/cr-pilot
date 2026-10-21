@@ -205,3 +205,19 @@ export interface AdoptionStats {
   byCommitter: AdoptionDimensionRow[];
   bySeverity: AdoptionDimensionRow[];
 }
+
+/** 功能自检任务状态。 */
+export type VerifyTaskStatus = "running" | "success" | "failed";
+
+/** 功能自检任务结果。 */
+export interface VerifyTask {
+  id: string;
+  /** 验证类型：AI 评审或企微推送。 */
+  kind: "ai" | "wecom";
+  status: VerifyTaskStatus;
+  message: string;
+  detail: string;
+  durationMs: number;
+  startedAt: number;
+  finishedAt: number | null;
+}

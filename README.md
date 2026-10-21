@@ -369,6 +369,36 @@ code_review_prompt:
 - 追踪由独立定时器执行，默认每 10 分钟一轮；`ADOPTION_TRACKING_ENABLED=false` 可关闭，`ADOPTION_SYNC_INTERVAL_MS` 调整间隔。
 - 功能上线前的评审没有建议明细，统计只覆盖上线后的数据。
 
+## 功能自检
+
+不用等真实 MR 合并，直接验证 AI 评审与企微推送两条链路。有两种入口：
+
+**页面**：登录后打开左侧「功能自检」，两个按钮分别验证：
+
+- 「开始验证 AI 评审」：真实调用一次模型，返回输出摘要与解析出的总分
+- 「发送验证消息」：二次确认后真的发到群里；「仅预览」只组装不发送
+
+页面采用异步任务 + 轮询：AI 评审约需 1 分钟，同步请求容易被超时截断。
+
+**命令行**：
+
+```bash
+npm run verify:ai                        # 真实调用模型评审一段样例 diff，断言能解析出总分
+npm run verify:wecom                     # 只打印企微消息预览，不发送
+npm run verify:wecom -- --confirm-send   # 真实发送到规则里配置的群
+npm run verify:all -- --confirm-send     # 全链路：AI 真实评审 → 消息组装 → 企微发送
+```
+
+CLI 参数：
+
+- `--confirm-send`：不加只预览；加上才真正发群消息。
+- `--webhook <url>`：覆盖规则文件里的群地址，用于发到测试群。
+- `--repository <group/project>`：按指定仓库规则解析 webhook；不指定时自动找第一个配置了地址的规则。
+
+页面与 CLI 共用同一份验证实现（`src/application/feature-verifier.ts`），行为一致。
+
+验证脚本不写数据库、不发 MR 评论、不改仓库文件。企微消息固定以 `[验证]` 开头并注明发送时间，避免被误认为真实评审提醒。
+
 ## 日志
 
 服务把每个处理步骤写到控制台，默认 `info` 即可看到完整流水线；`LOG_LEVEL=debug` 额外输出 pi 会话内部步骤。

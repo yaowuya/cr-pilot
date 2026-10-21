@@ -94,6 +94,7 @@ import {
   EditPen,
   Expand,
   Fold,
+  MagicStick,
   Moon,
   Setting,
   Sunny,
@@ -152,6 +153,7 @@ const allMenuItems = [
   { path: "/providers", title: "AI 厂商", icon: Cpu, adminOnly: false },
   { path: "/config", title: "环境变量", icon: Setting, adminOnly: false },
   { path: "/wecom-contacts", title: "企微映射", icon: ChatDotRound, adminOnly: false },
+  { path: "/verify", title: "功能自检", icon: MagicStick, adminOnly: false },
   { path: "/admins", title: "管理员", icon: User, adminOnly: true },
 ];
 
