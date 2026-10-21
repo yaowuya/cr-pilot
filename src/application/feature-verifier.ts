@@ -11,6 +11,7 @@
  * 安全边界：不写数据库、不发 MR 评论、不改仓库文件。企微消息固定带 `[验证]`
  * 前缀与发送时间，避免被误认为真实评审提醒。
  */
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { readdir } from "node:fs/promises";
 import type { Logger } from "../shared/logger.ts";
@@ -86,9 +87,28 @@ export interface FeatureVerifierDeps {
   wecomContacts?: Pick<WecomContactRepository, "findByGitlabUsername">;
 }
 
-/** 企微自检输入；页面提交 GitLab 账号，实际提醒对象必须在服务端查映射。 */
+/**
+ * 一个可选的企微机器人（群机器人）。
+ *
+ * 机器人身份就是规则文件里的 `wecom_webhook_url`：同一地址被多条规则复用时
+ * 视为同一个机器人。地址含 `key=` 密钥，因此对外只暴露 `id` 与脱敏后的 key，
+ * 原始 URL 不下发到浏览器，也不接受前端回传任意地址。
+ */
+export interface WecomBot {
+  /** 由 webhook 地址派生的稳定标识；同一地址恒定，不含明文密钥。 */
+  id: string;
+  /** 脱敏 key：仅保留末 4 位，便于人工核对是哪台机器人。 */
+  maskedKey: string;
+  /** 关联该机器人的仓库全名（来自各规则文件的 repository 字段）。 */
+  repositories: string[];
+}
+
+/** 企微自检输入；页面提交 GitLab 账号与机器人标识，实际地址由服务端解析。 */
 export interface VerifyWecomOptions {
+  /** 仅 CLI 使用：本机运维指定任意地址，HTTP 接口不接受该字段。 */
   webhookOverride?: string;
+  /** 页面选择：已配置机器人的 id，由 `listWecomBots` 提供。 */
+  webhookId?: string;
   dryRun?: boolean;
   /** 被测提交人的 GitLab 账号；省略仅兼容既有 CLI 的无提及验证。 */
   gitlabUsername?: string;
@@ -98,12 +118,14 @@ export interface VerifyWecomOptions {
 export interface FeatureVerifier {
   /** 执行一次 AI 评审验证；失败时返回 `success: false` 而不是抛错。 */
   verifyAi(): Promise<VerifyOutcome>;
+  /** 列出规则文件里已配置的企微机器人，按 webhook 地址去重。 */
+  listWecomBots(): Promise<WecomBot[]>;
   /**
    * 执行一次企微发送验证。
    *
-   * `webhookOverride` 为空时按规则文件里的地址发送；`dryRun` 为 true 时只组装
-   * 消息不发送。提供 `gitlabUsername` 时读取现有映射并验证末行提及；映射不存在
-   * 则失败而不发送，不能把 GitLab 账号直接当企微 userid。
+   * 目标优先级：`webhookOverride`（仅 CLI）> `webhookId`（页面选择）。
+   * `dryRun` 为 true 时只组装消息不发送。提供 `gitlabUsername` 时读取现有映射
+   * 并验证末行提及；映射不存在则失败而不发送，不能把 GitLab 账号直接当企微 userid。
    */
   verifyWecom(options?: VerifyWecomOptions): Promise<VerifyOutcome>;
 }
@@ -125,13 +147,63 @@ async function loadRules(config: AppConfig, logger: Logger) {
   return loadReviewRules(config.rulesDir, fallbackPrompt, { logger, style: config.reviewStyle });
 }
 
+/** 从 webhook 地址派生稳定 id：取 SHA-256 前 12 位，不可反推密钥。 */
+function webhookIdOf(url: string): string {
+  return createHash("sha256").update(url).digest("hex").slice(0, 12);
+}
+
+/** 脱敏 webhook key：只保留末 4 位，其余用星号覆盖。 */
+export function maskWebhookKey(url: string): string {
+  const key = /[?&]key=([^&]+)/.exec(url)?.[1] ?? "";
+  if (!key) return "（无法解析 key）";
+  return key.length <= 4 ? "****" : `****${key.slice(-4)}`;
+}
+
+/** 规则文件里的仓库列表；`repository` 支持逗号分隔多个仓库。 */
+function parseRepositories(raw: string): string[] {
+  const match = raw.match(/^repository:\s*(.+)$/m);
+  if (!match) return [];
+  return match[1]
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 /**
- * 找到第一个配置了企微 webhook 的规则集。
+ * 扫描规则文件，汇总已配置的企微机器人。
  *
  * 真实配置里 webhook 挂在**仓库级**规则上（如 `prompts/rules/auto-ops.yaml`），
- * `default.yaml` 只有阈值；直接 `resolve()` 会拿到空地址。这里扫描规则目录，
- * 按文件名顺序取第一个带 webhook 的，让自检在没有指定仓库时也能工作。
+ * `default.yaml` 只有阈值。多个规则文件可能复用同一地址，因此按地址去重：
+ * 用户看到的是「一个机器人」，而不是几条重复的规则。
  */
+async function collectWecomBots(config: AppConfig, logger: Logger): Promise<{ bot: WecomBot; url: string }[]> {
+  const files = (await readdir(config.rulesDir)).filter((name) => name.endsWith(".yaml") || name.endsWith(".yml")).sort();
+  const rules = await loadRules(config, logger);
+  const byUrl = new Map<string, WecomBot>();
+  for (const file of files) {
+    const raw = await readFile(`${config.rulesDir}/${file}`, "utf8").catch(() => "");
+    const repositories = parseRepositories(raw);
+    // 逐仓库 resolve，命中的规则集才带 webhook；避免自己重复实现 YAML 解析。
+    for (const repository of repositories) {
+      const url = rules.resolve(repository).wecomWebhookUrl?.trim() ?? "";
+      if (!url) continue;
+      const existing = byUrl.get(url);
+      if (existing) {
+        for (const name of repositories) {
+          if (!existing.repositories.includes(name)) existing.repositories.push(name);
+        }
+        break;
+      }
+      byUrl.set(url, { id: webhookIdOf(url), maskedKey: maskWebhookKey(url), repositories: [...repositories] });
+      break;
+    }
+  }
+  return [...byUrl.entries()].map(([url, bot]) => ({ bot, url }));
+}
+
+/** 找到第一个配置了企微 webhook 的规则集，供 CLI 未指定地址时兜底。 */
 async function findRulesetWithWebhook(
   config: AppConfig,
   logger: Logger,
@@ -142,9 +214,7 @@ async function findRulesetWithWebhook(
     // 用正则读 repository 字段，再交给统一解析器取规则集，
     // 避免在这里重复实现 YAML 解析与模板渲染。
     const raw = await readFile(`${config.rulesDir}/${file}`, "utf8").catch(() => "");
-    const match = raw.match(/^repository:\s*(.+)$/m);
-    if (!match) continue;
-    const repository = match[1].trim().replace(/^["']|["']$/g, "");
+    const repository = parseRepositories(raw)[0];
     if (!repository) continue;
     const ruleSet = rules.resolve(repository);
     if (ruleSet.wecomWebhookUrl) return { ruleSet, repository };
@@ -229,6 +299,12 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
       }
     },
 
+    async listWecomBots() {
+      const bots = await collectWecomBots(config, logger);
+      // 排序只为让下拉顺序稳定，便于反复验证时定位同一台机器人。
+      return bots.map((item) => item.bot).sort((left, right) => left.id.localeCompare(right.id));
+    },
+
     async verifyWecom(options = {}) {
       const startedAt = Date.now();
       try {
@@ -248,10 +324,22 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
         }
         let webhookUrl = options.webhookOverride?.trim() ?? "";
         let source = "命令行指定的地址";
+        if (!webhookUrl && options.webhookId) {
+          // 页面只回传 id；真实地址必须由服务端按当前配置解析，
+          // 这样浏览器既不接触密钥，也无法把自检当成任意地址的出口。
+          const bots = await collectWecomBots(config, logger);
+          const selected = bots.find((item) => item.bot.id === options.webhookId);
+          if (!selected) throw new Error("所选企微机器人不存在或配置已变更，请刷新机器人列表后重试");
+          webhookUrl = selected.url;
+          const repoLabel = selected.bot.repositories[0] ?? "未关联仓库";
+          const extra = selected.bot.repositories.length > 1 ? ` 等 ${selected.bot.repositories.length} 个仓库` : "";
+          source = `机器人 ${selected.bot.maskedKey}（${repoLabel}${extra}）`;
+        }
         if (!webhookUrl) {
+          // CLI 未指定地址且无 id 时沿用「第一个已配置机器人」，保持既有命令行用法。
           const found = await findRulesetWithWebhook(config, logger);
           webhookUrl = found.ruleSet.wecomWebhookUrl ?? "";
-          source = `规则文件（${found.repository}）`;
+          source = `规则文件（${found.repository}，${maskWebhookKey(webhookUrl)}）`;
         }
         if (!webhookUrl) {
           return {
@@ -268,7 +356,8 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
           return {
             success: true,
             message: `消息已组装，${bytes} 字节（未发送）`,
-            detail: `提及方式：${mentionDescription}\n\n${message}`,
+            // 预览也要标明目标机器人：否则用户无法确认这条消息准备发到哪个群。
+            detail: `目标：${source}\n提及方式：${mentionDescription}\n\n${message}`,
             durationMs: Date.now() - startedAt,
           };
         }

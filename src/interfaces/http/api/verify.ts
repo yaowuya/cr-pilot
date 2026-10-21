@@ -127,6 +127,15 @@ export function createVerifyRouter(deps: VerifyRouterDeps): Router {
     res.json({ taskId: id });
   });
 
+  // 机器人列表：只返回脱敏 key 与关联仓库，原始 webhook 地址不下发浏览器。
+  router.get("/wecom-bots", async (_req, res) => {
+    try {
+      res.json({ items: await deps.verifier.listWecomBots() });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   router.post("/wecom", (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const gitlabUsername = typeof body.gitlabUsername === "string" ? body.gitlabUsername.trim() : "";
@@ -135,19 +144,20 @@ export function createVerifyRouter(deps: VerifyRouterDeps): Router {
       res.status(400).json({ error: "请选择有效的测试提交人（GitLab 账号）" });
       return;
     }
-    // 真实发群是不可撤销动作，必须由调用方显式确认；缺省只做预览。
-    const confirmSend = body.confirmSend === true;
-    const webhookOverride = typeof body.webhook === "string" ? body.webhook.trim() : "";
-    if (webhookOverride && !/^https?:\/\//i.test(webhookOverride)) {
-      res.status(400).json({ error: "webhook 必须是 http(s) 地址" });
+    // 只接受已配置机器人的 id：前端拿不到原始地址，也不能让自检接口打任意 URL。
+    const webhookId = typeof body.webhookId === "string" ? body.webhookId.trim() : "";
+    if (!webhookId || !/^[0-9a-f]{12}$/.test(webhookId)) {
+      res.status(400).json({ error: "请选择要测试的企微机器人" });
       return;
     }
+    // 真实发群是不可撤销动作，必须由调用方显式确认；缺省只做预览。
+    const confirmSend = body.confirmSend === true;
     if (store.isRunning("wecom")) {
       res.status(409).json({ error: "已有企微验证正在执行，请等待完成" });
       return;
     }
     const { id } = submit("wecom", async (taskId) => {
-      store.finish(taskId, await deps.verifier.verifyWecom({ webhookOverride, dryRun: !confirmSend, gitlabUsername }));
+      store.finish(taskId, await deps.verifier.verifyWecom({ webhookId, dryRun: !confirmSend, gitlabUsername }));
     });
     res.json({ taskId: id });
   });

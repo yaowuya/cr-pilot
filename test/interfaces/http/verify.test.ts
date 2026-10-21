@@ -22,6 +22,8 @@ function fakeVerifier(options: {
   ai?: VerifyOutcome | (() => Promise<VerifyOutcome>);
   wecom?: VerifyOutcome | (() => Promise<VerifyOutcome>);
   calls?: { wecom: VerifyWecomOptions[] };
+  /** 机器人列表；缺省为空，模拟未配置任何机器人。 */
+  bots?: { id: string; maskedKey: string; repositories: string[] }[];
 }) {
   const calls = options.calls ?? { wecom: [] };
   const success = (message: string): VerifyOutcome => ({ success: true, message, detail: "detail", durationMs: 10 });
@@ -30,6 +32,7 @@ function fakeVerifier(options: {
     return value ?? success(fallback);
   };
   const verifier: FeatureVerifier = {
+    listWecomBots: async () => options.bots ?? [],
     verifyAi: () => resolve(options.ai, "AI 通过"),
     verifyWecom: async (opts = {}) => {
       calls.wecom.push(opts);
@@ -130,7 +133,7 @@ test("企微默认只预览，不真的发送", async () => {
   const { verifier } = fakeVerifier({ calls });
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
-    const { taskId } = (await (await post(token, base, "/api/verify/wecom", { gitlabUsername: " code-author " })).json()) as { taskId: string };
+    const { taskId } = (await (await post(token, base, "/api/verify/wecom", { gitlabUsername: " code-author ", webhookId: "aaaaaaaaaaaa" })).json()) as { taskId: string };
     await waitTask(token, base, taskId);
     assert.equal(calls.wecom.length, 1);
     assert.equal(calls.wecom[0].dryRun, true, "未确认时必须走预览");
@@ -143,20 +146,20 @@ test("企微 confirmSend=true 时才真实发送", async () => {
   const { verifier } = fakeVerifier({ calls });
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
-    const { taskId } = (await (await post(token, base, "/api/verify/wecom", { confirmSend: true, gitlabUsername: "code-author" })).json()) as { taskId: string };
+    const { taskId } = (await (await post(token, base, "/api/verify/wecom", { confirmSend: true, gitlabUsername: "code-author", webhookId: "aaaaaaaaaaaa" })).json()) as { taskId: string };
     await waitTask(token, base, taskId);
     assert.equal(calls.wecom[0].dryRun, false, "确认后必须真实发送");
     assert.equal(calls.wecom[0].gitlabUsername, "code-author", "发送与预览必须使用同一提交人字段");
   });
 });
 
-test("企微 webhook 覆盖参数必须合法", async () => {
+test("机器人 id 格式非法时拒绝，合法 id 放行", async () => {
   const { verifier } = fakeVerifier({});
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
-    const bad = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhook: "not-a-url", gitlabUsername: "code-author" });
+    const bad = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhookId: "not-a-url", gitlabUsername: "code-author" });
     assert.equal(bad.status, 400);
-    const ok = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhook: "https://example.com/hook", gitlabUsername: "code-author" });
+    const ok = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhookId: "aaaaaaaaaaaa", gitlabUsername: "code-author" });
     assert.equal(ok.status, 200);
   });
 });
@@ -215,15 +218,76 @@ test("HTTP 自检通过真实用例与内存映射仓储，预览末行保留提
   const verifier = createFeatureVerifier({ config: loadConfig({}), logger: createSilentLogger(), wecomContacts: contacts });
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
+    // 用仓库里真实配置的机器人 id，避免测试依赖硬编码的合成 id。
+    const bots = (await (await get(token, base, "/api/verify/wecom-bots")).json()) as {
+      items: { id: string; maskedKey: string; repositories: string[] }[];
+    };
+    assert.ok(bots.items.length > 0, "仓库里应至少配置了一个企微机器人");
+    const target = bots.items[0];
+    // 预览路径不会发起任何网络请求（dryRun 只组装消息），因此无需替身 fetch。
     const res = await post(token, base, "/api/verify/wecom", {
       gitlabUsername: "selected-author",
       confirmSend: false,
-      webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-test",
+      webhookId: target.id,
     });
     assert.equal(res.status, 200);
     const { taskId } = await res.json() as { taskId: string };
     const task = await waitTask(token, base, taskId);
     assert.equal(task.status, "success");
     assert.ok(task.detail.endsWith("\n\n<@selected_member>"));
+    assert.match(task.detail, /机器人 \*\*\*\*/, "结果里应标明所选机器人（脱敏）");
+  });
+});
+
+// ============ 企微机器人选择 ============
+
+test("机器人列表接口返回脱敏信息，不下发 webhook 地址", async () => {
+  const { verifier } = fakeVerifier({
+    bots: [
+      { id: "aaaaaaaaaaaa", maskedKey: "****bbbb", repositories: ["group/a", "group/b"] },
+      { id: "cccccccccccc", maskedKey: "****dddd", repositories: ["group/c"] },
+    ],
+  });
+  const { app, token } = buildHarness(verifier);
+  await withServer(app, async (base) => {
+    const res = await get(token, base, "/api/verify/wecom-bots");
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { items: { id: string; maskedKey: string; repositories: string[] }[] };
+    assert.equal(body.items.length, 2);
+    assert.equal(body.items[0].id, "aaaaaaaaaaaa");
+    assert.equal(body.items[0].maskedKey, "****bbbb");
+    assert.equal(JSON.stringify(body).includes("qyapi.weixin.qq.com"), false);
+  });
+});
+
+test("未选择机器人时返回 400，不启动任务", async () => {
+  const { verifier, calls } = fakeVerifier({});
+  const { app, token } = buildHarness(verifier);
+  await withServer(app, async (base) => {
+    for (const body of [{}, { webhookId: "" }, { webhookId: "not-an-id" }, { webhookId: "<script>" }]) {
+      const res = await post(token, base, "/api/verify/wecom", { gitlabUsername: "code-author", ...body });
+      assert.equal(res.status, 400);
+      assert.match((await res.json() as { error: string }).error, /机器人/);
+    }
+    assert.equal(calls.wecom.length, 0);
+  });
+});
+
+test("选择机器人后按 id 传入验证用例，不接受任意 webhook 地址", async () => {
+  const { verifier, calls } = fakeVerifier({});
+  const { app, token } = buildHarness(verifier);
+  await withServer(app, async (base) => {
+    const res = await post(token, base, "/api/verify/wecom", {
+      gitlabUsername: "code-author",
+      webhookId: "aaaaaaaaaaaa",
+      confirmSend: false,
+      // 旧字段即使被传入也不能生效：地址只能由服务端按 id 解析。
+      webhook: "https://evil.example.com/collect",
+    });
+    assert.equal(res.status, 200);
+    const { taskId } = (await res.json()) as { taskId: string };
+    await waitTask(token, base, taskId);
+    assert.equal(calls.wecom[0].webhookId, "aaaaaaaaaaaa");
+    assert.equal(calls.wecom[0].webhookOverride, undefined, "HTTP 侧不得把任意地址传给发送器");
   });
 });

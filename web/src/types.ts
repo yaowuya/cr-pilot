@@ -221,3 +221,15 @@ export interface VerifyTask {
   startedAt: number;
   finishedAt: number | null;
 }
+
+/**
+ * 可选的企微机器人。
+ *
+ * 机器人身份就是规则文件里的 `wecom_webhook_url`；地址含密钥，后端只下发
+ * 脱敏 key 与派生 id，前端永远拿不到原始地址。
+ */
+export interface WecomBot {
+  id: string;
+  maskedKey: string;
+  repositories: string[];
+}

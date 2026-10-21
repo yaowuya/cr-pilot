@@ -55,6 +55,35 @@
           消息明确标注不是真实评审提醒。
         </p>
         <div class="verify-submitter">
+          <label for="verify-bot">企微机器人</label>
+          <el-select
+            id="verify-bot"
+            v-model="webhookId"
+            placeholder="请选择要发送到的群机器人"
+            :loading="botsLoading"
+            :disabled="botsLoading || aiRunning || wecomRunning"
+            @change="clearWecomResult"
+          >
+            <el-option
+              v-for="bot in bots"
+              :key="bot.id"
+              :value="bot.id"
+              :label="botLabel(bot)"
+            />
+          </el-select>
+          <p v-if="botsError" class="verify-submitter__hint" role="alert">
+            {{ botsError }}
+            <el-button link type="primary" :disabled="aiRunning || wecomRunning" @click="loadBots">重试</el-button>
+          </p>
+          <p v-else-if="botsLoading" class="verify-submitter__hint">正在加载机器人列表…</p>
+          <p v-else-if="botsLoaded && bots.length === 0" class="verify-submitter__hint">
+            规则文件里还没有配置 <code>wecom_webhook_url</code>，请先在 <code>prompts/rules/</code> 中添加。
+          </p>
+          <p v-else-if="selectedBot" class="verify-submitter__hint">
+            将发送到 {{ botLabel(selectedBot) }}；地址由服务端按配置解析，页面不接触完整密钥。
+          </p>
+        </div>
+        <div class="verify-submitter">
           <label for="verify-submitter">测试提交人</label>
           <el-select
             id="verify-submitter"
@@ -134,7 +163,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { Cpu, Promotion, View } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
-import type { VerifyTask, WecomContact } from "../types.ts";
+import type { VerifyTask, WecomBot, WecomContact } from "../types.ts";
 
 /** 轮询间隔：AI 验证约 1 分钟，2 秒一次足够及时且不打扰后端。 */
 const POLL_INTERVAL_MS = 2000;
@@ -143,20 +172,62 @@ const aiTask = ref<VerifyTask | null>(null);
 const wecomTask = ref<VerifyTask | null>(null);
 // 在 POST 返回任务 ID 之前也要防重复提交，不能只根据任务状态禁用按钮。
 const submitting = ref<"ai" | "wecom" | null>(null);
+const bots = ref<WecomBot[]>([]);
+const botsLoading = ref(false);
+const botsLoaded = ref(false);
+const botsError = ref("");
+const webhookId = ref("");
+const selectedBot = computed(() => bots.value.find((bot) => bot.id === webhookId.value));
 const contacts = ref<WecomContact[]>([]);
 const contactsLoading = ref(false);
 const contactsLoaded = ref(false);
 const contactsError = ref("");
 const gitlabUsername = ref("");
 const selectedContact = computed(() => contacts.value.find((contact) => contact.gitlabUsername === gitlabUsername.value));
-const canVerifyWecom = computed(() => contactsLoaded.value && !contactsLoading.value && !contactsError.value && Boolean(selectedContact.value));
+const canVerifyWecom = computed(
+  () =>
+    botsLoaded.value &&
+    !botsLoading.value &&
+    !botsError.value &&
+    Boolean(selectedBot.value) &&
+    contactsLoaded.value &&
+    !contactsLoading.value &&
+    !contactsError.value &&
+    Boolean(selectedContact.value),
+);
 const sendConfirmation = computed(() => {
   const contact = selectedContact.value;
   const name = contact?.wecomName || contact?.gitlabUsername || "未选择提交人";
+  const bot = selectedBot.value ? botLabel(selectedBot.value) : "未选择机器人";
   return contact?.wecomUserId
-    ? `将向配置的群发送 [验证] 消息，并真实 @「${name}」。确认发送？`
-    : `将向配置的群发送 [验证] 消息，末尾仅展示 @${name}，不会触发成员提醒。确认发送？`;
+    ? `将向「${bot}」发送 [验证] 消息，并真实 @「${name}」。确认发送？`
+    : `将向「${bot}」发送 [验证] 消息，末尾仅展示 @${name}，不会触发成员提醒。确认发送？`;
 });
+
+/** 机器人下拉文案：脱敏 key + 关联仓库，便于分辨是哪台机器人。 */
+function botLabel(bot: WecomBot): string {
+  const repo = bot.repositories[0] ?? "未关联仓库";
+  const extra = bot.repositories.length > 1 ? ` 等 ${bot.repositories.length} 个仓库` : "";
+  return `${bot.maskedKey} · ${repo}${extra}`;
+}
+
+/** 加载已配置的机器人；不默认选中，避免误发到不相关的群。 */
+async function loadBots(): Promise<void> {
+  if (botsLoading.value || disposed) return;
+  botsLoading.value = true;
+  botsError.value = "";
+  try {
+    const { items } = await api.get<{ items: WecomBot[] }>("/api/verify/wecom-bots");
+    if (disposed) return;
+    bots.value = items;
+    botsLoaded.value = true;
+    if (!items.some((bot) => bot.id === webhookId.value)) webhookId.value = "";
+  } catch (error) {
+    if (!disposed) botsError.value = isApiError(error) ? error.message : "加载机器人列表失败";
+  } finally {
+    if (!disposed) botsLoading.value = false;
+  }
+}
 /** 轮询定时器；页面卸载时必须清掉，否则会继续请求已离开的页面。 */
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let disposed = false;
@@ -278,14 +349,15 @@ function runAi(): void {
 function submitWecom(confirmSend: boolean): void {
   if (aiRunning.value || wecomRunning.value) return;
   const contact = selectedContact.value;
-  if (!canVerifyWecom.value || !contact) {
-    ElMessage.warning("请先选择已登记企微映射的测试提交人");
+  const bot = selectedBot.value;
+  if (!canVerifyWecom.value || !contact || !bot) {
+    ElMessage.warning("请先选择企微机器人与已登记企微映射的测试提交人");
     return;
   }
   wecomTask.value = null;
   void submitTask(
     "/api/verify/wecom",
-    { confirmSend, gitlabUsername: contact.gitlabUsername },
+    { confirmSend, gitlabUsername: contact.gitlabUsername, webhookId: bot.id },
     (task) => { wecomTask.value = task; },
     confirmSend ? "企微发送" : "企微预览",
   );
@@ -299,7 +371,10 @@ function sendWecom(): void {
   submitWecom(true);
 }
 
-onMounted(() => { void loadContacts(); });
+onMounted(() => {
+  void loadBots();
+  void loadContacts();
+});
 onBeforeUnmount(() => {
   disposed = true;
   stopPolling();

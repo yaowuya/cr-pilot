@@ -780,6 +780,31 @@ paths["/api/verify/ai"] = {
   },
 };
 
+paths["/api/verify/wecom-bots"] = {
+  get: {
+    tags: ["功能自检"],
+    summary: "已配置的企微机器人列表",
+    description: [
+      "扫描规则文件里的 `wecom_webhook_url`，按地址去重后返回可选的群机器人。",
+      "",
+      "**密钥保护**：webhook 地址含 `key=` 密钥，响应只给派生 `id` 与脱敏后的 `maskedKey`，不下发原始地址。",
+      "",
+      "多个规则文件复用同一地址时合并为一个机器人，`repositories` 列出全部关联仓库。",
+    ].join("\n"),
+    operationId: "listWecomBots",
+    security: [{ [BEARER]: [] }],
+    responses: {
+      200: jsonResponse("机器人列表", {
+        type: "object",
+        required: ["items"],
+        properties: { items: { type: "array", items: { $ref: "#/components/schemas/WecomBot" } } },
+      }),
+      401: COMMON_ERRORS[401],
+      500: errorResponse("规则目录读取失败", { error: "读取规则目录失败" }),
+    },
+  },
+};
+
 paths["/api/verify/wecom"] = {
   post: {
     tags: ["功能自检"],
@@ -791,7 +816,7 @@ paths["/api/verify/wecom"] = {
       "",
       "**测试提交人**：必须传 `gitlabUsername`，服务端按现有企微映射解析提及对象；配置 userid 时真实提及，仅配置姓名时输出纯文本 `@姓名`。无映射时任务失败，不发送、不猜测其他人。",
       "",
-      "`webhook` 可覆盖规则文件里的群地址，用于发到测试群。",
+      "**企微机器人**：必须传 `webhookId`（来自 `GET /api/verify/wecom-bots`）。真实地址由服务端按当前配置解析，接口不接受任意 URL，避免把自检当作任意地址出口。",
     ].join("\n"),
     operationId: "submitVerifyWecom",
     security: [{ [BEARER]: [] }],
@@ -801,11 +826,11 @@ paths["/api/verify/wecom"] = {
         "application/json": {
           schema: {
             type: "object",
-            required: ["gitlabUsername"],
+            required: ["gitlabUsername", "webhookId"],
             properties: {
               gitlabUsername: { type: "string", minLength: 1, pattern: "^[a-zA-Z0-9_.-]+$", description: "被测提交人的 GitLab 账号，必须已登记企微映射", example: "code-author" },
+              webhookId: { type: "string", pattern: "^[0-9a-f]{12}$", description: "要发送到的企微机器人 id，来自机器人列表接口", example: "a1b2c3d4e5f6" },
               confirmSend: { type: "boolean", description: "为 true 才真实发送到群", example: true },
-              webhook: { type: "string", description: "覆盖规则文件里的群机器人地址", example: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx" },
             },
           },
         },
@@ -813,7 +838,7 @@ paths["/api/verify/wecom"] = {
     },
     responses: {
       200: jsonResponse("任务已提交", { type: "object", required: ["taskId"], properties: { taskId: { type: "string" } } }),
-      400: errorResponse("提交人账号缺失或 webhook 非法", { error: "请选择有效的测试提交人（GitLab 账号）" }),
+      400: errorResponse("提交人或机器人参数缺失/非法", { error: "请选择要测试的企微机器人" }),
       401: COMMON_ERRORS[401],
       409: errorResponse("已有企微验证在执行", { error: "已有企微验证正在执行，请等待完成" }),
     },
@@ -1391,6 +1416,16 @@ const schemas: Record<string, JsonObject> = {
       byProject: { type: "array", items: { $ref: "#/components/schemas/AdoptionDimensionRow" } },
       byCommitter: { type: "array", items: { $ref: "#/components/schemas/AdoptionDimensionRow" } },
       bySeverity: { type: "array", items: { $ref: "#/components/schemas/AdoptionDimensionRow" } },
+    },
+  },
+
+  WecomBot: {
+    type: "object",
+    required: ["id", "maskedKey", "repositories"],
+    properties: {
+      id: { type: "string", description: "由 webhook 地址派生的稳定标识", example: "a1b2c3d4e5f6" },
+      maskedKey: { type: "string", description: "脱敏后的 webhook key，仅保留末 4 位", example: "****7af" },
+      repositories: { type: "array", description: "关联该机器人的仓库全名", items: { type: "string" }, example: ["cw-bcms-backend"] },
     },
   },
 
