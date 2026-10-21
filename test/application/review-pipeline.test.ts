@@ -691,7 +691,7 @@ const twoAddedLines = "@@ -0,0 +1,2 @@\n+one\n+two";
 
 /** 收集建议明细的写入端口，模拟仓储返回自增记录 ID。 */
 function findingWriterHarness() {
-  const inserted: Omit<PendingFinding, "recordId"> & { recordId: number }[] = [];
+  const inserted: (Omit<PendingFinding, "recordId"> & { recordId: number })[] = [];
   return {
     inserted,
     writer: { insert: (finding: PendingFinding) => { inserted.push(finding); } },
