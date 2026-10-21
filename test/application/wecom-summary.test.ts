@@ -123,7 +123,7 @@ test("企微消息带可点击的 MR 链接", () => {
   assert.match(message, /\[👉 查看 MR 与完整评审\]\(https:\/\/code\.cwoa\.net\/a\/b\/-\/merge_requests\/5391\)/);
 });
 
-test("企微消息在 MR 链接下方单独一行提及提交人", () => {
+test("配置了企微 userid 时在 MR 链接下方单独一行真实提及", () => {
   const mrUrl = "https://code.cwoa.net/a/b/-/merge_requests/5391";
   const message = buildWecomMessage({
     projectId: 1,
@@ -134,15 +134,15 @@ test("企微消息在 MR 链接下方单独一行提及提交人", () => {
     score: 58,
     comment: "P0：x",
     mrUrl,
-    authorUsername: " author.a-1 ",
+    mention: { userId: " wangqin ", name: "王秦" },
   });
 
-  assert.ok(message.endsWith(`[👉 查看 MR 与完整评审](${mrUrl})\n\n<@author.a-1>`));
-  assert.equal(message.split("\n").at(-1), "<@author.a-1>");
+  assert.ok(message.endsWith(`[👉 查看 MR 与完整评审](${mrUrl})\n\n<@wangqin>`));
+  assert.equal(message.split("\n").at(-1), "<@wangqin>", "userid 优先，姓名不重复输出");
   assert.equal(message.includes("```"), false, "成员提及不能放进代码块，否则不会触发提醒");
 });
 
-test("无 MR 链接时，提交人提及仍是最后一行", () => {
+test("只有企微姓名时输出纯文本 @中文名，不伪造 userid", () => {
   const message = buildWecomMessage({
     projectId: 1,
     iid: 1,
@@ -152,14 +152,29 @@ test("无 MR 链接时，提交人提及仍是最后一行", () => {
     score: 50,
     comment: "整体看起来没问题。",
     mrUrl: null,
-    authorUsername: "author-a",
+    mention: { name: " 王秦 " },
   });
 
-  assert.ok(message.endsWith("详见 MR 评论\n\n<@author-a>"));
+  assert.ok(message.endsWith("详见 MR 评论\n\n@王秦"));
+  assert.equal(message.includes("<@"), false, "没有 userid 时不能拼成成员提及");
   assert.equal(message.includes("查看 MR"), false);
 });
 
-test("缺少或不安全的作者账号时保持原通知，不提及全员或注入其他成员", () => {
+test("姓名的前导 @ 会被去掉，避免出现 @@", () => {
+  const message = buildWecomMessage({
+    projectId: 1,
+    iid: 1,
+    fullName: "a/b",
+    sourceBranch: "f",
+    targetBranch: "m",
+    score: 50,
+    comment: "P1：y",
+    mention: { name: "@@王秦" },
+  });
+  assert.ok(message.endsWith("\n\n@王秦"));
+});
+
+test("缺失或不安全的提及目标时保持原通知，不提及全员或注入其他成员", () => {
   const input = {
     projectId: 1,
     iid: 1,
@@ -171,8 +186,23 @@ test("缺少或不安全的作者账号时保持原通知，不提及全员或�
     mrUrl: "https://x/a/b/-/merge_requests/1",
   };
   const withoutMention = buildWecomMessage(input);
-  for (const authorUsername of [undefined, "", " \t ", "all", "ALL", "<@all>", "author>\n<@all", "张三", "two users"]) {
-    assert.equal(buildWecomMessage({ ...input, authorUsername }), withoutMention, `无效账号：${authorUsername}`);
+  const invalid: ({ userId?: string; name?: string } | undefined)[] = [
+    undefined,
+    {},
+    { userId: "", name: "" },
+    { userId: " \t " },
+    { userId: "all" },
+    { userId: "ALL" },
+    { userId: "<@all>" },
+    { userId: "user>\n<@all" },
+    { userId: "王秦" },
+    { userId: "two users" },
+    { name: "all" },
+    { name: "张三\n<@all>" },
+    { name: "李四>丢弃" },
+  ];
+  for (const mention of invalid) {
+    assert.equal(buildWecomMessage({ ...input, mention }), withoutMention, `无效提及目标：${JSON.stringify(mention)}`);
   }
 });
 

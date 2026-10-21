@@ -30,6 +30,7 @@ const routes: RouteRecordRaw[] = [
       { path: "prompts", name: "prompts", component: () => import("../views/PromptsView.vue") },
       { path: "providers", name: "providers", component: () => import("../views/ProvidersView.vue") },
       { path: "config", name: "config", component: () => import("../views/ConfigView.vue") },
+      { path: "wecom-contacts", name: "wecom-contacts", component: () => import("../views/WecomContactsView.vue") },
       {
         path: "admins",
         name: "admins",

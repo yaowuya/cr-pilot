@@ -17,6 +17,15 @@ import type { Change, Commit, DiffRefs, GitlabClient, MergeRequestTask, Reviewer
 
 export type { MergeRequestTask };
 
+/**
+ * 企微联系人映射的查询端口。
+ *
+ * 只声明管线需要的单个查询：管线不负责维护映射，依赖越窄越容易在测试里替换。
+ */
+export interface WecomContactLookup {
+  findByGitlabUsername(gitlabUsername: string): { wecomName: string; wecomUserId: string } | undefined;
+}
+
 /** 评审管线（application 用例端口）：webhook 入队任务的实际执行体。 */
 export interface ReviewPipeline {
   run(task: MergeRequestTask): Promise<void>;
@@ -48,6 +57,13 @@ interface PipelineDeps {
   promptSource?: PromptRepository;
   /** LLM 厂商仓储。缺省时评审用 models.json 的既有默认配置。 */
   llmProviders?: LlmProviderRepository;
+  /**
+   * 企微联系人映射来源。
+   *
+   * 缺省时不会查询映射：通知只能退回 GitLab 作者显示名（纯文本 @姓名）。
+   * 现有调用方（含测试）不传即保持「不额外依赖」的行为。
+   */
+  wecomContacts?: WecomContactLookup;
 }
 
 /** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致（20 分钟）。 */
@@ -166,6 +182,32 @@ interface InlinePublishOutcome {
 export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   const { client, rules, reviewer, logger, batchMaxTokens } = deps;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  /**
+   * 解析提交人的企微提及目标。
+   *
+   * 优先用页面登记的映射：userid 能真实提醒，未登记 userid 时用登记的中文名。
+   * 没有映射时退回 GitLab 作者显示名（通常是中文名），只做纯文本展示。
+   * 作者未能解析时不给提及目标：退回的触发者名字不是提交人，@ 他会提醒错人。
+   * 绝不使用 GitLab 账号拼 `<@...>`——账号不是企微 userid，那是错误的 @。
+   * 查询异常按「无映射」处理：通知本身不能因为映射表读失败而中断。
+   */
+  function resolveMention(author: { name: string; username: string; resolved: boolean }): WecomMentionTarget | undefined {
+    if (!author.resolved) return undefined;
+    if (author.username) {
+      try {
+        const mapped = deps.wecomContacts?.findByGitlabUsername(author.username);
+        if (mapped) {
+          return { userId: mapped.wecomUserId, name: mapped.wecomName };
+        }
+      } catch (error) {
+        logger.warn("读取企微联系人映射失败，退回作者显示名", {
+          错误: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return author.name ? { name: author.name } : undefined;
+  }
 
   return {
     async run(task) {
@@ -383,7 +425,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             fullName: task.fullName,
             sourceBranch: task.sourceBranch,
             targetBranch: task.targetBranch,
-            authorUsername: author.username,
+            mention: resolveMention(author),
             score,
             comment: finalComment,
             // 摘要消息附 MR 链接，接收者点一下就能看完整评审。
@@ -436,10 +478,12 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
    *
    * 显示名降级链：作者接口返回的名字 → username → 触发者名字 → 空串。
    * 账号只取真实作者的 username；查询失败或缺失时留空，不能提及无关触发者。
+   * `resolved` 标记名字是否真的来自作者接口：退回触发者名只用于评审记录，
+   * 不能当作提及目标，否则会 @ 到只在本次事件里触发 webhook 的其他人。
    * 任何异常都不抛出，避免作者查询失败中断评审和原有通知。
    */
-  async function resolveAuthor(task: MergeRequestTask): Promise<{ name: string; username: string }> {
-    const fallback = { name: task.triggerUserName ?? "", username: "" };
+  async function resolveAuthor(task: MergeRequestTask): Promise<{ name: string; username: string; resolved: boolean }> {
+    const fallback = { name: task.triggerUserName ?? "", username: "", resolved: false };
     if (task.authorId === undefined) {
       // 老版本 GitLab 或精简 payload 可能没有 author_id：保持原有行为。
       logger.debug("payload 缺少 author_id，提交人退回触发者", { 项目ID: task.projectId, MR编号: task.iid });
@@ -453,7 +497,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         return fallback;
       }
       logger.info("已解析 MR 作者", { 项目ID: task.projectId, MR编号: task.iid, 作者ID: task.authorId, 作者: name });
-      return { name, username: user.username };
+      return { name, username: user.username, resolved: true };
     } catch (error) {
       // 常见原因：token 没有 read_user 权限（403）或用户已删除（404）。
       // 退回触发者名并在日志里标注，便于事后判断记录里的名字是否可信。
@@ -803,8 +847,8 @@ export function buildMergeRequestUrl(task: {
  * 塞进去既难看又触发 4096 字节截断，关键信息（评分、问题数量、去哪儿看）
  * 反而被挤掉。详细内容在 MR 评论里，这里只给一个跳转链接。
  *
- * 只使用企微支持的 markdown 子集；已知作者账号时在最底部单独一行提及成员。
- * 作者账号缺失或不安全时省略提及，摘要和链接仍照常发送。
+ * 只使用企微支持的 markdown 子集；作者身份映射到企微成员时在末尾单独一行提及。
+ * 没有可用身份时省略提及，摘要和链接仍照常发送。
  */
 export function buildWecomMessage(input: {
   projectId: number;
@@ -817,8 +861,13 @@ export function buildWecomMessage(input: {
   comment: string;
   /** MR 的 GitLab 地址；缺失时不输出链接行。 */
   mrUrl?: string | null;
-  /** MR 作者的 GitLab 用户名；部署约定与企微 userid 一致，缺失时不提及。 */
-  authorUsername?: string;
+  /**
+   * 提交人的企微提及目标。
+   *
+   * `userId` 能触发真实提醒；只有 `name` 时退化为纯文本 `@姓名`，
+   * 仅用于展示、不会推送通知。两者都没有时不输出提及行。
+   */
+  mention?: WecomMentionTarget;
 }): string {
   const counts = countFindingsBySeverity(input.comment);
   const lines = [
@@ -845,12 +894,42 @@ export function buildWecomMessage(input: {
   }
 
   // 企微 Markdown 用 <@userid> 真正提及成员，显示名或普通 @文本不能替代。
-  // 仅接受 GitLab 账号字符，并排除全员标记 all，防止误提及全群或注入其他成员。
-  const authorUsername = input.authorUsername?.trim();
-  if (authorUsername && /^[a-zA-Z0-9_.-]+$/.test(authorUsername) && authorUsername.toLowerCase() !== "all") {
-    lines.push("", `<@${authorUsername}>`);
-  }
+  const mention = renderWecomMention(input.mention);
+  if (mention) lines.push("", mention);
   return lines.join("\n");
+}
+
+/** 提交人的企微提及目标：有 userid 才是真实提醒，只有姓名则纯文本展示。 */
+export interface WecomMentionTarget {
+  /** 企微 userid，能触发成员提醒。 */
+  userId?: string;
+  /** 企微姓名；无 userid 时作为纯文本展示。 */
+  name?: string;
+}
+
+/** 企微 userid 允许的字符：字母、数字与 `_ . - @`，且不含空白或尖括号。 */
+const WECOM_USERID_PATTERN = /^[a-zA-Z0-9_.@-]+$/;
+
+/** 姓名中的换行会破坏 markdown 结构，也容易被用来伪造提及行。 */
+const MENTION_NAME_PATTERN = /^[^\n\r<>[\]]+$/;
+
+/**
+ * 渲染提交人提及行（纯函数，供测试）。
+ *
+ * 顺序不可颠倒：userid 能真正提醒成员，姓名只是给人看的文本。若反过来优先姓名，
+ * 配置了 userid 的成员会退化成不提醒。非法值一律忽略而不是清洗后照用，
+ * 避免把错误配置拼成 `<@...>` 注入其他成员或全员。
+ */
+export function renderWecomMention(target?: WecomMentionTarget): string | null {
+  const userId = target?.userId?.trim() ?? "";
+  if (userId && WECOM_USERID_PATTERN.test(userId) && userId.toLowerCase() !== "all") {
+    return `<@${userId}>`;
+  }
+  const name = target?.name?.trim().replace(/^@+/, "") ?? "";
+  if (name && MENTION_NAME_PATTERN.test(name) && name.toLowerCase() !== "all") {
+    return `@${name}`;
+  }
+  return null;
 }
 
 /** 评审正文里的问题分级统计。 */

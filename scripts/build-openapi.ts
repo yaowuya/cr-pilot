@@ -757,6 +757,80 @@ paths["/api/config"] = {
   },
 };
 
+// ============ 企微映射 ============
+
+paths["/api/wecom-contacts"] = {
+  get: {
+    tags: ["企微映射"],
+    summary: "映射列表",
+    description: [
+      "返回 GitLab 账号到企微成员的映射，用于评审提醒里的 @ 目标。",
+      "",
+      "**提醒语义**：`wecomUserId` 非空时通知发送 `<@userid>`，能真实提醒成员；只有 `wecomName` 时退化为纯文本 `@姓名`，仅展示、不推送通知。",
+    ].join("\n"),
+    operationId: "listWecomContacts",
+    security: [{ [BEARER]: [] }],
+    responses: {
+      200: jsonResponse("映射列表", {
+        type: "array",
+        items: { $ref: "#/components/schemas/WecomContact" },
+      }),
+      401: COMMON_ERRORS[401],
+    },
+  },
+  put: {
+    tags: ["企微映射"],
+    summary: "新增或更新单条映射",
+    description: [
+      "按 `gitlabUsername` 幂等写入：账号不存在则新增，已存在则覆盖姓名与 userid。",
+      "",
+      "**校验**：账号只允许字母、数字、`_`、`.`、`-`；userid 只允许字母、数字、`_`、`.`、`-`、`@`；`all` 不能作为成员标识。",
+    ].join("\n"),
+    operationId: "saveWecomContact",
+    security: [{ [BEARER]: [] }],
+    requestBody: {
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "object",
+            required: ["gitlabUsername"],
+            properties: {
+              gitlabUsername: { type: "string", example: "samxiao" },
+              wecomName: { type: "string", example: "王秦" },
+              wecomUserId: { type: "string", example: "wangqin" },
+            },
+          },
+          example: { gitlabUsername: "samxiao", wecomName: "王秦", wecomUserId: "wangqin" },
+        },
+      },
+    },
+    responses: {
+      200: jsonResponse("保存后的映射", { $ref: "#/components/schemas/WecomContact" }),
+      400: errorResponse("参数校验失败", { error: "企微姓名与企微 userid 至少填写一项" }),
+      401: COMMON_ERRORS[401],
+    },
+  },
+};
+
+paths["/api/wecom-contacts/{gitlabUsername}"] = {
+  delete: {
+    tags: ["企微映射"],
+    summary: "删除映射",
+    description: "按 GitLab 账号删除（大小写不敏感）。账号未登记时返回 404。",
+    operationId: "deleteWecomContact",
+    security: [{ [BEARER]: [] }],
+    parameters: [
+      { name: "gitlabUsername", in: "path", required: true, schema: { type: "string" }, example: "samxiao" },
+    ],
+    responses: {
+      200: jsonResponse("删除结果", { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }),
+      401: COMMON_ERRORS[401],
+      404: errorResponse("映射不存在", { error: "映射不存在" }),
+    },
+  },
+};
+
 // ============ 管理员账号 ============
 
 paths["/api/admins"] = {
@@ -1172,6 +1246,21 @@ const schemas: Record<string, JsonObject> = {
       createdAt: { type: "integer", description: "Unix 毫秒", example: 1792226620931 },
     },
   },
+
+  WecomContact: {
+    type: "object",
+    required: ["gitlabUsername", "wecomName", "wecomUserId", "updatedAt"],
+    properties: {
+      gitlabUsername: { type: "string", description: "GitLab 登录名（唯一键，大小写不敏感）", example: "samxiao" },
+      wecomName: { type: "string", description: "企微姓名；无 userid 时用于纯文本展示", example: "王秦" },
+      wecomUserId: {
+        type: "string",
+        description: "企微 userid；非空时通知发送真实成员提及，空串表示仅展示姓名",
+        example: "wangqin",
+      },
+      updatedAt: { type: "integer", description: "Unix 毫秒", example: 1792226620931 },
+    },
+  },
 };
 
 // ============ 组装并写盘 ============
@@ -1213,6 +1302,7 @@ const spec = {
     { name: "Prompt 管理", description: "按项目维护评审 prompt，支持多项目关联" },
     { name: "AI 厂商", description: "多 LLM 厂商配置与项目级模型绑定" },
     { name: "环境变量", description: "运行期配置管理" },
+    { name: "企微映射", description: "GitLab 账号到企微成员的映射，决定通知里 @ 谁" },
     { name: "管理员账号", description: "账号增删（仅管理员）" },
   ],
   paths,

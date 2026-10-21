@@ -169,3 +169,15 @@ export interface AuthResult {
   /** 是否管理员：前端据此隐藏「管理员」菜单并拦截路由。 */
   isAdmin: boolean;
 }
+
+/**
+ * GitLab 账号到企微成员的映射。
+ *
+ * `wecomUserId` 为空时通知只能显示 `@姓名` 纯文本，不会真正提醒成员。
+ */
+export interface WecomContact {
+  gitlabUsername: string;
+  wecomName: string;
+  wecomUserId: string;
+  updatedAt: number;
+}

@@ -14,6 +14,7 @@ import { startServer } from "./interfaces/http/server.ts";
 import { openDatabase } from "./infrastructure/sqlite/database.ts";
 import { createAdminRepository } from "./infrastructure/sqlite/admin-repo.ts";
 import { createConfigRepository } from "./infrastructure/sqlite/config-repo.ts";
+import { createWecomContactRepository } from "./infrastructure/sqlite/wecom-contact-repo.ts";
 import { createPromptRepository } from "./infrastructure/sqlite/prompt-repo.ts";
 import { createLlmProviderRepository } from "./infrastructure/sqlite/llm-provider-repo.ts";
 import { createReviewRecordRepository } from "./infrastructure/sqlite/review-record-repo.ts";
@@ -23,6 +24,7 @@ import { createStaticAssets } from "./interfaces/http/static-assets.ts";
 import { createAdminsRouter } from "./interfaces/http/api/admins.ts";
 import { createAuthRouter } from "./interfaces/http/api/auth.ts";
 import { createConfigRouter } from "./interfaces/http/api/config.ts";
+import { createWecomContactsRouter } from "./interfaces/http/api/wecom-contacts.ts";
 import { createPromptsRouter } from "./interfaces/http/api/prompts.ts";
 import { createProvidersRouter } from "./interfaces/http/api/providers.ts";
 import { createReviewsRouter } from "./interfaces/http/api/reviews.ts";
@@ -137,12 +139,13 @@ async function startApplication(input: {
     const reviewer = createPiReviewer({ logger });
     const wecomNotifier = createWecomNotifier({ logger });
 
-    // 持久化适配器：四个仓储共用同一连接（D-018 单连接 + WAL）。
+    // 持久化适配器：五个仓储共用同一连接（D-018 单连接 + WAL）。
     // adminUsername 传入用于计算角色（D-024）：只有它指定的账号是管理员。
     const admins = createAdminRepository(db, config.authSalt, config.adminUsername);
     const prompts = createPromptRepository(db);
     const providers = createLlmProviderRepository(db);
     const records = createReviewRecordRepository(db);
+    const wecomContacts = createWecomContactRepository(db);
 
     /**
      * 把数据库里的厂商配置导出到 `pi-agent/models.json`，并把密钥写进环境变量。
@@ -210,6 +213,7 @@ async function startApplication(input: {
       recordWriter: records,
       promptSource: prompts,
       llmProviders: providers,
+      wecomContacts,
     });
 
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
@@ -229,6 +233,7 @@ async function startApplication(input: {
           "/api/admins": createAdminsRouter({ admins, requireAdmin }),
           "/api/reviews": createReviewsRouter({ records }),
           "/api/config": createConfigRouter({ config: configRepo }),
+          "/api/wecom-contacts": createWecomContactsRouter({ contacts: wecomContacts }),
           "/api/prompts": createPromptsRouter({ prompts, providers, rulesDir: config.rulesDir }),
           "/api/providers": createProvidersRouter({ providers, onChanged: syncModels }),
         },

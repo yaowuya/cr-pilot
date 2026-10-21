@@ -82,6 +82,12 @@ CREATE TABLE IF NOT EXISTS llm_project_bindings (
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (provider_id) REFERENCES llm_providers (id) ON DELETE CASCADE
 );
+CREATE TABLE IF NOT EXISTS wecom_contacts (
+  gitlab_username TEXT PRIMARY KEY COLLATE NOCASE,
+  wecom_name TEXT NOT NULL,
+  wecom_userid TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** 已注册过实验特性静默处理器，避免重复注册监听。 */

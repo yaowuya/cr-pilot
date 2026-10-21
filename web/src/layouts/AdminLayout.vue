@@ -88,6 +88,7 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import {
   ArrowDown,
+  ChatDotRound,
   Cpu,
   Document,
   EditPen,
@@ -150,6 +151,7 @@ const allMenuItems = [
   { path: "/prompts", title: "Prompt 管理", icon: EditPen, adminOnly: false },
   { path: "/providers", title: "AI 厂商", icon: Cpu, adminOnly: false },
   { path: "/config", title: "环境变量", icon: Setting, adminOnly: false },
+  { path: "/wecom-contacts", title: "企微映射", icon: ChatDotRound, adminOnly: false },
   { path: "/admins", title: "管理员", icon: User, adminOnly: true },
 ];
 

@@ -281,17 +281,109 @@ test("评分低于阈值且配置 webhook 时推送企微，末行提及 MR 作�
   assert.equal(sent.length, 1);
   assert.match(sent[0], /代码评审提醒/);
   assert.match(sent[0], /65 分/);
-  assert.ok(sent[0].endsWith("\n\n<@real-author>"), "必须使用作者账号且将提及放在最底部");
-  assert.equal(sent[0].includes("<@unrelated-trigger>"), false);
-  assert.equal(sent[0].includes("<@真正的作者>"), false, "显示名不是企微账号");
+  // 没有映射时退回作者显示名做纯文本 @，绝不把 GitLab 账号当企微 userid。
+  assert.ok(sent[0].endsWith("\n\n@真正的作者"), "必须使用作者显示名且将提及放在最底部");
+  assert.equal(sent[0].includes("<@real-author>"), false, "GitLab 账号不是企微 userid");
+  assert.equal(sent[0].includes("unrelated-trigger"), false);
   assert.deepEqual(authorLookups, [[1751, "https://gitlab.example.com", "test-token"]], "复用同一次作者查询及任务级实例信息");
 });
 
-test("无法确认作者账号时照常推送企微，但不提及触发者", async (t) => {
+test("已登记企微映射时使用 userid 真实提醒提交人", async () => {
+  const client = fakeClient({
+    getUser: async (id) => ({ id, name: "王秦", username: "samxiao" }),
+  });
+  const sent: string[] = [];
+  const pipeline = createReviewPipeline({
+    client,
+    rules: {
+      resolve: () => ({
+        systemPrompt: "SYS",
+        userPrompt: "评：{diffs_text}",
+        wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t",
+        wecomScoreThreshold: 70,
+      }),
+    } as ReviewRules,
+    reviewer: reviewerReturning("批评论", "总分：60 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    wecomNotifier: { send: async (_url, markdown) => { sent.push(markdown); } },
+    wecomContacts: {
+      findByGitlabUsername: (username) =>
+        username === "samxiao" ? { wecomName: "王秦", wecomUserId: "wangqin" } : undefined,
+    },
+  });
+
+  await pipeline.run({ ...task, authorId: 1751, triggerUserName: "unrelated-trigger" });
+  assert.equal(sent.length, 1);
+  assert.ok(sent[0].endsWith("\n\n<@wangqin>"), "映射的 userid 必须优先于显示名");
+  assert.equal(sent[0].includes("@王秦"), false, "已有 userid 时不再重复输出姓名");
+});
+
+test("映射只有姓名时按中文名展示，不伪造 userid", async () => {
+  const client = fakeClient({
+    getUser: async (id) => ({ id, name: "拼音名", username: "samxiao" }),
+  });
+  const sent: string[] = [];
+  const pipeline = createReviewPipeline({
+    client,
+    rules: {
+      resolve: () => ({
+        systemPrompt: "SYS",
+        userPrompt: "评：{diffs_text}",
+        wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t",
+        wecomScoreThreshold: 70,
+      }),
+    } as ReviewRules,
+    reviewer: reviewerReturning("批评论", "总分：60 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    wecomNotifier: { send: async (_url, markdown) => { sent.push(markdown); } },
+    wecomContacts: {
+      findByGitlabUsername: () => ({ wecomName: "王秦", wecomUserId: "" }),
+    },
+  });
+
+  await pipeline.run({ ...task, authorId: 1751, triggerUserName: "unrelated-trigger" });
+  assert.ok(sent[0].endsWith("\n\n@王秦"), "映射姓名优先于 GitLab 显示名");
+  assert.equal(sent[0].includes("<@"), false);
+});
+
+test("映射查询异常时照常推送并退回作者显示名", async () => {
+  const client = fakeClient({
+    getUser: async (id) => ({ id, name: "王秦", username: "samxiao" }),
+  });
+  const sent: string[] = [];
+  const pipeline = createReviewPipeline({
+    client,
+    rules: {
+      resolve: () => ({
+        systemPrompt: "SYS",
+        userPrompt: "评：{diffs_text}",
+        wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=t",
+        wecomScoreThreshold: 70,
+      }),
+    } as ReviewRules,
+    reviewer: reviewerReturning("批评论", "总分：60 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    wecomNotifier: { send: async (_url, markdown) => { sent.push(markdown); } },
+    wecomContacts: {
+      findByGitlabUsername: () => { throw new Error("数据库锁"); },
+    },
+  });
+
+  await pipeline.run({ ...task, authorId: 1751, triggerUserName: "unrelated-trigger" });
+  assert.equal(sent.length, 1, "映射读失败不能中断通知");
+  assert.ok(sent[0].endsWith("\n\n@王秦"));
+});
+
+test("无法确认作者身份时照常推送企微，但不提及触发者", async (t) => {
   const cases: {
     name: string;
     authorId?: number;
     getUser: GitlabClient["getUser"];
+    /** 解析成功但无账号时可退回作者显示名；其余情况不能有任何提及。 */
+    expectedMention?: string;
   }[] = [
     {
       name: "缺少 author_id",
@@ -306,6 +398,7 @@ test("无法确认作者账号时照常推送企微，但不提及触发者", as
       name: "只有作者显示名，没有账号",
       authorId: 1751,
       getUser: async (id) => ({ id, name: "作者甲", username: "" }),
+      expectedMention: "@作者甲",
     },
     {
       name: "作者信息全为空",
@@ -343,7 +436,13 @@ test("无法确认作者账号时照常推送企微，但不提及触发者", as
       await pipeline.run({ ...task, authorId: scenario.authorId, triggerUserName: "unrelated-trigger" });
       assert.equal(client.notes.length, 1, "作者信息缺失不能影响 MR 评论回写");
       assert.equal(sent.length, 1, "原来的低分通知仍须发送");
-      assert.equal(sent[0].includes("<@"), false, "不能用触发者或显示名冒充作者账号");
+      assert.equal(sent[0].includes("<@"), false, "不能用触发者或账号冒充企微 userid");
+      assert.equal(sent[0].includes("unrelated-trigger"), false, "绝不能提及触发者");
+      if (scenario.expectedMention) {
+        assert.ok(sent[0].endsWith(`\n\n${scenario.expectedMention}`), "解析成功但无账号时退回显示名");
+      } else {
+        assert.equal(sent[0].includes("@"), false, "作者未知时不应输出任何提及");
+      }
       assert.equal(authorLookups, scenario.authorId === undefined ? 0 : 1);
     });
   }
