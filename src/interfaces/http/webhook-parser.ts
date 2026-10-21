@@ -28,6 +28,11 @@ export function parseMergeRequestTask(
   // 触发者取自 payload.user（触发本次事件的 GitLab 账号），只作兜底用。
   // 一次 MR 会产生多次 webhook，每次触发者可能不同，不能当 MR 作者统计。
   const user = isRecord(payload.user) ? payload.user : {};
+  // 有新提交的 update 事件只需追踪采纳状态，不再跑完整评审。
+  // 判据是 action=update 且带 oldrev：GitLab 在推送新提交时给出 oldrev，
+  // 而改标题/描述等 update 事件没有该字段，不能据此跳过评审。
+  const action = readString(attributes, "action");
+  const oldrev = readString(attributes, "oldrev");
   return {
     projectId,
     iid,
@@ -39,6 +44,7 @@ export function parseMergeRequestTask(
     triggerUserName: readString(user, "name") || readString(user, "username"),
     gitlabUrl: deriveGitlabInstanceUrl(instanceHeader, readString(repository, "homepage")),
     gitlabToken: token || undefined,
+    eventKind: action === "update" && oldrev ? "tracking" : "review",
   };
 }
 

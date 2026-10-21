@@ -74,6 +74,16 @@ export interface MergeRequestTask {
   gitlabUrl?: string;
   /** 该事件携带的 GitLab 访问令牌（webhook 请求头 X-Gitlab-Token）。 */
   gitlabToken?: string;
+  /**
+   * 本次事件的用途：触发完整评审，还是只为采纳追踪登记一次「有新提交」。
+   *
+   * `update` 事件且带 `oldrev` 表示 MR 有新提交：此时只需重新判定已有建议的
+   * 采纳状态，不该再跑一次完整评审——重复评审会浪费模型算力，也会重复发评论
+   * （虽然 marker 会去重，但结果与耗时都无意义）。
+   *
+   * 缺省视为 `review`，保证既有调用方与测试行为不变。
+   */
+  eventKind?: "review" | "tracking";
 }
 
 /**
