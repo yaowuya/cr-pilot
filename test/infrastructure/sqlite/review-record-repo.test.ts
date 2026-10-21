@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openDatabase } from "../../../src/infrastructure/sqlite/database.ts";
 import { createReviewRecordRepository } from "../../../src/infrastructure/sqlite/review-record-repo.ts";
+import { createReviewFindingRepository } from "../../../src/infrastructure/sqlite/review-finding-repo.ts";
 import type { ReviewRecord } from "../../../src/domain/review-record.ts";
 
 /** 构造一条记录，未指定的字段用可辨识的默认值。 */
@@ -199,4 +200,40 @@ test("时间筛选同时作用于两维度聚合", () => {
   assert.equal(projectA.count, 1, "筛选条件必须应用到分组聚合");
   assert.equal(projectA.avgScore, 90);
   db.close();
+});
+
+test("insert 返回自增 ID，且该 ID 可作为建议明细的外键", () => {
+  // 关键回归：不返回 ID 时管线拿不到 recordId，建议明细永远不会落库，
+  // 采纳统计会一直为空（测试全绿也发现不了）。
+  const db = openDatabase(":memory:");
+  const records = createReviewRecordRepository(db);
+  const first = records.insert(record({ mrIid: 1 }));
+  const second = records.insert(record({ mrIid: 2 }));
+  assert.equal(typeof first, "number", "必须返回数字 ID");
+  assert.ok(Number(first) > 0);
+  assert.notEqual(first, second, "两条记录应得到不同 ID");
+
+  const findings = createReviewFindingRepository(db);
+  findings.insert({
+    recordId: Number(first),
+    projectId: 1,
+    mrIid: 1,
+    marker: "<!-- marker:h:1 -->",
+    findingId: "f1",
+    severity: "p1",
+    path: "a.ts",
+    line: 1,
+    lineKey: "new_line",
+    baseSha: "b",
+    headSha: "h",
+    codeFingerprint: "0123456789abcdef",
+    discussionId: "d1",
+    noteId: 1,
+    outcome: "pending",
+    trackedAt: null,
+    createdAt: 1,
+    gitlabUrl: "https://gitlab.example.com",
+    gitlabTokenSealed: "",
+  });
+  assert.equal(findings.listByRecord(Number(first)).length, 1, "外键可用");
 });

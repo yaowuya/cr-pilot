@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS review_findings (
   outcome TEXT NOT NULL DEFAULT 'pending',
   tracked_at INTEGER,
   created_at INTEGER NOT NULL,
+  -- 追踪是脱离请求的定时任务，拿不到 webhook 请求头的任务级凭据，
+  -- 因此在写入建议时把实例地址与访问令牌一并留存（令牌为密文）。
+  gitlab_url TEXT NOT NULL DEFAULT '',
+  gitlab_token_sealed TEXT NOT NULL DEFAULT '',
   UNIQUE (head_sha, marker),
   FOREIGN KEY (record_id) REFERENCES review_records (id) ON DELETE CASCADE
 );
@@ -172,6 +176,10 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "review_prompts", "provider_id", "INTEGER");
   addColumnIfMissing(db, "review_prompts", "model", "TEXT");
   addColumnIfMissing(db, "review_records", "mr_url", "TEXT");
+  // 采纳追踪需要任务级实例与凭据；老库补列后历史建议为空，追踪会按「无凭据」
+  // 降级为不可统计，而不是用错误的全局实例去请求。
+  addColumnIfMissing(db, "review_findings", "gitlab_url", "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, "review_findings", "gitlab_token_sealed", "TEXT NOT NULL DEFAULT ''");
 }
 
 /** 给表补一列；表不存在或列已存在时静默跳过。 */

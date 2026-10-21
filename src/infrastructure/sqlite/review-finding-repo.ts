@@ -36,6 +36,8 @@ interface FindingRow {
   outcome: string;
   tracked_at: number | null;
   created_at: number;
+  gitlab_url: string;
+  gitlab_token_sealed: string;
 }
 
 /** 可统计的判定态；`pending` 与 `unknown` 都不计入分母。 */
@@ -62,6 +64,8 @@ function toFinding(row: FindingRow): ReviewFinding {
     outcome: row.outcome as FindingOutcome,
     trackedAt: row.tracked_at,
     createdAt: row.created_at,
+    gitlabUrl: row.gitlab_url,
+    gitlabTokenSealed: row.gitlab_token_sealed,
   };
 }
 
@@ -123,8 +127,9 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
   const insertStatement = db.prepare(`
     INSERT INTO review_findings (
       record_id, project_id, mr_iid, marker, finding_id, severity, path, line, line_key,
-      base_sha, head_sha, code_fingerprint, discussion_id, note_id, outcome, tracked_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      base_sha, head_sha, code_fingerprint, discussion_id, note_id, outcome, tracked_at, created_at,
+      gitlab_url, gitlab_token_sealed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(head_sha, marker) DO NOTHING
   `);
 
@@ -152,6 +157,8 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
         finding.outcome,
         finding.trackedAt ?? null,
         finding.createdAt,
+        finding.gitlabUrl,
+        finding.gitlabTokenSealed,
       );
     },
 
@@ -164,18 +171,28 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
     },
 
     listPendingTracking(limit) {
-      // 只取有指纹且未判定的项：无指纹的降级项永远无法追踪，反复扫描只是浪费。
+      // 取「待判定」或「判定后又有新提交」的项：
+      // - 无指纹的降级项永远无法追踪，反复扫描只是浪费，直接排除；
+      // - 已判定项在新提交后必须重新评估，否则「先忽略、后改进」这种最有价值的
+      //   场景会被永久漏统计，采纳率系统性偏低。
+      // 判据用 tracked_at 与实际最新提交的先后，由追踪器逐 MR 比较后决定是否更新。
       return query(
         `SELECT * FROM review_findings
-         WHERE outcome = 'pending' AND code_fingerprint <> ''
+         WHERE code_fingerprint <> ''
+           AND (outcome = 'pending' OR tracked_at IS NOT NULL)
          ORDER BY created_at ASC, id ASC
          LIMIT ?`,
         [limit],
       );
     },
 
-    updateOutcome(id, outcome, trackedAt) {
-      db.prepare("UPDATE review_findings SET outcome = ?, tracked_at = ? WHERE id = ?").run(outcome, trackedAt, id);
+    updateOutcome(id, outcome, trackedAt, evaluatedHeadSha) {
+      db.prepare("UPDATE review_findings SET outcome = ?, tracked_at = ?, head_sha = ? WHERE id = ?").run(
+        outcome,
+        trackedAt,
+        evaluatedHeadSha,
+        id,
+      );
     },
 
     getAdoptionStats(queryParams) {

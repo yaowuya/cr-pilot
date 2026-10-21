@@ -218,11 +218,13 @@ async function startApplication(input: {
       llmProviders: providers,
       wecomContacts,
       findingWriter: findings,
+      // 追踪定时任务拿不到 webhook 请求头的令牌，因此用部署盐加密后随建议持久化。
+      secretKey: config.authSalt,
     });
 
     // 采纳追踪：独立的定时任务，不进评审队列——它只重新判定已有建议，
     // 与真实评审争抢并发槽位会拖慢评审响应。
-    const adoptionTracker = createAdoptionTracker({ findings, client, logger });
+    const adoptionTracker = createAdoptionTracker({ findings, client, logger, secretKey: config.authSalt });
     if (config.adoptionTrackingEnabled) {
       const timer = setInterval(() => {
         // runOnce 内部已消化所有异常，这里再兜一层防止未处理 rejection 终止进程。
@@ -247,6 +249,14 @@ async function startApplication(input: {
         queue,
         pipeline,
         logger,
+        // 有新提交时只登记追踪，不重复跑完整评审。追踪轮次由定时器驱动，
+        // 这里只记日志；定时器保证最终会被处理。
+        enqueueTracking: (task) => {
+          logger.info("MR 有新提交，等待下一轮采纳追踪", {
+            项目ID: task.projectId,
+            MR编号: task.iid,
+          });
+        },
         authMiddleware,
         // 登录免鉴权；me 自带鉴权（否则无法用于校验本地令牌）。
         publicApiRoutes: { "/api/auth": createAuthRouter({ admins, authSalt: config.authSalt, authMiddleware }) },

@@ -35,6 +35,8 @@ function makeFinding(overrides: Partial<Parameters<ReturnType<typeof createRevie
     outcome: "pending" as const,
     trackedAt: null,
     createdAt: 100,
+    gitlabUrl: "https://gitlab.example.com",
+    gitlabTokenSealed: "",
     ...overrides,
   };
 }
@@ -57,7 +59,7 @@ test("不同 head_sha 的同名 marker 视为两条不同建议", () => {
   assert.equal(repo.listByRecord(1).length, 2);
 });
 
-test("listPendingTracking 只返回有指纹且待判定的项", () => {
+test("listPendingTracking 排除无指纹项，但保留已判定项以便新提交后重评", () => {
   const db = openDatabase(":memory:");
   seedRecord(db);
   const repo = createReviewFindingRepository(db);
@@ -68,9 +70,16 @@ test("listPendingTracking 只返回有指纹且待判定的项", () => {
   assert.equal(pending.length, 1);
   assert.equal(pending[0].marker, "m1");
 
-  repo.updateOutcome(pending[0].id, "adopted", 200);
-  assert.equal(repo.listPendingTracking(10).length, 0);
-  assert.equal(repo.listByRecord(1).find((item) => item.marker === "m1")?.trackedAt, 200);
+  repo.updateOutcome(pending[0].id, "adopted", 200, "head-new");
+  const updated = repo.listByRecord(1).find((item) => item.marker === "m1");
+  assert.equal(updated?.trackedAt, 200);
+  assert.equal(updated?.headSha, "head-new", "必须记录本次评估的 head");
+
+  // 已判定项仍会被扫描：追踪器再按 headSha 比较决定是否需要重判，
+  // 否则「先忽略、后改进」永远统计不到。
+  const rescan = repo.listPendingTracking(10);
+  assert.equal(rescan.length, 1);
+  assert.equal(rescan[0].headSha, "head-new");
 });
 
 test("聚合采纳率排除 unknown 与不可追踪项", () => {

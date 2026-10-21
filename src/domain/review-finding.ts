@@ -34,8 +34,14 @@ export interface ReviewFinding {
   path: string;
   line: number;
   lineKey: "new_line" | "old_line";
-  /** 评审时的版本坐标，用于判断是否已有新提交。 */
+  /** 评审时的版本坐标。 */
   baseSha: string;
+  /**
+   * 该建议**最近一次被评估**的 head。
+   *
+   * 初始为评审时的 head；每次追踪判定后更新为当次的最新 head。追踪器用它判断
+   * 「判定之后有没有新提交」：相同则跳过，避免每轮对同一版本重复请求 GitLab。
+   */
   headSha: string;
   /**
    * 被评论行的规范化文本哈希；空串表示该建议未成功发布行内评论
@@ -45,6 +51,21 @@ export interface ReviewFinding {
   /** GitLab 讨论与评论 ID，用于回查解决状态；未发布时为空。 */
   discussionId: string | null;
   noteId: number | null;
+  /**
+   * 评审时的 GitLab 实例地址。
+   *
+   * 追踪是定时任务，没有 webhook 请求上下文；多实例部署下必须按任务记录还原
+   * 目标实例，否则会去错误的 GitLab 上查文件。老数据为空串，按「不可追踪」处理。
+   */
+  gitlabUrl: string;
+  /**
+   * 任务级 GitLab 访问令牌的密文（AES-256-GCM，密钥由 `AUTH_SALT` 派生）。
+   *
+   * 明文令牌只能来自 webhook 请求头，而追踪运行时已无请求上下文，因此必须
+   * 随建议持久化。存密文而非明文：库被单独取走时无法还原令牌。
+   * 空串表示无凭据，追踪会跳过而不是发起未鉴权请求。
+   */
+  gitlabTokenSealed: string;
   outcome: FindingOutcome;
   /** 最近一次判定时间；未判定为 null。 */
   trackedAt: number | null;
@@ -85,7 +106,13 @@ export interface ReviewFindingRepository {
   listByMr(projectId: number, mrIid: number): ReviewFinding[];
   /** 取待追踪建议：按创建时间升序，限制条数，避免一轮扫描过多。 */
   listPendingTracking(limit: number): ReviewFinding[];
-  updateOutcome(id: number, outcome: FindingOutcome, trackedAt: number): void;
+  /**
+   * 更新判定结果，同时把 `headSha` 改成本次评估的版本。
+   *
+   * 必须一起更新：只写 outcome 的话，下一轮无法区分「已按最新版本判定过」与
+   * 「有了新提交需要重判」，要么重复请求，要么永远不再评估。
+   */
+  updateOutcome(id: number, outcome: FindingOutcome, trackedAt: number, evaluatedHeadSha: string): void;
   getAdoptionStats(query: AdoptionStatsQuery): AdoptionStats;
 }
 

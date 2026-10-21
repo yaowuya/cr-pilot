@@ -15,6 +15,7 @@ import type { Discussion, GitlabClient } from "../domain/review-task.ts";
 import { fingerprintLine, locateFingerprintLine, type FindingOutcome, type ReviewFinding } from "../domain/review-finding.ts";
 import type { ReviewFindingRepository } from "../domain/review-finding.ts";
 import type { Logger } from "../shared/logger.ts";
+import { openSecret } from "../shared/secret-box.ts";
 
 /** 单轮最多处理的建议数：避免一轮扫描过久，剩余的下一轮继续。 */
 const DEFAULT_BATCH_SIZE = 200;
@@ -35,6 +36,13 @@ export interface AdoptionTrackerDeps {
   logger: Logger;
   /** 单轮处理上限，缺省 200。 */
   batchSize?: number;
+  /**
+   * 解密任务级令牌的部署盐。
+   *
+   * 追踪在请求之外运行，凭据只能从建议记录里取密文再解密；缺少时可解的密文
+   * 为空串，追踪按「无凭据」跳过，绝不发起未鉴权请求。
+   */
+  secretKey?: string;
 }
 
 /** 追踪用例端口。 */
@@ -71,13 +79,23 @@ export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracke
   const { findings, client, logger } = deps;
   const batchSize = deps.batchSize ?? DEFAULT_BATCH_SIZE;
 
-  /** 判定单条建议；`headSha` 是该 MR 的最新 head，读文件必须用它。 */
-  async function trackOne(finding: ReviewFinding, headSha: string, resolution: Map<string, boolean>): Promise<FindingOutcome> {
+  /**
+   * 判定单条建议；`headSha` 是该 MR 的最新 head，`token` 是解密后的任务级令牌。
+   *
+   * 必须同时用任务级实例与令牌：该服务的访问令牌随 webhook 请求头下发，
+   * 没有全局令牌可用；漏传会以未鉴权身份请求并返回 401。
+   */
+  async function trackOne(
+    finding: ReviewFinding,
+    headSha: string,
+    token: string,
+    resolution: Map<string, boolean>,
+  ): Promise<FindingOutcome> {
     let content: string;
     try {
       // 必须读**最新** head 的文件：用评审时的旧 head 会读到旧内容，
       // 每次都判成「未变化」，采纳率永远是 0。
-      content = await client.getFileRaw(finding.projectId, finding.mrIid, finding.path, headSha);
+      content = await client.getFileRaw(finding.projectId, finding.mrIid, finding.path, headSha, finding.gitlabUrl, token);
     } catch (error) {
       // 文件在该版本不存在（被删或路径变化）时无法判定，如实记 unknown。
       logger.debug("追踪：读取文件失败，记为 unknown", {
@@ -120,17 +138,38 @@ export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracke
       for (const list of byMr.values()) {
         const first = list[0];
         try {
-          const latestHead = await client.getLatestHeadSha(first.projectId, first.mrIid);
-          // head 未变说明评审后没有新提交，目标行不可能变化，直接留待下一轮。
-          if (!latestHead || latestHead === first.headSha) continue;
+          // 没有任务级凭据时跳过：宁可记不上数据，也不用未鉴权身份打 GitLab。
+          const token = deps.secretKey ? openSecret(first.gitlabTokenSealed, deps.secretKey) : "";
+          if (!token) {
+            logger.debug("追踪：缺少任务级凭据，跳过该 MR", {
+              项目ID: first.projectId,
+              MR编号: first.mrIid,
+            });
+            continue;
+          }
 
-          const discussions = await client.getDiscussions(first.projectId, first.mrIid);
+          const latestHead = await client.getLatestHeadSha(first.projectId, first.mrIid, first.gitlabUrl, token);
+          if (!latestHead) continue;
+
+          // 同一 MR 内不同建议可能已按不同版本判定过：逐条比较，已是最新版本的不再重判，
+          // 也避免为它们重复读取文件。
+          const needsTrack = list.filter((finding) => finding.headSha !== latestHead);
+          if (needsTrack.length === 0) continue;
+
+          const discussions = await client.getDiscussions(first.projectId, first.mrIid, first.gitlabUrl, token);
           const resolution = buildResolutionMap(discussions);
 
-          for (const finding of list) {
+          for (const finding of needsTrack) {
             try {
-              const outcome = await trackOne(finding, latestHead, resolution);
-              findings.updateOutcome(finding.id, outcome, Date.now());
+              const findingToken = deps.secretKey ? openSecret(finding.gitlabTokenSealed, deps.secretKey) : "";
+              if (!findingToken) {
+                logger.debug("追踪：该建议缺少凭据，跳过", { 建议: finding.findingId });
+                continue;
+              }
+              const outcome = await trackOne(finding, latestHead, findingToken, resolution);
+              // 一并记录本次评估的 head：下一轮据此判断是否又有新提交，
+              // 避免对同一版本反复请求 GitLab。
+              findings.updateOutcome(finding.id, outcome, Date.now(), latestHead);
               tracked += 1;
             } catch (error) {
               logger.warn("追踪单条建议失败，保留原状态", {

@@ -11,6 +11,7 @@ import {
   type ParsedReview,
 } from "../domain/inline-comment.ts";
 import { fingerprintLine } from "../domain/review-finding.ts";
+import { sealSecret } from "../shared/secret-box.ts";
 import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
 import type { ReviewRecord } from "../domain/review-record.ts";
 import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
@@ -39,6 +40,10 @@ export interface PendingFinding {
   headSha: string;
   /** 被评论行的指纹；空串表示降级并入汇总，无法追踪。 */
   codeFingerprint: string;
+  /** 任务级 GitLab 实例地址；追踪时按它还原目标实例。 */
+  gitlabUrl: string;
+  /** 任务级访问令牌密文；追踪时解密使用。 */
+  gitlabTokenSealed: string;
   discussionId: string | null;
   noteId: number | null;
   outcome: "pending";
@@ -110,6 +115,13 @@ interface PipelineDeps {
    * 缺省时不写建议明细，采纳统计因而没有数据——既有调用方与测试不传即保持原行为。
    */
   findingWriter?: ReviewFindingWriter;
+  /**
+   * 加密任务级 GitLab 令牌的密钥（部署盐）。
+   *
+   * 追踪在请求之外运行，必须持久化令牌才能访问 GitLab；存密文而非明文。
+   * 缺省时令牌以空串写入，追踪会按「无凭据」跳过，不会发起未鉴权请求。
+   */
+  secretKey?: string;
 }
 
 /** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致（20 分钟）。 */
@@ -235,6 +247,17 @@ interface InlinePublishOutcome {
 export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   const { client, rules, reviewer, logger, batchMaxTokens } = deps;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  /**
+   * 加密任务级 GitLab 令牌，供追踪定时任务使用。
+   *
+   * 没有部署盐时返回空串：宁可让追踪按「无凭据」跳过，也不把明文令牌写进库。
+   */
+  function sealToken(token: string | undefined): string {
+    const trimmed = token?.trim();
+    if (!trimmed || !deps.secretKey) return "";
+    return sealSecret(trimmed, deps.secretKey);
+  }
 
   /**
    * 解析提交人的企微提及目标。
@@ -789,6 +812,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             outcome: "pending",
             trackedAt: null,
             createdAt: Date.now(),
+            gitlabUrl: task.gitlabUrl ?? "",
+            gitlabTokenSealed: sealToken(task.gitlabToken),
           });
           continue;
         }
@@ -813,6 +838,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           codeFingerprint: "",
           discussionId: null,
           noteId: null,
+          gitlabUrl: task.gitlabUrl ?? "",
+          gitlabTokenSealed: sealToken(task.gitlabToken),
         };
 
         if (!allowed.has(finding.line)) {

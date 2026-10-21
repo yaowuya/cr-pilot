@@ -105,6 +105,8 @@ test("有数据时返回采纳率与不可统计计数", async () => {
     noteId: null,
     trackedAt: 1,
     createdAt: 1,
+    gitlabUrl: "https://gitlab.example.com",
+    gitlabTokenSealed: "",
   };
   findings.insert({ ...row, marker: "m1", codeFingerprint: "f1", outcome: "adopted" });
   findings.insert({ ...row, marker: "m2", codeFingerprint: "f2", outcome: "ignored" });

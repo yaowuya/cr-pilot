@@ -87,3 +87,44 @@ test("未装配追踪入口时 update 事件退化为原评审队列", async () 
     assert.equal(review.length, 1, "不能静默丢弃事件");
   });
 });
+
+test("startServer 装配的追踪入口确实接到 webhook 分流", async () => {
+  // 关键回归：enqueueTracking 只在 app.ts 出现、server.ts/bootstrap.ts 没接线时，
+  // 生产上追踪分支永远不触发，而单测自己传依赖会掩盖这个缺口。
+  const { startServer } = await import("../../../src/interfaces/http/server.ts");
+  const { createTaskQueue } = await import("../../../src/shared/queue.ts");
+  const { createSilentLogger } = await import("../../../src/shared/logger.ts");
+  const { loadConfig } = await import("../../../src/shared/config.ts");
+
+  const tracking: MergeRequestTask[] = [];
+  const review: MergeRequestTask[] = [];
+  const logger = createSilentLogger();
+  const servers = await startServer(
+    { ...loadConfig({} as NodeJS.ProcessEnv), port: 0, uiPort: 0 },
+    {
+      queue: createTaskQueue(1, logger),
+      pipeline: { run: async (task) => { review.push(task); } },
+      logger,
+      enqueueTracking: (task) => { tracking.push(task); },
+    },
+    logger,
+  );
+  try {
+    const address = servers.primary.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const res = await fetch(`http://127.0.0.1:${port}/review/webhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Gitlab-Token": "t" },
+      body: JSON.stringify({
+        object_kind: "merge_request",
+        project: { id: 1, path_with_namespace: "g/p" },
+        object_attributes: { iid: 7, action: "update", oldrev: "abc", source_branch: "s", target_branch: "t" },
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(tracking.length, 1, "装配后追踪入口必须被调用");
+    assert.equal(review.length, 0, "不能回落成完整评审");
+  } finally {
+    await new Promise<void>((resolve) => servers.primary.close(() => resolve()));
+  }
+});

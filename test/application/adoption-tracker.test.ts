@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { createAdoptionTracker, decideOutcome } from "../../src/application/adoption-tracker.ts";
 import { fingerprintLine, type ReviewFinding, type ReviewFindingRepository } from "../../src/domain/review-finding.ts";
 import { createSilentLogger } from "../../src/shared/logger.ts";
+import { sealSecret } from "../../src/shared/secret-box.ts";
+
+/** 测试用部署盐；追踪器用它解密建议里的令牌。 */
+const TRACKING_SALT = "test-tracking-salt";
 
 /** 构造一条待追踪建议。 */
 function makeFinding(overrides: Partial<ReviewFinding> = {}): ReviewFinding {
@@ -26,6 +30,8 @@ function makeFinding(overrides: Partial<ReviewFinding> = {}): ReviewFinding {
     outcome: "pending",
     trackedAt: null,
     createdAt: 1,
+    gitlabUrl: "https://gitlab.example.com",
+    gitlabTokenSealed: sealSecret("glpat-token", TRACKING_SALT),
     ...overrides,
   };
 }
@@ -38,12 +44,14 @@ function repoWith(items: ReviewFinding[]): ReviewFindingRepository & { rows: Rev
     insert() {},
     listByRecord: () => rows,
     listByMr: () => rows,
-    listPendingTracking: () => rows.filter((row) => row.outcome === "pending" && row.codeFingerprint !== ""),
-    updateOutcome(id, outcome, trackedAt) {
+    // 与仓储一致：排除无指纹项，但保留已判定项以便新提交后重评。
+    listPendingTracking: () => rows.filter((row) => row.codeFingerprint !== ""),
+    updateOutcome(id, outcome, trackedAt, evaluatedHeadSha) {
       const row = rows.find((item) => item.id === id);
       if (row) {
         row.outcome = outcome;
         row.trackedAt = trackedAt;
+        row.headSha = evaluatedHeadSha;
       }
     },
     getAdoptionStats: () => ({
@@ -79,7 +87,7 @@ function clientStub(options: {
 
 test("目标行未变且未解决记 ignored", async () => {
   const repo = repoWith([makeFinding()]);
-  const tracker = createAdoptionTracker({ findings: repo, client: clientStub({}), logger: createSilentLogger() });
+  const tracker = createAdoptionTracker({ findings: repo, client: clientStub({}), logger: createSilentLogger(), secretKey: TRACKING_SALT });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "ignored");
   assert.ok(repo.rows[0].trackedAt);
@@ -91,6 +99,7 @@ test("目标行改变记 adopted", async () => {
     findings: repo,
     client: clientStub({ file: "line1\nline2\nconst target = 2;\n" }),
     logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "adopted");
@@ -98,7 +107,7 @@ test("目标行改变记 adopted", async () => {
 
 test("已解决但代码未变记 resolved-without-change", async () => {
   const repo = repoWith([makeFinding()]);
-  const tracker = createAdoptionTracker({ findings: repo, client: clientStub({ resolved: true }), logger: createSilentLogger() });
+  const tracker = createAdoptionTracker({ findings: repo, client: clientStub({ resolved: true }), logger: createSilentLogger(), secretKey: TRACKING_SALT });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "resolved-without-change");
 });
@@ -109,6 +118,7 @@ test("文件读取失败记 unknown，不猜测", async () => {
     findings: repo,
     client: clientStub({ file: async () => { throw new Error("404"); } }),
     logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "unknown");
@@ -121,6 +131,7 @@ test("文件保留但指纹消失，说明该行已被改写，记 adopted", asy
     // 文件仍在、行数够，但原行内容已被改写
     client: clientStub({ file: "line1\nline2\nconst target = 999;\n" }),
     logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "adopted");
@@ -132,6 +143,7 @@ test("文件被大幅截断、原行号远超现有行数时记 unknown", async 
     findings: repo,
     client: clientStub({ file: "only-one-line" }),
     logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "unknown", "整体重写时无法归因到单行，不能猜");
@@ -139,7 +151,7 @@ test("文件被大幅截断、原行号远超现有行数时记 unknown", async 
 
 test("head 未变时跳过，不改状态", async () => {
   const repo = repoWith([makeFinding()]);
-  const tracker = createAdoptionTracker({ findings: repo, client: clientStub({ latestHead: "old" }), logger: createSilentLogger() });
+  const tracker = createAdoptionTracker({ findings: repo, client: clientStub({ latestHead: "old" }), logger: createSilentLogger(), secretKey: TRACKING_SALT });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "pending", "没有新提交不应判定");
 });
@@ -151,6 +163,7 @@ test("行号漂移后仍按指纹定位并判定", async () => {
     findings: repo,
     client: clientStub({ file: "n1\nn2\nline1\nline2\nconst target = 1;\n" }),
     logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
   assert.equal(repo.rows[0].outcome, "ignored", "位移不算改动");
@@ -175,6 +188,7 @@ test("单条 MR 失败不影响其他 MR", async () => {
       },
     },
     logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
   assert.equal(calls, 2);
@@ -189,14 +203,110 @@ test("decideOutcome 四态组合正确", () => {
   assert.equal(decideOutcome(false, false), "ignored");
 });
 
-test("没有待追踪项时不请求 GitLab", async () => {
-  const repo = repoWith([makeFinding({ outcome: "adopted" })]);
+test("没有可追踪项（全是无指纹降级项）时不请求 GitLab", async () => {
+  const repo = repoWith([makeFinding({ outcome: "adopted", codeFingerprint: "" })]);
   let called = 0;
   const tracker = createAdoptionTracker({
     findings: repo,
     client: { getLatestHeadSha: async () => { called += 1; return "new"; }, getFileRaw: async () => "", getDiscussions: async () => [] },
     logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
   assert.equal(called, 0);
+});
+
+test("追踪调用必须携带任务级实例与解密后的令牌", async () => {
+  // 关键回归：漏传 token 会以未鉴权身份请求 GitLab 并返回 401，
+  // 所有建议被记为 unknown，采纳率永远为空。
+  const repo = repoWith([makeFinding({ gitlabUrl: "https://gitlab.task-level", gitlabTokenSealed: sealSecret("glpat-real", TRACKING_SALT) })]);
+  const calls: { raw: unknown[]; latest: unknown[]; discussions: unknown[] } = { raw: [], latest: [], discussions: [] };
+  const tracker = createAdoptionTracker({
+    findings: repo,
+    client: {
+      getLatestHeadSha: async (...args: unknown[]) => { calls.latest.push(args); return "new"; },
+      getFileRaw: async (...args: unknown[]) => { calls.raw.push(args); return "line1\nline2\nconst target = 1;\n"; },
+      getDiscussions: async (...args: unknown[]) => { calls.discussions.push(args); return []; },
+    },
+    logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
+  });
+  await tracker.runOnce();
+
+  assert.deepEqual(calls.latest[0], [1, 7, "https://gitlab.task-level", "glpat-real"]);
+  assert.deepEqual(calls.raw[0], [1, 7, "src/a.ts", "new", "https://gitlab.task-level", "glpat-real"]);
+  assert.deepEqual(calls.discussions[0], [1, 7, "https://gitlab.task-level", "glpat-real"]);
+});
+
+test("无凭据的建议被跳过，不发起未鉴权请求", async () => {
+  const repo = repoWith([makeFinding({ gitlabTokenSealed: "" })]);
+  let called = 0;
+  const tracker = createAdoptionTracker({
+    findings: repo,
+    client: {
+      getLatestHeadSha: async () => { called += 1; return "new"; },
+      getFileRaw: async () => { called += 1; return ""; },
+      getDiscussions: async () => { called += 1; return []; },
+    },
+    logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
+  });
+  await tracker.runOnce();
+  assert.equal(called, 0, "没有凭据就不能打 GitLab");
+  assert.equal(repo.rows[0].outcome, "pending", "保持待追踪，等凭据恢复");
+});
+
+test("令牌解密失败时按无凭据处理，不抛错", async () => {
+  const repo = repoWith([makeFinding({ gitlabTokenSealed: sealSecret("glpat-real", "别的盐") })]);
+  let called = 0;
+  const tracker = createAdoptionTracker({
+    findings: repo,
+    client: {
+      getLatestHeadSha: async () => { called += 1; return "new"; },
+      getFileRaw: async () => { called += 1; return ""; },
+      getDiscussions: async () => { called += 1; return []; },
+    },
+    logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
+  });
+  await tracker.runOnce();
+  assert.equal(called, 0);
+  assert.equal(repo.rows[0].outcome, "pending");
+});
+
+test("已判定的建议在新提交后重新评估（先忽略、后改进）", async () => {
+  // 关键回归：只扫 pending 会让「先无视、后改代码」永久停留 ignored，
+  // 采纳率系统性偏低，也与设计的「终态可被覆盖」状态机不一致。
+  const repo = repoWith([makeFinding({ outcome: "ignored", trackedAt: 100, headSha: "old" })]);
+  const tracker = createAdoptionTracker({
+    findings: repo,
+    client: {
+      getLatestHeadSha: async () => "new",
+      getFileRaw: async () => "line1\nline2\nconst target = 999;\n",
+      getDiscussions: async () => [],
+    },
+    logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
+  });
+  await tracker.runOnce();
+  assert.equal(repo.rows[0].outcome, "adopted", "新提交改了代码必须重判为 adopted");
+  assert.equal(repo.rows[0].headSha, "new", "记录本次评估的 head");
+});
+
+test("已按最新 head 判定过的建议不再重复请求 GitLab", async () => {
+  const repo = repoWith([makeFinding({ outcome: "ignored", trackedAt: 100, headSha: "new" })]);
+  let rawCalls = 0;
+  const tracker = createAdoptionTracker({
+    findings: repo,
+    client: {
+      getLatestHeadSha: async () => "new",
+      getFileRaw: async () => { rawCalls += 1; return ""; },
+      getDiscussions: async () => [],
+    },
+    logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
+  });
+  await tracker.runOnce();
+  assert.equal(rawCalls, 0, "同一版本不重复判定");
+  assert.equal(repo.rows[0].outcome, "ignored", "状态保持不变");
 });
