@@ -14,9 +14,9 @@
           end-placeholder="结束日期"
           value-format="x"
           size="default"
-          @change="load"
+          @change="refreshAll"
         />
-        <el-button :loading="loading" @click="load">
+        <el-button :loading="loading || adoptionLoading" @click="refreshAll">
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>
@@ -37,6 +37,70 @@
         </div>
       </article>
     </section>
+
+    <!-- 采纳情况：代码变化率与不可统计部分分开呈现 -->
+    <el-card v-loading="adoptionLoading">
+      <template #header>
+        <div class="card-header">
+          <span>采纳情况</span>
+          <el-tooltip
+            content="代码变化率 = 目标行被改动的建议数 ÷ 可统计建议数。指纹只能证明该行变了，不能证明改得对。"
+            placement="top"
+          >
+            <el-icon class="hint-icon"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </div>
+      </template>
+
+      <section class="stat-grid stat-grid--three">
+        <article v-for="card in adoptionCards" :key="card.label" class="stat-card">
+          <div class="stat-card__icon" :style="{ backgroundColor: card.bg, color: card.color }">
+            <el-icon><component :is="card.icon" /></el-icon>
+          </div>
+          <div class="stat-card__body">
+            <p class="stat-card__label">{{ card.label }}</p>
+            <p class="stat-card__value">
+              {{ card.value }}<span v-if="card.suffix" class="stat-card__suffix">{{ card.suffix }}</span>
+            </p>
+          </div>
+        </article>
+      </section>
+
+      <p v-if="adoption" class="adoption-note">
+        其中降级并入汇总 {{ adoption.untrackable.fallback }} 条、无法定位 {{ adoption.untrackable.unknown }} 条，
+        不计入采纳率分母。
+      </p>
+
+      <div class="dimension-grid adoption-grid">
+        <div v-for="dim in adoptionDimensions" :key="dim.key" class="adoption-block">
+          <h3 class="adoption-block__title">{{ dim.title }}</h3>
+          <el-table :data="dim.rows" size="small">
+            <el-table-column prop="name" :label="dim.nameLabel" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="cell-strong">{{ row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="tracked" label="可统计" width="90" align="right" sortable />
+            <el-table-column prop="adopted" label="已采纳" width="90" align="right" sortable />
+            <el-table-column label="采纳率" width="100" align="right" sortable :sort-by="'rate'">
+              <template #default="{ row }">
+                <span v-if="row.rate === null" class="cell-muted">—</span>
+                <span v-else class="score" :class="scoreClass(row.rate * 100)">{{ formatRate(row.rate) }}</span>
+              </template>
+            </el-table-column>
+            <template #empty>
+              <el-empty description="暂无采纳数据" :image-size="70" />
+            </template>
+          </el-table>
+        </div>
+      </div>
+
+      <div class="adoption-severity">
+        <h3 class="adoption-block__title">严重级分布</h3>
+        <ChartCard v-if="adoptionSeverity.length > 0" :option="severityOption" :height="barHeight(adoptionSeverity.length)" />
+        <el-empty v-else description="暂无采纳数据" :image-size="70" />
+      </div>
+    </el-card>
 
     <!-- 趋势：次数用柱、平均分用线，双 Y 轴 -->
     <el-card>
@@ -107,10 +171,10 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { Document, Refresh, Star, TrendCharts, User } from "@element-plus/icons-vue";
+import { Checked, Document, QuestionFilled, Refresh, Star, TrendCharts, User, WarnTriangleFilled } from "@element-plus/icons-vue";
 import ChartCard from "../components/ChartCard.vue";
 import { api, isApiError } from "../api/client.ts";
-import type { DimensionStat, ReviewStats } from "../types.ts";
+import type { AdoptionDimensionRow, AdoptionStats, DimensionStat, ReviewStats } from "../types.ts";
 
 const loading = ref(false);
 /** 时间筛选；null 表示不限。值为 [起, 止] 的毫秒时间戳字符串。 */
@@ -178,6 +242,75 @@ const trendOption = computed(() => ({
     },
   ],
 }));
+
+/** 采纳统计：与评分统计并行加载，任一失败不影响另一个区块。 */
+const adoption = ref<AdoptionStats | null>(null);
+const adoptionLoading = ref(false);
+
+/** 采纳率格式化为百分比；分母为 0（rate 为 null）时显示「—」。 */
+function formatRate(rate: number | null): string {
+  return rate === null ? "—" : `${(rate * 100).toFixed(1)}%`;
+}
+
+/** 采纳概览的三个指标：可统计、采纳率、不可统计。 */
+const adoptionCards = computed(() => {
+  const data = adoption.value;
+  return [
+    {
+      label: "可统计建议",
+      value: data ? String(data.total.tracked) : "—",
+      suffix: data ? " 条" : "",
+      icon: Checked,
+      color: "#10b981",
+      bg: "rgb(16 185 129 / 10%)",
+    },
+    {
+      label: "代码变化率",
+      value: data ? formatRate(data.total.rate) : "—",
+      suffix: "",
+      icon: TrendCharts,
+      color: "#5b5bd6",
+      bg: "rgb(91 91 214 / 10%)",
+    },
+    {
+      label: "不可统计",
+      value: data ? String(data.untrackable.fallback + data.untrackable.unknown) : "—",
+      suffix: data ? " 条" : "",
+      icon: WarnTriangleFilled,
+      color: "#f59e0b",
+      bg: "rgb(245 158 11 / 10%)",
+    },
+  ];
+});
+
+/** 采纳的两个维度排行。 */
+const adoptionDimensions = computed(() => {
+  const data = adoption.value;
+  return [
+    { key: "project", title: "采纳率 · 按项目", nameLabel: "项目", rows: data?.byProject ?? [] },
+    { key: "committer", title: "采纳率 · 按提交人", nameLabel: "提交人", rows: data?.byCommitter ?? [] },
+  ];
+});
+
+/** 严重级采纳分布：按严重级看哪类问题最容易被忽略。 */
+const adoptionSeverity = computed<AdoptionDimensionRow[]>(() => adoption.value?.bySeverity ?? []);
+
+/** 严重级分布图：横向条形对比可统计数与采纳数。 */
+const severityOption = computed(() => {
+  const rows = adoptionSeverity.value;
+  const names = rows.map((item) => item.name.toUpperCase()).reverse();
+  return {
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    legend: { data: ["可统计", "已采纳"], top: 0 },
+    grid: { left: 8, right: 40, bottom: 8, top: 40, containLabel: true },
+    xAxis: { type: "value", minInterval: 1 },
+    yAxis: { type: "category", data: names },
+    series: [
+      { name: "可统计", type: "bar", data: rows.map((item) => item.tracked).reverse(), itemStyle: { color: "#94a3b8" }, barMaxWidth: 18 },
+      { name: "已采纳", type: "bar", data: rows.map((item) => item.adopted).reverse(), itemStyle: { color: "#10b981" }, barMaxWidth: 18 },
+    ],
+  };
+});
 
 /** 两个维度的配置：结构相同、字段不同，合并成数组避免重复模板。 */
 const dimensions = computed(() => [
@@ -268,8 +401,36 @@ async function load(): Promise<void> {
   }
 }
 
-onMounted(() => {
+/**
+ * 拉取采纳统计。
+ *
+ * 与 `load` 分开：采纳数据依赖追踪任务的产出，可能为空或滞后，不应因为
+ * 它失败就让评分统计区块也显示错误。
+ */
+async function loadAdoption(): Promise<void> {
+  adoptionLoading.value = true;
+  try {
+    adoption.value = await api.get<AdoptionStats>("/api/reviews/adoption", {
+      from: range.value?.[0] || undefined,
+      to: range.value?.[1] || undefined,
+    });
+  } catch (error) {
+    if (!isApiError(error) || error.status !== 401) {
+      ElMessage.error(isApiError(error) ? error.message : "加载采纳统计失败");
+    }
+  } finally {
+    adoptionLoading.value = false;
+  }
+}
+
+/** 刷新全部区块：时间筛选变化时两个口径必须同步。 */
+function refreshAll(): void {
   void load();
+  void loadAdoption();
+}
+
+onMounted(() => {
+  refreshAll();
 });
 </script>
 
@@ -334,6 +495,34 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 400;
   color: var(--el-text-color-secondary);
+}
+
+/* ---------- 采纳情况 ---------- */
+.stat-grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.hint-icon {
+  color: var(--el-text-color-secondary);
+  cursor: help;
+}
+
+.adoption-note {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.adoption-grid {
+  margin-bottom: 16px;
+}
+
+.adoption-block__title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 
 /* ---------- 两维度并排 ---------- */

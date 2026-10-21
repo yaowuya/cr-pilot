@@ -181,3 +181,27 @@ export interface WecomContact {
   wecomUserId: string;
   updatedAt: number;
 }
+
+/**
+ * 一组维度的采纳聚合。
+ *
+ * `rate` 为 0-1；分母为 0 时为 null，页面必须显示「—」而不是 0%——
+ * 「没有可统计的数据」和「一条都没采纳」是两个完全不同的结论。
+ */
+export interface AdoptionDimensionRow {
+  name: string;
+  /** 可统计建议数（不含 unknown 与不可追踪项）。 */
+  tracked: number;
+  adopted: number;
+  rate: number | null;
+}
+
+/** 采纳统计：可统计部分与不可统计部分分开呈现。 */
+export interface AdoptionStats {
+  total: { tracked: number; adopted: number; rate: number | null };
+  /** 不可统计条数：`fallback` 为降级并入汇总，`unknown` 为无法定位。 */
+  untrackable: { fallback: number; unknown: number };
+  byProject: AdoptionDimensionRow[];
+  byCommitter: AdoptionDimensionRow[];
+  bySeverity: AdoptionDimensionRow[];
+}

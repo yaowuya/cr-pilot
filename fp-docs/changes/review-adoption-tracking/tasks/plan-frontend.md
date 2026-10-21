@@ -52,7 +52,7 @@
 
 ---
 
-- [ ] **Task frontend-001: 采纳统计类型与数据加载**
+- [x] **Task frontend-001: 采纳统计类型与数据加载**
 
 **Files:**
 - Modify: `web/src/types.ts`
@@ -122,7 +122,7 @@ git commit -m "feat: 统计页接入采纳统计数据"
 
 ---
 
-- [ ] **Task frontend-002: 采纳情况区块与视觉核对**
+- [x] **Task frontend-002: 采纳情况区块与视觉核对**
 
 **Files:**
 - Modify: `web/src/views/StatsView.vue:1-110`（模板）、`:270-330`（样式）

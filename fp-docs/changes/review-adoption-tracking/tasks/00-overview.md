@@ -25,5 +25,5 @@
 
 | End | Total | Complete | Remaining |
 | --- | ---: | ---: | ---: |
-| Backend | 9 | 0 | 9 |
-| Frontend | 2 | 0 | 2 |
+| Backend | 9 | 9 | 0 |
+| Frontend | 2 | 2 | 0 |

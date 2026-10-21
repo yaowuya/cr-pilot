@@ -62,7 +62,7 @@
 
 ---
 
-- [ ] **Task backend-001: 建议实体与单行指纹纯函数**
+- [x] **Task backend-001: 建议实体与单行指纹纯函数**
 
 **Files:**
 - Create: `src/domain/review-finding.ts`
@@ -150,7 +150,7 @@ git commit -m "feat: 新增评审建议实体与单行指纹"
 
 ---
 
-- [ ] **Task backend-002: review_findings 表与仓储实现**
+- [x] **Task backend-002: review_findings 表与仓储实现**
 
 **Files:**
 - Modify: `src/infrastructure/sqlite/database.ts`
@@ -272,7 +272,7 @@ git commit -m "feat: 新增 review_findings 表与仓储"
 
 ---
 
-- [ ] **Task backend-003: GitLab 客户端补文件读取与讨论解决状态**
+- [x] **Task backend-003: GitLab 客户端补文件读取与讨论解决状态**
 
 **Files:**
 - Modify: `src/domain/review-task.ts`
@@ -346,7 +346,7 @@ git commit -m "feat: GitLab 客户端支持 raw 文件与讨论解决状态"
 
 ---
 
-- [ ] **Task backend-004: 评审管线写入建议与指纹**
+- [x] **Task backend-004: 评审管线写入建议与指纹**
 
 **Files:**
 - Modify: `src/application/review-pipeline.ts:690-735`
@@ -408,7 +408,7 @@ git commit -m "feat: 评审管线写入建议明细与代码指纹"
 
 ---
 
-- [ ] **Task backend-005: webhook 识别新提交事件**
+- [x] **Task backend-005: webhook 识别新提交事件**
 
 **Files:**
 - Modify: `src/interfaces/http/webhook-parser.ts`
@@ -465,7 +465,7 @@ git commit -m "feat: webhook 区分新提交事件用于采纳追踪"
 
 ---
 
-- [ ] **Task backend-006: 采纳追踪用例**
+- [x] **Task backend-006: 采纳追踪用例**
 
 **Files:**
 - Create: `src/application/adoption-tracker.ts`
@@ -521,7 +521,7 @@ git commit -m "feat: 新增评审建议采纳追踪用例"
 
 ---
 
-- [ ] **Task backend-007: 采纳统计接口**
+- [x] **Task backend-007: 采纳统计接口**
 
 **Files:**
 - Modify: `src/interfaces/http/api/reviews.ts:83`
@@ -579,7 +579,7 @@ git commit -m "feat: 新增采纳率统计接口"
 
 ---
 
-- [ ] **Task backend-008: 配置项与组合根装配**
+- [x] **Task backend-008: 配置项与组合根装配**
 
 **Files:**
 - Modify: `src/shared/config.ts`
@@ -638,7 +638,7 @@ git commit -m "feat: 装配采纳追踪定时任务与配置"
 
 ---
 
-- [ ] **Task backend-009: OpenAPI 与全量回归**
+- [x] **Task backend-009: OpenAPI 与全量回归**
 
 **Files:**
 - Modify: `scripts/build-openapi.ts`
