@@ -241,8 +241,8 @@ async function startApplication(input: {
       logger.info("采纳追踪已关闭：ADOPTION_TRACKING_ENABLED=false");
     }
 
-    // 功能自检：页面按钮触发，验证 AI 评审与企微推送是否可用。
-    const verifier = createFeatureVerifier({ config, logger });
+    // 功能自检与正式 MR 通知共用同一映射仓储，避免自检绕过实际的提交人提及配置。
+    const verifier = createFeatureVerifier({ config, logger, wecomContacts });
 
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
     // 管理员权限门：只挂在账号管理路由上，其余管理页所有登录账号都能用。

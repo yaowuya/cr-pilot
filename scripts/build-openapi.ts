@@ -789,17 +789,21 @@ paths["/api/verify/wecom"] = {
       "",
       "**默认只预览**：`confirmSend` 不为 `true` 时只组装消息、不发送。真实发群不可撤销，必须显式确认。",
       "",
+      "**测试提交人**：必须传 `gitlabUsername`，服务端按现有企微映射解析提及对象；配置 userid 时真实提及，仅配置姓名时输出纯文本 `@姓名`。无映射时任务失败，不发送、不猜测其他人。",
+      "",
       "`webhook` 可覆盖规则文件里的群地址，用于发到测试群。",
     ].join("\n"),
     operationId: "submitVerifyWecom",
     security: [{ [BEARER]: [] }],
     requestBody: {
-      required: false,
+      required: true,
       content: {
         "application/json": {
           schema: {
             type: "object",
+            required: ["gitlabUsername"],
             properties: {
+              gitlabUsername: { type: "string", minLength: 1, pattern: "^[a-zA-Z0-9_.-]+$", description: "被测提交人的 GitLab 账号，必须已登记企微映射", example: "code-author" },
               confirmSend: { type: "boolean", description: "为 true 才真实发送到群", example: true },
               webhook: { type: "string", description: "覆盖规则文件里的群机器人地址", example: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx" },
             },
@@ -809,7 +813,7 @@ paths["/api/verify/wecom"] = {
     },
     responses: {
       200: jsonResponse("任务已提交", { type: "object", required: ["taskId"], properties: { taskId: { type: "string" } } }),
-      400: errorResponse("webhook 非法", { error: "webhook 必须是 http(s) 地址" }),
+      400: errorResponse("提交人账号缺失或 webhook 非法", { error: "请选择有效的测试提交人（GitLab 账号）" }),
       401: COMMON_ERRORS[401],
       409: errorResponse("已有企微验证在执行", { error: "已有企微验证正在执行，请等待完成" }),
     },

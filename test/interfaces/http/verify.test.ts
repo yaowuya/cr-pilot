@@ -9,7 +9,9 @@ import { openDatabase } from "../../../src/infrastructure/sqlite/database.ts";
 import { createAdminRepository } from "../../../src/infrastructure/sqlite/admin-repo.ts";
 import { createSilentLogger } from "../../../src/shared/logger.ts";
 import { deriveToken } from "../../../src/shared/crypto.ts";
-import type { FeatureVerifier, VerifyOutcome } from "../../../src/application/feature-verifier.ts";
+import { createFeatureVerifier, type FeatureVerifier, type VerifyOutcome, type VerifyWecomOptions } from "../../../src/application/feature-verifier.ts";
+import { createWecomContactRepository } from "../../../src/infrastructure/sqlite/wecom-contact-repo.ts";
+import { loadConfig } from "../../../src/shared/config.ts";
 
 const AUTH_SALT = "test-auth-salt";
 const ADMIN = "admin";
@@ -19,7 +21,7 @@ const ADMIN_PASSWORD = "admin-password";
 function fakeVerifier(options: {
   ai?: VerifyOutcome | (() => Promise<VerifyOutcome>);
   wecom?: VerifyOutcome | (() => Promise<VerifyOutcome>);
-  calls?: { wecom: { webhookOverride?: string; dryRun?: boolean }[] };
+  calls?: { wecom: VerifyWecomOptions[] };
 }) {
   const calls = options.calls ?? { wecom: [] };
   const success = (message: string): VerifyOutcome => ({ success: true, message, detail: "detail", durationMs: 10 });
@@ -78,11 +80,11 @@ function get(token: string, base: string, path: string): Promise<Response> {
 }
 
 /** 轮询任务直到结束（测试里验证器是即时的，通常一两次即可）。 */
-async function waitTask(token: string, base: string, taskId: string): Promise<{ status: string; message: string }> {
+async function waitTask(token: string, base: string, taskId: string): Promise<{ status: string; message: string; detail: string }> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const res = await get(token, base, `/api/verify/tasks/${taskId}`);
     assert.equal(res.status, 200);
-    const task = (await res.json()) as { status: string; message: string };
+    const task = (await res.json()) as { status: string; message: string; detail: string };
     if (task.status !== "running") return task;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -124,25 +126,27 @@ test("AI 验证失败时任务状态为 failed，不是 500", async () => {
 });
 
 test("企微默认只预览，不真的发送", async () => {
-  const calls: { wecom: { webhookOverride?: string; dryRun?: boolean }[] } = { wecom: [] };
+  const calls: { wecom: VerifyWecomOptions[] } = { wecom: [] };
   const { verifier } = fakeVerifier({ calls });
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
-    const { taskId } = (await (await post(token, base, "/api/verify/wecom", {})).json()) as { taskId: string };
+    const { taskId } = (await (await post(token, base, "/api/verify/wecom", { gitlabUsername: " code-author " })).json()) as { taskId: string };
     await waitTask(token, base, taskId);
     assert.equal(calls.wecom.length, 1);
     assert.equal(calls.wecom[0].dryRun, true, "未确认时必须走预览");
+    assert.equal(calls.wecom[0].gitlabUsername, "code-author", "所选提交人必须传到验证用例");
   });
 });
 
 test("企微 confirmSend=true 时才真实发送", async () => {
-  const calls: { wecom: { webhookOverride?: string; dryRun?: boolean }[] } = { wecom: [] };
+  const calls: { wecom: VerifyWecomOptions[] } = { wecom: [] };
   const { verifier } = fakeVerifier({ calls });
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
-    const { taskId } = (await (await post(token, base, "/api/verify/wecom", { confirmSend: true })).json()) as { taskId: string };
+    const { taskId } = (await (await post(token, base, "/api/verify/wecom", { confirmSend: true, gitlabUsername: "code-author" })).json()) as { taskId: string };
     await waitTask(token, base, taskId);
     assert.equal(calls.wecom[0].dryRun, false, "确认后必须真实发送");
+    assert.equal(calls.wecom[0].gitlabUsername, "code-author", "发送与预览必须使用同一提交人字段");
   });
 });
 
@@ -150,9 +154,9 @@ test("企微 webhook 覆盖参数必须合法", async () => {
   const { verifier } = fakeVerifier({});
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
-    const bad = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhook: "not-a-url" });
+    const bad = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhook: "not-a-url", gitlabUsername: "code-author" });
     assert.equal(bad.status, 400);
-    const ok = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhook: "https://example.com/hook" });
+    const ok = await post(token, base, "/api/verify/wecom", { confirmSend: true, webhook: "https://example.com/hook", gitlabUsername: "code-author" });
     assert.equal(ok.status, 200);
   });
 });
@@ -186,5 +190,40 @@ test("查询不存在的任务返回 404", async () => {
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
     assert.equal((await get(token, base, "/api/verify/tasks/not-exist")).status, 404);
+  });
+});
+
+test("自检缺少或伪造提交人账号时返回 400，不启动验证任务", async () => {
+  const { verifier, calls } = fakeVerifier({});
+  const { app, token } = buildHarness(verifier);
+  await withServer(app, async (base) => {
+    for (const body of [{}, { gitlabUsername: 12 }, { gitlabUsername: "  " }, { gitlabUsername: "<@all>" }]) {
+      const res = await post(token, base, "/api/verify/wecom", { ...body, confirmSend: true });
+      assert.equal(res.status, 400);
+      assert.match((await res.json() as { error: string }).error, /提交人/);
+    }
+    assert.equal(calls.wecom.length, 0);
+  });
+});
+
+test("HTTP 自检通过真实用例与内存映射仓储，预览末行保留提交人提及", async (t) => {
+  // 不只验证参数桩：锁定实际 HTTP → 用例 → 映射仓储 → 消息模板这一整段链路。
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const contacts = createWecomContactRepository(db);
+  contacts.upsert({ gitlabUsername: "selected-author", wecomName: "测试提交人", wecomUserId: "selected_member" });
+  const verifier = createFeatureVerifier({ config: loadConfig({}), logger: createSilentLogger(), wecomContacts: contacts });
+  const { app, token } = buildHarness(verifier);
+  await withServer(app, async (base) => {
+    const res = await post(token, base, "/api/verify/wecom", {
+      gitlabUsername: "selected-author",
+      confirmSend: false,
+      webhook: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-test",
+    });
+    assert.equal(res.status, 200);
+    const { taskId } = await res.json() as { taskId: string };
+    const task = await waitTask(token, base, taskId);
+    assert.equal(task.status, "success");
+    assert.ok(task.detail.endsWith("\n\n<@selected_member>"));
   });
 });

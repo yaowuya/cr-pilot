@@ -263,7 +263,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
    * 解析提交人的企微提及目标。
    *
    * 优先用页面登记的映射：userid 能真实提醒，未登记 userid 时用登记的中文名。
-   * 没有映射时退回 GitLab 作者显示名（通常是中文名），只做纯文本展示。
+   * 没有映射时退回 GitLab 作者显示名；仅在通知展示中去掉匹配的末尾 [账号]，
+   * 再交给安全渲染器生成纯文本 @姓名，不改变评审记录里的原始名字。
    * 作者未能解析时不给提及目标：退回的触发者名字不是提交人，@ 他会提醒错人。
    * 绝不使用 GitLab 账号拼 `<@...>`——账号不是企微 userid，那是错误的 @。
    * 查询异常按「无映射」处理：通知本身不能因为映射表读失败而中断。
@@ -282,7 +283,17 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         });
       }
     }
-    return author.name ? { name: author.name } : undefined;
+    // GitLab 显示名可能是「中文名[登录名]」。直接交给提及渲染器会因方括号被
+    // 整条拒绝；这里只移除与已解析作者账号一致的末尾标签，不改统计里的原始姓名。
+    // 必须先检查原始换行/尖括号，不能靠 trim 或去后缀把注入内容清洗成可用姓名。
+    if (/[\r\n<>]/.test(author.name)) return undefined;
+    const name = author.name.trim();
+    const username = author.username.trim();
+    const suffix = `[${username}]`;
+    const displayName = username && name.toLowerCase().endsWith(suffix.toLowerCase())
+      ? name.slice(0, -suffix.length).trim()
+      : name;
+    return displayName ? { name: displayName } : undefined;
   }
 
   return {
@@ -498,13 +509,23 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       if (deps.wecomNotifier && ruleSet.wecomWebhookUrl) {
         const score = parseReviewScore(finalComment);
         if (shouldNotifyByScore(score, ruleSet.wecomScoreThreshold)) {
+          const mention = resolveMention(author);
+          if (!renderWecomMention(mention)) {
+            // 推送成功只证明消息送达接口，不能掩盖提交人提及被省略的事实。
+            // 日志仅保留定位所需的 MR 标识与原因，不记录凭据或完整通知内容。
+            logger.warn("本次企微通知未追加提交人提及", {
+              项目ID: task.projectId,
+              MR编号: task.iid,
+              原因: author.resolved ? "作者姓名无法安全展示，且没有有效企微映射" : "未成功解析 MR 作者，不能提及触发者",
+            });
+          }
           const message = buildWecomMessage({
             projectId: task.projectId,
             iid: task.iid,
             fullName: task.fullName,
             sourceBranch: task.sourceBranch,
             targetBranch: task.targetBranch,
-            mention: resolveMention(author),
+            mention,
             score,
             comment: finalComment,
             // 摘要消息附 MR 链接，接收者点一下就能看完整评审。

@@ -291,6 +291,59 @@ test("评分低于阈值且配置 webhook 时推送企微，末行提及 MR 作�
   assert.deepEqual(authorLookups, [[1751, "https://gitlab.example.com", "test-token"]], "复用同一次作者查询及任务级实例信息");
 });
 
+test("正式通知正确处理作者姓名的账号后缀，且保留原始统计姓名与映射优先级", async (t) => {
+  const cases: { name: string; expected: string; mapping?: { wecomName: string; wecomUserId: string } }[] = [
+    { name: "王秦[wangqin]", expected: "@王秦" },
+    { name: " 王秦 [WangQin] ", expected: "@王秦" },
+    { name: "王秦", expected: "@王秦" },
+    { name: "欧阳·王秦[wangqin]", expected: "@欧阳·王秦" },
+    { name: "王秦[wangqin]", mapping: { wecomName: "企微王秦", wecomUserId: "" }, expected: "@企微王秦" },
+    { name: "王秦[wangqin]", mapping: { wecomName: "企微王秦", wecomUserId: "synthetic_member" }, expected: "<@synthetic_member>" },
+  ];
+  for (const scenario of cases) {
+    await t.test(`${scenario.name} → ${scenario.expected}`, async () => {
+      const sent: string[] = [];
+      const records: ReviewRecord[] = [];
+      const pipeline = createReviewPipeline({
+        client: fakeClient({ getUser: async (id) => ({ id, name: scenario.name, username: "wangqin" }) }),
+        rules: { resolve: () => ({ systemPrompt: "SYS", userPrompt: "评：{diffs_text}", wecomWebhookUrl: "https://example.invalid/wecom", wecomScoreThreshold: 80 }) } as ReviewRules,
+        reviewer: reviewerReturning("批评论", "总分：60 分"),
+        logger: createSilentLogger(),
+        batchMaxTokens: 6000,
+        recordWriter: { insert: (record) => { records.push(record); } },
+        wecomNotifier: { send: async (_url, message) => { sent.push(message); } },
+        wecomContacts: scenario.mapping ? { findByGitlabUsername: () => scenario.mapping } : undefined,
+      });
+      await pipeline.run({ ...task, authorId: 1751, triggerUserName: "无关触发者" });
+      assert.equal(sent.length, 1);
+      assert.ok(sent[0].endsWith(`\n\n${scenario.expected}`), "正式评审完成后的群通知必须保留末行中文名或真实成员提及");
+      assert.equal(sent[0].includes("无关触发者"), false);
+      assert.equal(records[0].committerName, scenario.name, "仅调整通知显示，不改统计里的原始作者名");
+    });
+  }
+});
+
+test("正式通知不会把不匹配的账号标签或注入内容清洗成提及，并记录省略原因", async (t) => {
+  for (const name of ["王秦[other]", "王秦\n[wangqin]", "王秦[wangqin]\n<@all>", "[wangqin]"]) {
+    await t.test(JSON.stringify(name), async () => {
+      const sent: string[] = [];
+      const warnings: string[] = [];
+      const pipeline = createReviewPipeline({
+        client: fakeClient({ getUser: async (id) => ({ id, name, username: "wangqin" }) }),
+        rules: { resolve: () => ({ systemPrompt: "SYS", userPrompt: "评：{diffs_text}", wecomWebhookUrl: "https://example.invalid/wecom", wecomScoreThreshold: 80 }) } as ReviewRules,
+        reviewer: reviewerReturning("批评论", "总分：60 分"),
+        logger: { ...createSilentLogger(), warn: (message) => { warnings.push(message); } },
+        batchMaxTokens: 6000,
+        wecomNotifier: { send: async (_url, message) => { sent.push(message); } },
+      });
+      await pipeline.run({ ...task, authorId: 1751, triggerUserName: "无关触发者" });
+      assert.equal(sent.length, 1, "不安全姓名不能中断低分通知");
+      assert.equal(sent[0].includes("@"), false, "只移除与作者账号一致的末尾标签，不放宽提及安全边界");
+      assert.ok(warnings.some((message) => message.includes("未追加提交人提及")), "发送成功不能掩盖没有提及的原因");
+    });
+  }
+});
+
 test("已登记企微映射时使用 userid 真实提醒提交人", async () => {
   const client = fakeClient({
     getUser: async (id) => ({ id, name: "王秦", username: "samxiao" }),
