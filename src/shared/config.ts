@@ -53,6 +53,20 @@ export interface AppConfig {
    * ——空盐会让令牌可预测。
    */
   authSalt: string;
+  /**
+   * 是否启用评审建议采纳追踪，来自 `ADOPTION_TRACKING_ENABLED`（默认开启）。
+   *
+   * 追踪会为每条建议追加 GitLab 文件读取与讨论查询，部署方可能需要关闭
+   * 以控制调用量；关闭后已落库建议保持不变，只是不再更新判定。
+   */
+  adoptionTrackingEnabled: boolean;
+  /**
+   * 采纳追踪的扫描间隔毫秒，来自 `ADOPTION_SYNC_INTERVAL_MS`（默认 10 分钟）。
+   *
+   * 间隔过短会放大 GitLab 调用量，过长会让采纳数据滞后；默认值按「每小时
+   * 数个 MR 提交」的常见节奏取折中。
+   */
+  adoptionSyncIntervalMs: number;
 }
 
 const DEFAULT_PORT = 5001;
@@ -72,6 +86,10 @@ const DEFAULT_QUEUE_CONCURRENCY = 5;
 const DEFAULT_LOG_FILE = "";
 /** 数据库默认路径：容器内解析到 WORKDIR 下的 data 目录（挂持久卷）。 */
 const DEFAULT_DB_PATH = "./data/cr-pilot.db";
+/** 采纳追踪默认开启：这是功能本身，关闭属于部署侧的显式降级。 */
+const DEFAULT_ADOPTION_TRACKING_ENABLED = true;
+/** 采纳追踪默认间隔 10 分钟：兼顾数据新鲜度与 GitLab 调用量。 */
+const DEFAULT_ADOPTION_SYNC_INTERVAL_MS = 600000;
 
 /**
  * 读取服务配置。
@@ -103,6 +121,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     adminUsername: env.ADMIN_USERNAME?.trim() || "",
     adminPassword: env.ADMIN_PASSWORD?.trim() || "",
     authSalt: env.AUTH_SALT?.trim() || "",
+    adoptionTrackingEnabled: readBooleanFlag(env, "ADOPTION_TRACKING_ENABLED", DEFAULT_ADOPTION_TRACKING_ENABLED),
+    adoptionSyncIntervalMs: readPositiveInt(env, "ADOPTION_SYNC_INTERVAL_MS", DEFAULT_ADOPTION_SYNC_INTERVAL_MS),
   };
 }
 
@@ -124,10 +144,15 @@ function normalizeUrl(value: string | undefined): string {
   return value?.trim().replace(/\/+$/, "") ?? "";
 }
 
-/** 读取 0/1 布尔开关。空值走 false，其它值抛错，避免拼错后静默关闭安全开关。 */
-function readBooleanFlag(env: NodeJS.ProcessEnv, name: string): boolean {
+/**
+ * 读取开关值。
+ *
+ * `fallback` 用于「键缺失时取默认」：采纳追踪默认开启，不能沿用
+ * `readBooleanFlag` 的「空值即 false」语义，否则默认行为会与设计相反。
+ */
+function readBooleanFlag(env: NodeJS.ProcessEnv, name: string, fallback = false): boolean {
   const raw = env[name]?.trim();
-  if (!raw) return false;
+  if (!raw) return fallback;
   if (raw === "1" || raw === "true") return true;
   if (raw === "0" || raw === "false") return false;
   throw new Error(`环境变量 ${name} 必须是 0 或 1，实际收到 ${raw}`);

@@ -22,6 +22,8 @@ const config = {
   adminUsername: "",
   adminPassword: "",
   authSalt: "test-salt",
+  adoptionTrackingEnabled: false,
+  adoptionSyncIntervalMs: 600000,
   gitlabUrl: "https://gitlab.example.com",
   gitlabInsecureTls: false,
   gitlabApiTimeoutMs: 1000,
