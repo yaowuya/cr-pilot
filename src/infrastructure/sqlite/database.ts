@@ -88,6 +88,31 @@ CREATE TABLE IF NOT EXISTS wecom_contacts (
   wecom_userid TEXT NOT NULL DEFAULT '',
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS review_findings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  record_id INTEGER NOT NULL,
+  project_id INTEGER NOT NULL,
+  mr_iid INTEGER NOT NULL,
+  marker TEXT NOT NULL,
+  finding_id TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  path TEXT NOT NULL,
+  line INTEGER NOT NULL,
+  line_key TEXT NOT NULL,
+  base_sha TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  code_fingerprint TEXT NOT NULL DEFAULT '',
+  discussion_id TEXT,
+  note_id INTEGER,
+  outcome TEXT NOT NULL DEFAULT 'pending',
+  tracked_at INTEGER,
+  created_at INTEGER NOT NULL,
+  UNIQUE (head_sha, marker),
+  FOREIGN KEY (record_id) REFERENCES review_records (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_findings_tracking ON review_findings (outcome, tracked_at);
+CREATE INDEX IF NOT EXISTS idx_findings_record ON review_findings (record_id);
+CREATE INDEX IF NOT EXISTS idx_findings_project ON review_findings (project_id, created_at DESC);
 `;
 
 /** 已注册过实验特性静默处理器，避免重复注册监听。 */
