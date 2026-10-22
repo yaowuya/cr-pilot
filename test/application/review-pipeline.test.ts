@@ -616,12 +616,15 @@ test("评审失败时仍写入失败记录且含错误原因", async () => {
     reviewer: { review: async () => { throw new Error("模型超时"); } },
     logger: createSilentLogger(),
     batchMaxTokens: 6000,
+    retryDelayMs: 1,
     recordWriter: { insert: (record) => inserted.push(record) },
   });
   await pipeline.run(task);
   assert.equal(inserted.length, 1);
   assert.equal(inserted[0].result, "failed");
-  assert.equal(inserted[0].errorMessage, "模型超时");
+  // 重试耗尽后所有批次都失败：错误信息会带批次定位，但仍必须包含原始原因。
+  assert.match(String(inserted[0].errorMessage), /模型超时/);
+  assert.match(String(inserted[0].errorMessage), /批次 1/);
 });
 
 test("拉取失败时写入失败记录", async () => {
@@ -1450,4 +1453,97 @@ test("行号不在变更行时，日志按原因分类计数", async () => {
   assert.equal(summary.fields?.发布条数, 0);
   assert.equal(summary.fields?.降级条数, 1);
   assert.equal(summary.fields?.行号非法条数, 1, "原因应能区分「行号不在变更行」");
+});
+
+// ============ 批次重试与跳过 ============
+
+/** 构造一个「前 n 次批调用失败、之后成功」的 reviewer，记录批调用次数。 */
+function flakyReviewer(failTimes: number, options: { alwaysFail?: boolean } = {}) {
+  let batchCalls = 0;
+  const reviewer: Reviewer = {
+    review: async ({ systemPrompt }) => {
+      if (!isSummaryCall(systemPrompt)) {
+        batchCalls += 1;
+        if (options.alwaysFail || batchCalls <= failTimes) throw new Error("pi 返回了空评审文本");
+      }
+      return { text: isSummaryCall(systemPrompt) ? "总分：80 分" : "批评论", model: "m" };
+    },
+  };
+  return { reviewer, batchCalls: () => batchCalls };
+}
+
+test("单批首次失败后重试成功，评审结果包含该批内容", async () => {
+  const client = fakeClient();
+  const { reviewer, batchCalls } = flakyReviewer(1);
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer,
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+
+  await pipeline.run(task);
+  assert.equal(batchCalls(), 2, "第一次失败、第二次成功，共调用两次");
+  assert.equal(client.notes.length, 1, "重试成功后仍应回写评论");
+  assert.equal(inserted[0].result, "success");
+});
+
+test("单批重试耗尽后跳过该批，其余批次继续评审", async () => {
+  // 三个文件让分批结果足够多，确保至少两批；用极小预算强制拆批。
+  const changes: Change[] = [1, 2, 3].map((index) => ({
+    newPath: `f${index}.ts`,
+    oldPath: `f${index}.ts`,
+    diff: `@@ -0,0 +1,2 @@\n+const a${index} = 1;\n+const b${index} = 2;`,
+  }));
+  const calls: { batch: boolean; index: number }[] = [];
+  let batchIndex = 0;
+  const reviewer: Reviewer = {
+    review: async ({ systemPrompt, code }) => {
+      if (isSummaryCall(systemPrompt)) return { text: "总分：80 分", model: "m" };
+      batchIndex += 1;
+      calls.push({ batch: true, index: batchIndex });
+      // 只让第一批永久失败；第一批的三次尝试全部抛错。
+      if (code.includes("f1.ts")) throw new Error("pi 返回了空评审文本");
+      return { text: "批评论", model: "m" };
+    },
+  };
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient({ getMergeRequestChanges: async () => changes }),
+    rules,
+    reviewer,
+    logger: createSilentLogger(),
+    batchMaxTokens: 30,
+    retryDelayMs: 1,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+
+  await pipeline.run(task);
+  const failedBatchCalls = calls.filter((call) => call.batch).length;
+  assert.ok(failedBatchCalls >= 3, "失败批应尝试 3 次（1 次 + 2 次重试）");
+  assert.equal(inserted[0].result, "success", "跳过失败批后整体仍算完成");
+  assert.match(String(inserted[0].errorMessage), /f1\.ts|批次 1/, "记录里必须标出被跳过的批次");
+});
+
+test("全部批次都失败时不回写评论并记为失败", async () => {
+  const client = fakeClient();
+  const { reviewer, batchCalls } = flakyReviewer(0, { alwaysFail: true });
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer,
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    retryDelayMs: 1,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+
+  await pipeline.run(task);
+  assert.equal(batchCalls(), 3, "单批最多尝试 3 次");
+  assert.equal(client.notes.length, 0, "没有任何可用评审内容时不应回写");
+  assert.equal(inserted[0].result, "failed");
 });
