@@ -94,6 +94,8 @@ interface PipelineDeps {
   batchMaxTokens: number;
   /** 单批评审/汇总的超时毫秒数，缺省 1200000（20 分钟）。 */
   timeoutMs?: number;
+  /** 单批评审失败后的重试间隔基数（毫秒）；测试可缩短。 */
+  retryDelayMs?: number;
   /** 企业微信通知器，缺省时不推送企微。 */
   wecomNotifier?: WecomNotifier;
   /** 评审记录写入端口，缺省时不落库（便于既有调用方与测试保持原行为）。 */
@@ -126,6 +128,29 @@ interface PipelineDeps {
 
 /** 单批评审/汇总的默认超时毫秒数，与 config 的默认评审超时一致（20 分钟）。 */
 const DEFAULT_TIMEOUT_MS = 1200000;
+
+/** 单批评审的最大尝试次数（含首次）。 */
+const BATCH_MAX_ATTEMPTS = 3;
+
+/** 批次重试的基础间隔毫秒数；第 n 次重试等待 n 倍。 */
+const DEFAULT_RETRY_DELAY_MS = 1000;
+
+/**
+ * 判断批次失败是否值得重试。
+ *
+ * 空文本、超时、网络抖动属于瞬时故障，重试有意义；鉴权失败、参数错误这类
+ * 确定性错误重试只会拖慢任务，直接跳过。宁可少重试，也不要让一条坏配置
+ * 把每个批次都拖成 3 倍耗时。
+ */
+function isRetryableBatchError(error: unknown): boolean {
+  const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  if (/EmptyReviewError|空评审文本|timeout|timed out|超时|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed/i.test(message)) {
+    return true;
+  }
+  // 明确的鉴权/权限/参数类错误不重试。
+  if (/401|403|Unauthorized|Forbidden|invalid.?api.?key|400 Bad Request/i.test(message)) return false;
+  return true;
+}
 
 /**
  * 本次评审实际使用的 prompt 来源。
@@ -274,6 +299,7 @@ export interface InlineCommentStats {
 export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   const { client, rules, reviewer, logger, batchMaxTokens } = deps;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const retryDelayMs = deps.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
 
   /**
    * 加密任务级 GitLab 令牌，供追踪定时任务使用。
@@ -436,6 +462,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       logger.info("分批完成", { 项目ID: task.projectId, MR编号: task.iid, 批次数: batches.length });
 
       const batchResults: string[] = [];
+      /** 重试耗尽后被跳过的批次及其原因，用于记录与日志。 */
+      const skippedBatches: { batch: number; total: number; error: string }[] = [];
       for (const [index, batch] of batches.entries()) {
         const diffsText = batch.map((change) => `diff --git a/${change.oldPath} b/${change.newPath}\n${change.diff}`).join("\n\n");
         // 仓库规则的 user_prompt 是用户消息全文模板：渲染占位符后作为本轮用户消息。
@@ -447,35 +475,78 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             ? `\n\n---\n本次评审的 head_sha（供输出格式要求中的 reviewed_head_sha 原样回显）：${refs.headSha}`
             : "");
         const batchStartedAt = Date.now();
-        try {
-          const result = await reviewer.review({
-            // 统一追加结构化契约：行内评论依赖它，不能寄望每条 prompt 都写。
-            systemPrompt: ruleSet.systemPrompt + INLINE_COMMENT_CONTRACT,
-            code: userMessage,
-            context: undefined,
-            signal: AbortSignal.timeout(timeoutMs),
-            provider: llmTarget?.provider.name,
-            model: llmTarget?.model,
-          });
-          batchResults.push(result.text);
-          logger.info("单批评审完成", {
+        let attempt = 0;
+        let lastError: unknown;
+        let succeeded = false;
+        while (attempt < BATCH_MAX_ATTEMPTS && !succeeded) {
+          attempt += 1;
+          try {
+            const result = await reviewer.review({
+              // 统一追加结构化契约：行内评论依赖它，不能寄望每条 prompt 都写。
+              systemPrompt: ruleSet.systemPrompt + INLINE_COMMENT_CONTRACT,
+              code: userMessage,
+              context: undefined,
+              signal: AbortSignal.timeout(timeoutMs),
+              provider: llmTarget?.provider.name,
+              model: llmTarget?.model,
+            });
+            batchResults.push(result.text);
+            succeeded = true;
+            logger.info("单批评审完成", {
+              项目ID: task.projectId,
+              MR编号: task.iid,
+              批次: `${index + 1}/${batches.length}`,
+              评审字数: result.text.length,
+              尝试次数: attempt,
+              耗时毫秒: Date.now() - batchStartedAt,
+            });
+          } catch (error) {
+            lastError = error;
+            const message = error instanceof Error ? error.message : String(error);
+            // 瞬时故障重试；确定性错误（鉴权/参数）重试无意义，直接放弃该批。
+            const retryable = isRetryableBatchError(error);
+            const willRetry = retryable && attempt < BATCH_MAX_ATTEMPTS;
+            if (willRetry) {
+              logger.warn("单批评审失败，准备重试", {
+                项目ID: task.projectId,
+                MR编号: task.iid,
+                批次: `${index + 1}/${batches.length}`,
+                尝试: `${attempt}/${BATCH_MAX_ATTEMPTS}`,
+                错误: message,
+              });
+              await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+            }
+          }
+        }
+        if (!succeeded) {
+          const message = lastError instanceof Error ? lastError.message : String(lastError);
+          skippedBatches.push({ batch: index + 1, total: batches.length, error: message });
+          logger.error("单批评审重试耗尽，跳过该批继续其余批次", {
             项目ID: task.projectId,
             MR编号: task.iid,
             批次: `${index + 1}/${batches.length}`,
-            评审字数: result.text.length,
-            耗时毫秒: Date.now() - batchStartedAt,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          logger.error("单批评审失败，任务结束", {
-            项目ID: task.projectId,
-            MR编号: task.iid,
-            批次: `${index + 1}/${batches.length}`,
+            尝试次数: attempt,
             错误: message,
           });
-          writeRecord({ result: "failed", errorMessage: message, changeCount: changes.length, batchCount: batches.length });
-          return;
         }
+      }
+
+      if (batchResults.length === 0) {
+        // 所有批次都被跳过：没有任何可汇总内容，按失败结束而不是回写空评论。
+        const reason = skippedBatches.map((item) => `批次 ${item.batch}: ${item.error}`).join("；");
+        logger.error("所有批批评审均失败，任务结束", {
+          项目ID: task.projectId,
+          MR编号: task.iid,
+          批次数: batches.length,
+          错误: reason,
+        });
+        writeRecord({
+          result: "failed",
+          errorMessage: `全部 ${batches.length} 批评审失败：${reason}`,
+          changeCount: changes.length,
+          batchCount: batches.length,
+        });
+        return;
       }
 
       const summaryStartedAt = Date.now();
@@ -593,11 +664,16 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       }
 
       const finalScore = parseReviewScore(finalComment);
+      // 有批次被跳过时结果不完整：日志与记录都要留痕，不能让人以为评审覆盖了全部变更。
+      const skippedSummary = skippedBatches.map((item) => `批次 ${item.batch}/${item.total}`).join("、");
       logger.info("管线完成", {
         项目ID: task.projectId,
         MR编号: task.iid,
         总耗时毫秒: Date.now() - startedAt,
         行内评论数: inline.published.size,
+        批次数: batches.length,
+        跳过批次数: skippedBatches.length,
+        ...(skippedBatches.length > 0 ? { 跳过批次: skippedSummary } : {}),
       });
       const recordId = writeRecord({
         result: "success",
@@ -606,6 +682,10 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         commentUrl,
         changeCount: changes.length,
         batchCount: batches.length,
+        // 部分批次失败时保留原因：记录仍是 success（有可用评审），但必须能看出缺口。
+        ...(skippedBatches.length > 0
+          ? { errorMessage: `已跳过 ${skippedBatches.length}/${batches.length} 批评审：${skippedSummary}` }
+          : {}),
       });
       // 建议明细必须在记录写入后落库：它用 record_id 做外键，且统计按记录关联提交人。
       // 拿不到记录 ID（未注入 recordWriter 或实现返回 void）时跳过，保持既有行为。
