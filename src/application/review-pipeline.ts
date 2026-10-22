@@ -227,6 +227,33 @@ interface InlinePublishOutcome {
    * 落库后才能在统计里如实计入「不可追踪」，而不是凭空消失。
    */
   findings: Omit<PendingFinding, "recordId">[];
+  /** 本轮诊断计数：解释「为什么行内评论是 0」，只用于日志，不参与业务判断。 */
+  stats: InlineCommentStats;
+}
+
+/**
+ * 行内评论处理结果的原因分解。
+ *
+ * 只看「行内评论数」无法区分「模型没给问题」与「给了但没定位成功」，
+ * 两种情况处置完全不同：前者是模型输出问题，后者是解析或锚点问题。
+ */
+export interface InlineCommentStats {
+  /** 从结构化块 + Markdown 兜底中解析出的 finding 总数。 */
+  parsed: number;
+  /** 成功发布的行内评论数。 */
+  published: number;
+  /** 整批未能解析、原样并入汇总的批次数。 */
+  fallbackBatches: number;
+  /** 其中「完全没有结构化块且正文无可定位信息」的批次数。 */
+  noStructuredBlockBatches: number;
+  /** 已解析但因行号不在 diff 变更行而降级的条数。 */
+  invalidLine: number;
+  /** 已解析但因评审 head 与当前 head 不一致而整批降级的条数。 */
+  headMismatch: number;
+  /** 已解析但因单条发布失败而降级的条数。 */
+  publishFailed: number;
+  /** 已解析但文件不在本次变更范围内而降级的条数。 */
+  missingChange: number;
 }
 
 /**
@@ -487,6 +514,20 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       if (inline.fallback.length > 0) {
         finalComment = appendFallback(finalComment, inline.fallback);
       }
+      // 记录原因分解：只写「行内评论数」无法区分「模型没给问题」与「给了但没定位成功」。
+      logger.info("行内评论处理完成", {
+        项目ID: task.projectId,
+        MR编号: task.iid,
+        解析条数: inline.stats.parsed,
+        发布条数: inline.stats.published,
+        降级条数: inline.stats.invalidLine + inline.stats.publishFailed + inline.stats.missingChange,
+        降级批次: inline.stats.fallbackBatches,
+        无结构化块批次: inline.stats.noStructuredBlockBatches,
+        行号非法条数: inline.stats.invalidLine,
+        发布失败条数: inline.stats.publishFailed,
+        文件不在变更条数: inline.stats.missingChange,
+        head不一致条数: inline.stats.headMismatch,
+      });
       // 汇总评论需剔除已成功发行内评论的条目，避免同一问题在 MR 上出现两次
       // （proposal 变更点 3）。汇总输入含各批 finding 正文，因此按正文匹配剔除；
       // 匹配不到的条目保持原样，宁可有冗余也不静默删掉模型给出的内容。
@@ -733,6 +774,16 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     const publishedBodies = new Set<string>();
     const fallback: string[] = [];
     const findings: Omit<PendingFinding, "recordId">[] = [];
+    const stats: InlineCommentStats = {
+      parsed: 0,
+      published: 0,
+      fallbackBatches: 0,
+      noStructuredBlockBatches: 0,
+      invalidLine: 0,
+      headMismatch: 0,
+      publishFailed: 0,
+      missingChange: 0,
+    };
     const { task, changes, batchResults } = input;
 
     // 没有 reviewJson 时无从判断，全部按「不可定位」处理。
@@ -759,12 +810,22 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         return;
       }
       fallback.push(raw);
+      stats.fallbackBatches += 1;
+      stats.noStructuredBlockBatches += 1;
     });
-    if (parsedList.length === 0) return { published, publishedBodies, fallback, findings };
+    if (parsedList.length === 0) return { published, publishedBodies, fallback, findings, stats };
 
     const refs = input.refs;
     if (!refs) {
-      return { published, publishedBodies, fallback: fallback.concat(parsedList.map((item) => item.source)), findings };
+      // 取不到 diff version 时无法校验行锚点，整批并入汇总；这里如实计入原因。
+      for (const item of parsedList) stats.headMismatch += item.review.findings.length;
+      return {
+        published,
+        publishedBodies,
+        fallback: fallback.concat(parsedList.map((item) => item.source)),
+        findings,
+        stats,
+      };
     }
 
     // 路径 → 合法行号集合。重命名文件同时以 oldPath 与 newPath 为键，
@@ -802,6 +863,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           当前head: refs.headSha,
         });
         fallback.push(source);
+        stats.headMismatch += review.findings.length;
         continue;
       }
 
@@ -814,6 +876,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         const sets = change ? lineSets.get(finding.path) : undefined;
         if (!change || !sets) {
           fallback.push(renderFallbackFinding(finding));
+          stats.parsed += 1;
+          stats.missingChange += 1;
           // 文件不在本次变更内同样没有行锚点：记录一条空指纹建议，
           // 让统计能区分「不可追踪」与「还没追踪」。
           findings.push({
@@ -863,6 +927,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           gitlabTokenSealed: sealToken(task.gitlabToken),
         };
 
+        stats.parsed += 1;
         if (!allowed.has(finding.line)) {
           logger.warn("finding 行号不是 diff 变更行，降级进汇总", {
             项目ID: task.projectId,
@@ -871,6 +936,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             行号: finding.line,
           });
           fallback.push(renderFallbackFinding(finding));
+          stats.invalidLine += 1;
           // 该条进入汇总评论后没有行锚点，但仍要在统计里体现为不可追踪。
           findings.push(baseFinding);
           continue;
@@ -883,6 +949,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           // 同一版本的建议被计两次。
           published.add(markerId);
           publishedBodies.add(finding.body);
+          stats.published += 1;
           continue;
         }
 
@@ -903,6 +970,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           );
           published.add(markerId);
           publishedBodies.add(finding.body);
+          stats.published += 1;
           findings.push({
             ...baseFinding,
             codeFingerprint: lineText === null ? "" : fingerprintLine(lineText),
@@ -917,8 +985,15 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             错误: error instanceof Error ? error.message : String(error),
           });
           fallback.push(renderFallbackFinding(finding));
-          // 未发布成功即没有行锚点，指纹留空：统计条数要如实反映这部分缺口。
-          findings.push({ ...baseFinding, codeFingerprint: "", discussionId: null, noteId: null });
+          stats.publishFailed += 1;
+          // 位置已校验过（行号在 diff 变更行内），只是发布时失败；行锚点信息完整，
+          // 必须保留指纹，否则这条本来可追踪的建议会永久退出采纳统计。
+          findings.push({
+            ...baseFinding,
+            codeFingerprint: lineText === null ? "" : fingerprintLine(lineText),
+            discussionId: null,
+            noteId: null,
+          });
         }
       }
     }
@@ -928,7 +1003,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     // （marker 保证下次评审跳过）。
     await verifyPublishedPositions({ task, refs, logger });
 
-    return { published, publishedBodies, fallback, findings };
+    return { published, publishedBodies, fallback, findings, stats };
   }
 
   /**

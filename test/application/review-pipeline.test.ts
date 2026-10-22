@@ -809,7 +809,7 @@ test("降级进汇总的建议写入空指纹，用于统计不可追踪", async
   assert.equal(harness.inserted[0].discussionId, null);
 });
 
-test("行内评论发布失败时也记录空指纹建议", async () => {
+test("行内评论发布失败但有合法行位置时，仍记录建议并保留可追踪指纹", async () => {
   const { client } = inlineClient({ diff: twoAddedLines, postFails: () => true });
   const harness = findingWriterHarness();
   const pipeline = createReviewPipeline({
@@ -831,7 +831,9 @@ test("行内评论发布失败时也记录空指纹建议", async () => {
 
   await pipeline.run(task);
   assert.equal(harness.inserted.length, 1);
-  assert.equal(harness.inserted[0].codeFingerprint, "");
+  // 位置已通过 diff 校验，只是发布失败；保留指纹才能继续参与采纳追踪。
+  assert.equal(harness.inserted[0].codeFingerprint, fingerprintLine("two"), "发布失败不应丢失行锚点");
+  assert.equal(harness.inserted[0].discussionId, null);
 });
 
 test("未注入 findingWriter 或记录无 ID 时不写建议，既有行为不变", async () => {
@@ -1357,4 +1359,95 @@ test("user 消息末尾自动补充 head_sha，即使 prompt 模板没有占位�
   const batchMessage = userMessages.find((m) => !m.includes("你之前分批评审"));
   assert.ok(batchMessage);
   assert.match(batchMessage, new RegExp(`head_sha.*${headSha}`), "必须把 head_sha 传给模型");
+});
+
+// ============ 行内评论降级原因诊断 ============
+
+test("行内评论发布失败时保留真实指纹，使该建议仍可被采纳追踪", async () => {
+  const { client } = inlineClient({ diff: twoAddedLines, postFails: () => true });
+  const harness = findingWriterHarness();
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(
+      JSON.stringify({
+        reviewed_head_sha: headSha,
+        summary: { body: "总分：80 分" },
+        findings: [{ id: "f1", severity: "high", path: "a.ts", new_line: 2, body: "发布失败但有行锚点" }],
+      }),
+      "总分：80 分",
+    ),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: harness.recordWriter,
+    findingWriter: harness.writer,
+  });
+
+  await pipeline.run(task);
+  assert.equal(harness.inserted.length, 1, "发布失败的建议仍要落库");
+  // 该条位置合法，只是发布时网络/接口失败；行锚点信息完整，不能丢成不可追踪。
+  assert.equal(
+    harness.inserted[0].codeFingerprint,
+    fingerprintLine("two"),
+    "有行锚点的建议即使发布失败也必须保留指纹",
+  );
+  assert.equal(harness.inserted[0].discussionId, null, "未发布成功时没有 discussion");
+});
+
+test("无结构化块且正文无可定位信息时，日志说明降级原因与条数", async () => {
+  const { client, notes } = inlineClient({ diff: twoAddedLines });
+  const logs: { message: string; fields?: Record<string, unknown> }[] = [];
+  const logger = {
+    ...createSilentLogger(),
+    info: (message: string, fields?: Record<string, unknown>) => { logs.push({ message, fields }); },
+  };
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    // 只给一句总评：既没有 JSON 块，也没有「位置：文件:行号」。
+    reviewer: reviewerReturning("整体看起来没有明显问题，可以合入。", "总分：100 分"),
+    logger,
+    batchMaxTokens: 6000,
+  });
+
+  await pipeline.run(task);
+  assert.equal(notes.length, 1, "总评论仍要回写");
+  const summary = logs.find((entry) => entry.message === "行内评论处理完成");
+  assert.ok(summary, "必须有一条汇总行内评论处理的日志");
+  assert.equal(summary.fields?.解析条数, 0, "模型未给出可定位问题时应如实记为 0");
+  assert.equal(summary.fields?.发布条数, 0);
+  assert.equal(summary.fields?.降级批次, 1, "整批无法解析时按批计入降级");
+  assert.equal(summary.fields?.无结构化块批次, 1, "原因应能区分「没有结构化块」");
+});
+
+test("行号不在变更行时，日志按原因分类计数", async () => {
+  const { client } = inlineClient({ diff: twoAddedLines });
+  const logs: { message: string; fields?: Record<string, unknown> }[] = [];
+  const logger = {
+    ...createSilentLogger(),
+    info: (message: string, fields?: Record<string, unknown>) => { logs.push({ message, fields }); },
+    warn: () => {},
+  };
+  const pipeline = createReviewPipeline({
+    client,
+    rules,
+    reviewer: reviewerReturning(
+      JSON.stringify({
+        reviewed_head_sha: headSha,
+        summary: { body: "总分：80 分" },
+        findings: [{ id: "f1", severity: "high", path: "a.ts", new_line: 99, body: "越界行号" }],
+      }),
+      "总分：80 分",
+    ),
+    logger,
+    batchMaxTokens: 6000,
+  });
+
+  await pipeline.run(task);
+  const summary = logs.find((entry) => entry.message === "行内评论处理完成");
+  assert.ok(summary);
+  assert.equal(summary.fields?.解析条数, 1, "结构化块解析出 1 条");
+  assert.equal(summary.fields?.发布条数, 0);
+  assert.equal(summary.fields?.降级条数, 1);
+  assert.equal(summary.fields?.行号非法条数, 1, "原因应能区分「行号不在变更行」");
 });

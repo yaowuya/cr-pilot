@@ -123,7 +123,18 @@ export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracke
   return {
     async runOnce() {
       const pending = findings.listPendingTracking(batchSize);
-      if (pending.length === 0) return;
+      if (pending.length === 0) {
+        // 没有可追踪项时也要说明原因：分母为 0 会让页面采纳率显示「—」，
+        // 若不留痕，运维无法判断是「还没到追踪时机」还是「全部建议不可追踪」。
+        const untrackable = findings.countUntrackable();
+        logger.info("采纳追踪无可追踪建议", {
+          可追踪建议数: pending.length,
+          不可追踪建议数: untrackable.total,
+          其中降级并入汇总: untrackable.fallback,
+          其中有行锚点但无法定位: untrackable.unknown,
+        });
+        return;
+      }
 
       // 按 MR 分组：同一 MR 只需查一次最新 head 与一次讨论列表。
       const byMr = new Map<string, ReviewFinding[]>();
@@ -190,8 +201,16 @@ export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracke
         }
       }
 
-      if (tracked > 0) {
-        logger.info("采纳追踪完成一轮", { 已判定建议数: tracked, 待处理建议数: pending.length });
+      if (tracked > 0 || pending.length > 0) {
+        // 同时输出不可追踪条数：否则「已判定 0 条」看不出是全部降级还是缺少凭据。
+        const untrackable = findings.countUntrackable();
+        logger.info("采纳追踪完成一轮", {
+          已判定建议数: tracked,
+          待处理建议数: pending.length,
+          不可追踪建议数: untrackable.total,
+          其中降级并入汇总: untrackable.fallback,
+          其中有行锚点但无法定位: untrackable.unknown,
+        });
       }
     },
   };

@@ -107,6 +107,13 @@ export interface ReviewFindingRepository {
   /** 取待追踪建议：按创建时间升序，限制条数，避免一轮扫描过多。 */
   listPendingTracking(limit: number): ReviewFinding[];
   /**
+   * 统计无法追踪的建议条数。
+   *
+   * 这些建议没有代码行锚点（降级并入汇总），永远无法判定是否被采纳。
+   * 页面与追踪日志用它解释「为什么可统计数是 0」，而不是让分母静默为 0。
+   */
+  countUntrackable(): { total: number; fallback: number; unknown: number };
+  /**
    * 更新判定结果，同时把 `headSha` 改成本次评估的版本。
    *
    * 必须一起更新：只写 outcome 的话，下一轮无法区分「已按最新版本判定过」与
