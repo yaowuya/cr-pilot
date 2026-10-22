@@ -70,6 +70,21 @@
         其中降级并入汇总 {{ adoption.untrackable.fallback }} 条、无法定位 {{ adoption.untrackable.unknown }} 条，
         不计入采纳率分母。
       </p>
+      <!-- 分母为 0 时必须说明原因，否则「—」看起来像数据故障。 -->
+      <el-alert
+        v-if="adoption && adoption.total.tracked === 0 && adoption.untrackable.fallback + adoption.untrackable.unknown > 0"
+        type="info"
+        :closable="false"
+        show-icon
+        class="adoption-note"
+      >
+        <template #title>当前没有可统计的建议</template>
+        <div>
+          上列不可统计的建议没有代码行位置（降级写进了汇总评论），系统无法判断对应代码是否被改动，
+          因此不计入分母。这类历史建议不会因后续修改变回可统计；
+          本次改动后新产生的、有行位置的建议仍会正常统计。
+        </div>
+      </el-alert>
 
       <div class="dimension-grid adoption-grid">
         <div v-for="dim in adoptionDimensions" :key="dim.key" class="adoption-block">

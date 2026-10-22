@@ -46,6 +46,11 @@ function repoWith(items: ReviewFinding[]): ReviewFindingRepository & { rows: Rev
     listByMr: () => rows,
     // 与仓储一致：排除无指纹项，但保留已判定项以便新提交后重评。
     listPendingTracking: () => rows.filter((row) => row.codeFingerprint !== ""),
+    countUntrackable: () => {
+      const fallback = rows.filter((row) => row.codeFingerprint === "").length;
+      const unknown = rows.filter((row) => row.outcome === "unknown").length;
+      return { total: fallback + unknown, fallback, unknown };
+    },
     updateOutcome(id, outcome, trackedAt, evaluatedHeadSha) {
       const row = rows.find((item) => item.id === id);
       if (row) {

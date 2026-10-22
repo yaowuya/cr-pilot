@@ -195,6 +195,20 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
       );
     },
 
+    countUntrackable() {
+      const row = db
+        .prepare(
+          `SELECT
+             SUM(CASE WHEN code_fingerprint = '' THEN 1 ELSE 0 END) AS fallback,
+             SUM(CASE WHEN outcome = 'unknown' THEN 1 ELSE 0 END) AS unknown
+           FROM review_findings`,
+        )
+        .get() as unknown as { fallback: number | null; unknown: number | null };
+      const fallback = Number(row.fallback ?? 0);
+      const unknown = Number(row.unknown ?? 0);
+      return { fallback, unknown, total: fallback + unknown };
+    },
+
     getAdoptionStats(queryParams) {
       const { where, params } = buildFilter(queryParams);
       const totals = db
