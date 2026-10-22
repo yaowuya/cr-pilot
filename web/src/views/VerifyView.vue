@@ -77,7 +77,7 @@
           </p>
           <p v-else-if="botsLoading" class="verify-submitter__hint">正在加载机器人列表…</p>
           <p v-else-if="botsLoaded && bots.length === 0" class="verify-submitter__hint">
-            规则文件里还没有配置 <code>wecom_webhook_url</code>，请先在 <code>prompts/rules/</code> 中添加。
+            当前生效的数据库 Prompt 或 YAML 规则没有配置企微 webhook。请先到「Prompt 管理」检查项目规则与 default，再检查规则目录。
           </p>
           <p v-else-if="selectedBot" class="verify-submitter__hint">
             将发送到 {{ botLabel(selectedBot) }}；地址由服务端按配置解析，页面不接触完整密钥。
@@ -111,7 +111,7 @@
             <el-button link type="primary" :disabled="aiRunning || wecomRunning" @click="loadContacts">刷新列表</el-button>。
           </p>
           <p v-else class="verify-submitter__hint">
-            {{ selectedContact ? (selectedContact.wecomUserId ? '已配置 userid，将验证真实成员提及。' : '未配置 userid，仅显示 @中文名，不触发成员提醒。') : '自检没有真实 MR 作者，请明确选择；不会自动 @ 登录者或其他人。' }}
+            {{ selectedContact ? (selectedContact.hasWecomUserId ? '已配置 userid，将验证真实成员提及。' : '未配置 userid，仅显示 @中文名，不触发成员提醒。') : '自检没有真实 MR 作者，请明确选择；不会自动 @ 登录者或其他人。' }}
           </p>
         </div>
         <div class="verify-actions">
@@ -199,7 +199,7 @@ const sendConfirmation = computed(() => {
   const contact = selectedContact.value;
   const name = contact?.wecomName || contact?.gitlabUsername || "未选择提交人";
   const bot = selectedBot.value ? botLabel(selectedBot.value) : "未选择机器人";
-  return contact?.wecomUserId
+  return contact?.hasWecomUserId
     ? `将向「${bot}」发送 [验证] 消息，并真实 @「${name}」。确认发送？`
     : `将向「${bot}」发送 [验证] 消息，末尾仅展示 @${name}，不会触发成员提醒。确认发送？`;
 });

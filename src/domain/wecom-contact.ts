@@ -23,6 +23,19 @@ export interface WecomContact {
   updatedAt: number;
 }
 
+/**
+ * 对外展示 userid 时遮盖中间字符。
+ *
+ * 过短的值全部遮盖；长值仅保留少量首尾。通知发送仍需原值，此函数只用于
+ * API 响应和自检任务结果，不能用于构造企微 `<@userid>` 提醒。
+ */
+export function maskWecomUserId(value: string): string {
+  if (!value) return "";
+  if (value.length <= 4) return "**";
+  const visible = value.length <= 8 ? 1 : 2;
+  return `${value.slice(0, visible)}**${value.slice(-visible)}`;
+}
+
 /** 企微联系人映射端口。实现方为 infrastructure/sqlite。 */
 export interface WecomContactRepository {
   list(): WecomContact[];

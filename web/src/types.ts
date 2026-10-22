@@ -173,12 +173,14 @@ export interface AuthResult {
 /**
  * GitLab 账号到企微成员的映射。
  *
- * `wecomUserId` 为空时通知只能显示 `@姓名` 纯文本，不会真正提醒成员。
+ * 页面只收已配置标记与中间掩码；明文 userid 留在服务端供正式通知解析。
+ * `hasWecomUserId` 为 false 时通知只能显示 `@姓名`，不会真正提醒成员。
  */
 export interface WecomContact {
   gitlabUsername: string;
   wecomName: string;
-  wecomUserId: string;
+  hasWecomUserId: boolean;
+  wecomUserIdMasked: string;
   updatedAt: number;
 }
 

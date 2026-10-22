@@ -234,7 +234,8 @@ test("HTTP 自检通过真实用例与内存映射仓储，预览末行保留提
     const { taskId } = await res.json() as { taskId: string };
     const task = await waitTask(token, base, taskId);
     assert.equal(task.status, "success");
-    assert.ok(task.detail.endsWith("\n\n<@selected_member>"));
+    assert.ok(task.detail.endsWith("\n\n<@se**er>"), "轮询结果只返回脱敏 userid");
+    assert.equal(task.detail.includes("selected_member"), false);
     assert.match(task.detail, /机器人 \*\*\*\*/, "结果里应标明所选机器人（脱敏）");
   });
 });

@@ -19,8 +19,9 @@ import type { AppConfig } from "../shared/config.ts";
 import { createPiReviewer } from "../infrastructure/pi/reviewer.ts";
 import { createWecomNotifier } from "../infrastructure/wecom/wecom-notifier.ts";
 import { loadReviewRules } from "../infrastructure/rules/review-rules.ts";
-import { parseReviewScore, type RuleSet } from "../domain/review-rules.ts";
-import type { WecomContactRepository } from "../domain/wecom-contact.ts";
+import { parseReviewScore } from "../domain/review-rules.ts";
+import { maskWecomUserId, type WecomContactRepository } from "../domain/wecom-contact.ts";
+import type { PromptRepository } from "../domain/review-prompt.ts";
 import { buildWecomMessage, renderWecomMention, type WecomMentionTarget } from "./review-pipeline.ts";
 
 /**
@@ -85,13 +86,15 @@ export interface FeatureVerifierDeps {
   logger: Logger;
   /** 与正式通知共用的提交人映射；只查询，不写入，也不从登录账号推断提交人。 */
   wecomContacts?: Pick<WecomContactRepository, "findByGitlabUsername">;
+  /** 与正式评审共用数据库优先的 prompt 来源；缺省时保留现有纯 YAML 用法。 */
+  promptSource?: Pick<PromptRepository, "list" | "resolve">;
 }
 
 /**
  * 一个可选的企微机器人（群机器人）。
  *
- * 机器人身份就是规则文件里的 `wecom_webhook_url`：同一地址被多条规则复用时
- * 视为同一个机器人。地址含 `key=` 密钥，因此对外只暴露 `id` 与脱敏后的 key，
+ * 机器人身份是本次评审最终生效的 `wecom_webhook_url`（数据库优先、YAML 兜底）；
+ * 同一地址被多个项目复用时视为同一个机器人。地址含 `key=` 密钥，因此对外只暴露 `id` 与脱敏后的 key，
  * 原始 URL 不下发到浏览器，也不接受前端回传任意地址。
  */
 export interface WecomBot {
@@ -99,7 +102,7 @@ export interface WecomBot {
   id: string;
   /** 脱敏 key：仅保留末 4 位，便于人工核对是哪台机器人。 */
   maskedKey: string;
-  /** 关联该机器人的仓库全名（来自各规则文件的 repository 字段）。 */
+  /** 使用该机器人的项目名称（从数据库项目绑定与 YAML 候选项目解析）。 */
   repositories: string[];
 }
 
@@ -118,7 +121,7 @@ export interface VerifyWecomOptions {
 export interface FeatureVerifier {
   /** 执行一次 AI 评审验证；失败时返回 `success: false` 而不是抛错。 */
   verifyAi(): Promise<VerifyOutcome>;
-  /** 列出规则文件里已配置的企微机器人，按 webhook 地址去重。 */
+  /** 列出当前生效的企微机器人（数据库优先、YAML 兜底），按地址去重。 */
   listWecomBots(): Promise<WecomBot[]>;
   /**
    * 执行一次企微发送验证。
@@ -172,56 +175,51 @@ function parseRepositories(raw: string): string[] {
 }
 
 /**
- * 扫描规则文件，汇总已配置的企微机器人。
+ * 列出当前能用于评审的企微机器人（按最终生效地址去重）。
  *
- * 真实配置里 webhook 挂在**仓库级**规则上（如 `prompts/rules/auto-ops.yaml`），
- * `default.yaml` 只有阈值。多个规则文件可能复用同一地址，因此按地址去重：
- * 用户看到的是「一个机器人」，而不是几条重复的规则。
+ * 正式评审在 `review-pipeline.ts` 中先调用数据库的 `resolve(project)`；只有数据库
+ * 没有项目或 default 记录时才回落 YAML。候选项目来自两处，逐项复用同一优先级
+ * 求实际地址；如果 DB 已命中但未配置 webhook，不能偷偷回退到陈旧的 YAML 地址。
+ * `default` 单独加入，用于没有项目规则的 MR；原始 URL 只留在服务端。
  */
-async function collectWecomBots(config: AppConfig, logger: Logger): Promise<{ bot: WecomBot; url: string }[]> {
-  const files = (await readdir(config.rulesDir)).filter((name) => name.endsWith(".yaml") || name.endsWith(".yml")).sort();
-  const rules = await loadRules(config, logger);
-  const byUrl = new Map<string, WecomBot>();
-  for (const file of files) {
-    const raw = await readFile(`${config.rulesDir}/${file}`, "utf8").catch(() => "");
-    const repositories = parseRepositories(raw);
-    // 逐仓库 resolve，命中的规则集才带 webhook；避免自己重复实现 YAML 解析。
-    for (const repository of repositories) {
-      const url = rules.resolve(repository).wecomWebhookUrl?.trim() ?? "";
-      if (!url) continue;
-      const existing = byUrl.get(url);
-      if (existing) {
-        for (const name of repositories) {
-          if (!existing.repositories.includes(name)) existing.repositories.push(name);
-        }
-        break;
-      }
-      byUrl.set(url, { id: webhookIdOf(url), maskedKey: maskWebhookKey(url), repositories: [...repositories] });
-      break;
-    }
-  }
-  return [...byUrl.entries()].map(([url, bot]) => ({ bot, url }));
-}
-
-/** 找到第一个配置了企微 webhook 的规则集，供 CLI 未指定地址时兜底。 */
-async function findRulesetWithWebhook(
+async function collectWecomBots(
   config: AppConfig,
   logger: Logger,
-): Promise<{ ruleSet: RuleSet; repository: string }> {
-  const files = (await readdir(config.rulesDir)).filter((name) => name.endsWith(".yaml") || name.endsWith(".yml")).sort();
+  promptSource?: FeatureVerifierDeps["promptSource"],
+): Promise<{ bot: WecomBot; url: string }[]> {
+  // 生产环境可能仅保留数据库 prompt，YAML 目录缺失不能屏蔽已配置的机器人。
+  const files = (await readdir(config.rulesDir).catch(() => []))
+    .filter((name) => name.endsWith(".yaml") || name.endsWith(".yml")).sort();
   const rules = await loadRules(config, logger);
+  const projects = new Set<string>();
   for (const file of files) {
-    // 用正则读 repository 字段，再交给统一解析器取规则集，
-    // 避免在这里重复实现 YAML 解析与模板渲染。
     const raw = await readFile(`${config.rulesDir}/${file}`, "utf8").catch(() => "");
-    const repository = parseRepositories(raw)[0];
-    if (!repository) continue;
-    const ruleSet = rules.resolve(repository);
-    if (ruleSet.wecomWebhookUrl) return { ruleSet, repository };
+    for (const repository of parseRepositories(raw)) projects.add(repository);
   }
-  throw new Error(
-    `没有找到配置 wecom_webhook_url 的规则文件（目录 ${config.rulesDir}）。请先在某条规则里配置，或指定 webhook 地址。`,
-  );
+  for (const prompt of promptSource?.list() ?? []) {
+    for (const project of prompt.projects) projects.add(project);
+  }
+
+  const byUrl = new Map<string, WecomBot>();
+  const add = (url: string | undefined, project: string): void => {
+    const normalized = url?.trim();
+    if (!normalized) return;
+    const existing = byUrl.get(normalized);
+    if (existing) {
+      if (!existing.repositories.includes(project)) existing.repositories.push(project);
+      return;
+    }
+    byUrl.set(normalized, { id: webhookIdOf(normalized), maskedKey: maskWebhookKey(normalized), repositories: [project] });
+  };
+
+  // 数据库 default 即使没有 webhook 也遮蔽 YAML default；与真实评审链路保持一致。
+  const dbDefault = promptSource?.resolve();
+  add(dbDefault ? dbDefault.wecomWebhookUrl : rules.resolve().wecomWebhookUrl, "default");
+  for (const project of projects) {
+    const stored = promptSource?.resolve(project);
+    add(stored ? stored.wecomWebhookUrl : rules.resolve(project).wecomWebhookUrl, project);
+  }
+  return [...byUrl.entries()].map(([url, bot]) => ({ bot, url }));
 }
 
 /** 包装正式通知模板，保留提交人的末行提及，并明确标记为测试消息。 */
@@ -300,15 +298,17 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
     },
 
     async listWecomBots() {
-      const bots = await collectWecomBots(config, logger);
+      const bots = await collectWecomBots(config, logger, deps.promptSource);
       // 排序只为让下拉顺序稳定，便于反复验证时定位同一台机器人。
       return bots.map((item) => item.bot).sort((left, right) => left.id.localeCompare(right.id));
     },
 
     async verifyWecom(options = {}) {
       const startedAt = Date.now();
+      let mention: WecomMentionTarget | undefined;
+      let webhookUrl = "";
       try {
-        let mention: WecomMentionTarget | undefined;
+        let renderedMention: string | null = null;
         let mentionDescription = "未选择测试提交人，本次未验证 @ 提交人。";
         if (options.gitlabUsername !== undefined) {
           const gitlabUsername = options.gitlabUsername.trim();
@@ -318,16 +318,16 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
           const contact = deps.wecomContacts?.findByGitlabUsername(gitlabUsername);
           if (!contact) throw new Error("找不到该提交人的企微映射，请先在「企微映射」页登记或刷新列表");
           mention = { userId: contact.wecomUserId, name: contact.wecomName };
-          const rendered = renderWecomMention(mention);
-          if (!rendered) throw new Error("该提交人的企微映射无法生成安全的提及，请检查姓名与 userid");
-          mentionDescription = rendered.startsWith("<@") ? "真实成员提醒" : "仅中文姓名展示，不触发成员提醒";
+          renderedMention = renderWecomMention(mention);
+          if (!renderedMention) throw new Error("该提交人的企微映射无法生成安全的提及，请检查姓名与 userid");
+          mentionDescription = renderedMention.startsWith("<@") ? "真实成员提醒" : "仅中文姓名展示，不触发成员提醒";
         }
-        let webhookUrl = options.webhookOverride?.trim() ?? "";
+        webhookUrl = options.webhookOverride?.trim() ?? "";
         let source = "命令行指定的地址";
         if (!webhookUrl && options.webhookId) {
           // 页面只回传 id；真实地址必须由服务端按当前配置解析，
           // 这样浏览器既不接触密钥，也无法把自检当成任意地址的出口。
-          const bots = await collectWecomBots(config, logger);
+          const bots = await collectWecomBots(config, logger, deps.promptSource);
           const selected = bots.find((item) => item.bot.id === options.webhookId);
           if (!selected) throw new Error("所选企微机器人不存在或配置已变更，请刷新机器人列表后重试");
           webhookUrl = selected.url;
@@ -336,28 +336,35 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
           source = `机器人 ${selected.bot.maskedKey}（${repoLabel}${extra}）`;
         }
         if (!webhookUrl) {
-          // CLI 未指定地址且无 id 时沿用「第一个已配置机器人」，保持既有命令行用法。
-          const found = await findRulesetWithWebhook(config, logger);
-          webhookUrl = found.ruleSet.wecomWebhookUrl ?? "";
-          source = `规则文件（${found.repository}，${maskWebhookKey(webhookUrl)}）`;
+          // CLI 未装配数据库时仍取第一条 YAML 机器人；服务端注入仓储后取
+          // 当前生效的第一台机器人，不能使用已被数据库覆盖的旧 YAML 地址。
+          const first = (await collectWecomBots(config, logger, deps.promptSource))[0];
+          if (first) {
+            webhookUrl = first.url;
+            source = `当前生效规则（${first.bot.repositories[0]}，${first.bot.maskedKey}）`;
+          }
         }
         if (!webhookUrl) {
           return {
             success: false,
             message: "找不到企微 webhook 地址",
-            detail: "规则文件未配置 wecom_webhook_url，也没有指定地址。",
+            detail: "当前生效的数据库/YAML 规则未配置 wecom_webhook_url，也没有指定地址。",
             durationMs: Date.now() - startedAt,
           };
         }
 
         const message = buildVerifyMessage({ score: 60, comment: "P1：样例问题，用于验证消息组装。", ranAt: new Date(), mention });
         const bytes = new TextEncoder().encode(message).length;
+        // 发群仍用真实 <@userid>；只在返回给页面/CLI 的结果文本中遮盖中间字符。
+        const displayMessage = renderedMention?.startsWith("<@") && mention?.userId && message.endsWith(renderedMention)
+          ? `${message.slice(0, -renderedMention.length)}<@${maskWecomUserId(mention.userId.trim())}>`
+          : message;
         if (options.dryRun) {
           return {
             success: true,
             message: `消息已组装，${bytes} 字节（未发送）`,
             // 预览也要标明目标机器人：否则用户无法确认这条消息准备发到哪个群。
-            detail: `目标：${source}\n提及方式：${mentionDescription}\n\n${message}`,
+            detail: `目标：${source}\n提及方式：${mentionDescription}\n\n${displayMessage}`,
             durationMs: Date.now() - startedAt,
           };
         }
@@ -367,13 +374,18 @@ export function createFeatureVerifier(deps: FeatureVerifierDeps): FeatureVerifie
         return {
           success: true,
           message: `企微消息已发送（${bytes} 字节）`,
-          detail: `目标：${source}\n提及方式：${mentionDescription}\n\n${message}`,
+          detail: `目标：${source}\n提及方式：${mentionDescription}\n\n${displayMessage}`,
           durationMs: Date.now() - startedAt,
         };
       } catch (error) {
+        let reason = error instanceof Error ? error.message : String(error);
+        // 企微 errmsg 可能原样引用 userid 或 webhook；错误结果也不能泄露明文。
+        if (webhookUrl) reason = reason.replaceAll(webhookUrl, "[企微 webhook 已隐藏]");
+        const userId = mention?.userId?.trim();
+        if (userId) reason = reason.replaceAll(userId, maskWecomUserId(userId));
         return {
           success: false,
-          message: `企微发送失败：${error instanceof Error ? error.message : String(error)}`,
+          message: `企微发送失败：${reason}`,
           detail: "",
           durationMs: Date.now() - startedAt,
         };

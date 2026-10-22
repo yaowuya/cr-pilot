@@ -241,8 +241,9 @@ async function startApplication(input: {
       logger.info("采纳追踪已关闭：ADOPTION_TRACKING_ENABLED=false");
     }
 
-    // 功能自检与正式 MR 通知共用同一映射仓储，避免自检绕过实际的提交人提及配置。
-    const verifier = createFeatureVerifier({ config, logger, wecomContacts });
+    // 功能自检与正式 MR 通知共用映射和 prompt 仓储：机器人列表和发送地址
+    // 必须遵守相同的数据库优先、YAML 兜底顺序，不读取已被覆盖的旧 webhook。
+    const verifier = createFeatureVerifier({ config, logger, wecomContacts, promptSource: prompts });
 
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
     // 管理员权限门：只挂在账号管理路由上，其余管理页所有登录账号都能用。

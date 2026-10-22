@@ -16,7 +16,7 @@ const ADMIN = "admin";
 const ADMIN_PASSWORD = "admin-password";
 
 /** 真实 SQLite 内存库 + 真实 Express 应用，避免 mock 掉需要证明的路由与持久化。 */
-function buildHarness(): { app: Express; token: string } {
+function buildHarness(): { app: Express; contacts: ReturnType<typeof createWecomContactRepository>; token: string } {
   const db = openDatabase(":memory:");
   const admins = createAdminRepository(db, AUTH_SALT, ADMIN);
   admins.ensureInitialAdmin(ADMIN, ADMIN_PASSWORD);
@@ -30,7 +30,7 @@ function buildHarness(): { app: Express; token: string } {
     apiRoutes: { "/api/wecom-contacts": createWecomContactsRouter({ contacts }) },
     staticAssets: [],
   });
-  return { app, token: deriveToken(ADMIN, AUTH_SALT) };
+  return { app, contacts, token: deriveToken(ADMIN, AUTH_SALT) };
 }
 
 /** 起一次临时监听并执行断言，结束后关闭。 */
@@ -74,14 +74,16 @@ test("保存后可列出，重复保存同一账号是更新", async () => {
 
     const updated = await authed(token, base, "/api/wecom-contacts", {
       method: "PUT",
-      body: JSON.stringify({ gitlabUsername: "SamXiao", wecomName: "王秦", wecomUserId: "" }),
+      // 明确清除：编辑姓名时如果 userid 为空，不应意外删除原有映射。
+      body: JSON.stringify({ gitlabUsername: "SamXiao", wecomName: "王秦", clearWecomUserId: true }),
     });
     assert.equal(updated.status, 200);
 
     const listed = await authed(token, base, "/api/wecom-contacts");
-    const items = (await listed.json()) as { gitlabUsername: string; wecomName: string; wecomUserId: string }[];
+    const items = (await listed.json()) as { gitlabUsername: string; wecomName: string; hasWecomUserId: boolean; wecomUserIdMasked: string }[];
     assert.equal(items.length, 1, "大小写不同的同一账号不能产生两条");
-    assert.equal(items[0].wecomUserId, "", "后一次保存覆盖 userid");
+    assert.equal(items[0].hasWecomUserId, false, "显式清除后不再有 userid");
+    assert.equal(items[0].wecomUserIdMasked, "");
   });
 });
 
@@ -104,6 +106,80 @@ test("请求体非法时返回 400 且不落库", async () => {
     }
     const listed = await authed(token, base, "/api/wecom-contacts");
     assert.deepEqual(await listed.json(), [], "非法请求不能留下记录");
+  });
+});
+
+test("GET 与 PUT 仅返回中间掩码，编辑姓名时保留原 userid，清除须显式确认", async () => {
+  const { app, token, contacts } = buildHarness();
+  const syntheticId = "synthetic_98765";
+  await withServer(app, async (base) => {
+    const created = await authed(token, base, "/api/wecom-contacts", {
+      method: "PUT", body: JSON.stringify({ gitlabUsername: "author", wecomName: "示例人", wecomUserId: syntheticId }),
+    });
+    assert.equal(created.status, 200);
+    const createdBody = await created.text();
+    assert.equal(createdBody.includes(syntheticId), false, "PUT 响应不应回显完整 userid");
+    const saved = JSON.parse(createdBody) as { hasWecomUserId: boolean; wecomUserIdMasked: string; wecomUserId?: string };
+    assert.equal(saved.hasWecomUserId, true);
+    assert.match(saved.wecomUserIdMasked, /^.{2}\*\*.{2}$/);
+    assert.equal(saved.wecomUserId, undefined);
+
+    const listedBody = await (await authed(token, base, "/api/wecom-contacts")).text();
+    assert.equal(listedBody.includes(syntheticId), false, "GET 响应不应泄露完整 userid");
+    assert.equal(JSON.parse(listedBody)[0].wecomUserIdMasked, saved.wecomUserIdMasked);
+
+    const edited = await authed(token, base, "/api/wecom-contacts", {
+      method: "PUT", body: JSON.stringify({ gitlabUsername: "AUTHOR", wecomName: "已改姓名", wecomUserId: "" }),
+    });
+    assert.equal(edited.status, 200);
+    assert.equal(contacts.findByGitlabUsername("author")?.wecomUserId, syntheticId, "空输入应保留原 userid");
+    assert.equal((await edited.json() as { hasWecomUserId: boolean }).hasWecomUserId, true);
+
+    const cleared = await authed(token, base, "/api/wecom-contacts", {
+      method: "PUT", body: JSON.stringify({ gitlabUsername: "author", wecomName: "已改姓名", clearWecomUserId: true }),
+    });
+    assert.equal(cleared.status, 200);
+    assert.equal(contacts.findByGitlabUsername("author")?.wecomUserId, "");
+    assert.equal((await cleared.json() as { hasWecomUserId: boolean }).hasWecomUserId, false);
+  });
+});
+
+test("短 userid 不得露出全部字符；清除与替换不能同时提交", async () => {
+  const { app, token, contacts } = buildHarness();
+  await withServer(app, async (base) => {
+    for (const userId of ["a", "ab", "abcd"]) {
+      const response = await authed(token, base, "/api/wecom-contacts", {
+        method: "PUT", body: JSON.stringify({ gitlabUsername: `short${userId.length}`, wecomName: "短号", wecomUserId: userId }),
+      });
+      const body = await response.text();
+      assert.equal(body.includes(`\"${userId}\"`), false, "短 userid 不得完整出现于响应中");
+      assert.equal((JSON.parse(body) as { wecomUserIdMasked: string }).wecomUserIdMasked, "**");
+    }
+    const conflict = await authed(token, base, "/api/wecom-contacts", {
+      method: "PUT", body: JSON.stringify({ gitlabUsername: "short2", wecomName: "短号", wecomUserId: "new", clearWecomUserId: true }),
+    });
+    assert.equal(conflict.status, 400);
+    assert.equal(contacts.findByGitlabUsername("short2")?.wecomUserId, "ab");
+  });
+});
+
+test("只有 userid 的映射可留空编辑；不能清除后留下空映射", async () => {
+  const { app, token, contacts } = buildHarness();
+  await withServer(app, async (base) => {
+    const created = await authed(token, base, "/api/wecom-contacts", {
+      method: "PUT", body: JSON.stringify({ gitlabUsername: "id-only", wecomUserId: "sample_member" }),
+    });
+    assert.equal(created.status, 200);
+    const retained = await authed(token, base, "/api/wecom-contacts", {
+      method: "PUT", body: JSON.stringify({ gitlabUsername: "id-only", wecomName: "", wecomUserId: "" }),
+    });
+    assert.equal(retained.status, 200);
+    assert.equal(contacts.findByGitlabUsername("id-only")?.wecomUserId, "sample_member");
+    const invalidClear = await authed(token, base, "/api/wecom-contacts", {
+      method: "PUT", body: JSON.stringify({ gitlabUsername: "id-only", wecomName: "", clearWecomUserId: true }),
+    });
+    assert.equal(invalidClear.status, 400);
+    assert.equal(contacts.findByGitlabUsername("id-only")?.wecomUserId, "sample_member");
   });
 });
 

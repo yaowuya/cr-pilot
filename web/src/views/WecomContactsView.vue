@@ -37,7 +37,7 @@
         </el-table-column>
         <el-table-column label="企微 userid" min-width="200">
           <template #default="{ row }">
-            <span v-if="row.wecomUserId" class="mono">{{ row.wecomUserId }}</span>
+            <span v-if="row.hasWecomUserId" class="mono">{{ row.wecomUserIdMasked }}</span>
             <span v-else class="cell-muted">未填写（不会真实提醒）</span>
           </template>
         </el-table-column>
@@ -75,8 +75,20 @@
           <el-input v-model="form.wecomName" placeholder="成员在企微里的姓名，如 王秦" />
         </el-form-item>
         <el-form-item label="企微 userid" prop="wecomUserId">
-          <el-input v-model="form.wecomUserId" placeholder="选填；填写后才会真实提醒该成员" />
+          <el-input
+            v-model="form.wecomUserId"
+            type="password"
+            autocomplete="new-password"
+            :disabled="form.clearWecomUserId"
+            :placeholder="editing && editingHasUserId ? '留空保留已配置的 userid；输入新值则替换' : '选填；填写后才会真实提醒该成员'"
+          />
+          <p v-if="editing && editingHasUserId" class="cell-muted">已配置：{{ editingMaskedUserId }}。留空不会清除原值。</p>
         </el-form-item>
+        <el-checkbox
+          v-if="editing && editingHasUserId"
+          v-model="form.clearWecomUserId"
+          :disabled="Boolean(form.wecomUserId.trim())"
+        >清除已配置的 userid</el-checkbox>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -108,8 +120,10 @@ const contacts = ref<WecomContact[]>([]);
 const dialogVisible = ref(false);
 /** 编辑态：为 true 时账号不可改，避免改键导致旧记录残留。 */
 const editing = ref(false);
+const editingHasUserId = ref(false);
+const editingMaskedUserId = ref("");
 const formRef = ref<FormInstance>();
-const form = reactive({ gitlabUsername: "", wecomName: "", wecomUserId: "" });
+const form = reactive({ gitlabUsername: "", wecomName: "", wecomUserId: "", clearWecomUserId: false });
 
 /** 与后端一致的账号字符集。 */
 const GITLAB_USERNAME_PATTERN = /^[a-zA-Z0-9_.-]+$/;
@@ -133,7 +147,9 @@ const rules: FormRules = {
   wecomName: [
     {
       validator: (_rule, value: string, callback) => {
-        if (!value?.trim() && !form.wecomUserId.trim()) {
+        // 编辑仅改姓名时留空 userid 会保留旧值；显式清除后则必须另填姓名。
+        const retained = editing.value && editingHasUserId.value && !form.clearWecomUserId;
+        if (!value?.trim() && !form.wecomUserId.trim() && !retained) {
           callback(new Error("企微姓名与 userid 至少填写一项"));
           return;
         }
@@ -172,6 +188,9 @@ function resetForm(): void {
   form.gitlabUsername = "";
   form.wecomName = "";
   form.wecomUserId = "";
+  form.clearWecomUserId = false;
+  editingHasUserId.value = false;
+  editingMaskedUserId.value = "";
   formRef.value?.clearValidate();
 }
 
@@ -185,19 +204,27 @@ function openEdit(row: WecomContact): void {
   editing.value = true;
   form.gitlabUsername = row.gitlabUsername;
   form.wecomName = row.wecomName;
-  form.wecomUserId = row.wecomUserId;
+  // API 不再返回明文；不能把中间掩码当作真实 userid 回填或再次保存。
+  form.wecomUserId = "";
+  form.clearWecomUserId = false;
+  editingHasUserId.value = row.hasWecomUserId;
+  editingMaskedUserId.value = row.wecomUserIdMasked;
+  formRef.value?.clearValidate();
   dialogVisible.value = true;
 }
 
 async function onSave(): Promise<void> {
+  if (saving.value) return;
   const valid = await formRef.value?.validate().catch(() => false);
   if (!valid) return;
   saving.value = true;
   try {
+    const userId = form.wecomUserId.trim();
     await api.put("/api/wecom-contacts", {
       gitlabUsername: form.gitlabUsername.trim(),
       wecomName: form.wecomName.trim(),
-      wecomUserId: form.wecomUserId.trim(),
+      ...(userId ? { wecomUserId: userId } : {}),
+      ...(form.clearWecomUserId ? { clearWecomUserId: true } : {}),
     });
     ElMessage.success(editing.value ? "已保存" : "已新增映射");
     dialogVisible.value = false;
