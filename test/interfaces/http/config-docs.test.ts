@@ -153,6 +153,19 @@ test("企微自检的 OpenAPI 契约要求明确选择测试提交人", () => {
   assert.ok(schema.properties.gitlabUsername);
 });
 
+test("映射响应契约只包含脱敏 userid 与已配置标记，写入可显式清除", () => {
+  const spec = JSON.parse(readFileSync("docs/openapi.json", "utf8")) as {
+    components: { schemas: { WecomContact: { required: string[]; properties: Record<string, unknown> } } };
+    paths: Record<string, { put: { requestBody: { content: Record<string, { schema: { properties: Record<string, unknown> } }> } } }>;
+  };
+  const response = spec.components.schemas.WecomContact;
+  assert.ok(response.required.includes("hasWecomUserId"));
+  assert.ok(response.required.includes("wecomUserIdMasked"));
+  assert.equal("wecomUserId" in response.properties, false, "响应契约不能包含明文 userid");
+  const request = spec.paths["/api/wecom-contacts"].put.requestBody.content["application/json"].schema;
+  assert.ok(request.properties.clearWecomUserId);
+});
+
 test("OpenAPI 暴露机器人列表并要求 webhookId", () => {
   const spec = JSON.parse(readFileSync("docs/openapi.json", "utf8")) as {
     paths: Record<string, { post?: { requestBody: { content: Record<string, { schema: { required: string[] } }> } } }>;

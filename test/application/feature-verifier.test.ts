@@ -5,6 +5,7 @@ import { loadConfig } from "../../src/shared/config.ts";
 import { createSilentLogger } from "../../src/shared/logger.ts";
 import { openDatabase } from "../../src/infrastructure/sqlite/database.ts";
 import { createWecomContactRepository } from "../../src/infrastructure/sqlite/wecom-contact-repo.ts";
+import { createPromptRepository } from "../../src/infrastructure/sqlite/prompt-repo.ts";
 
 const WEBHOOK = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-test";
 const SAMPLE = { score: 60, comment: "P1：合成问题。", ranAt: new Date("2026-10-21T00:00:00Z") };
@@ -42,7 +43,8 @@ test("自检预览按所选 GitLab 账号查询真实映射，大小写与首尾
   const { verifier, sent } = harness(t);
   const outcome = await verifier.verifyWecom({ webhookOverride: WEBHOOK, dryRun: true, gitlabUsername: " code.author " });
   assert.equal(outcome.success, true);
-  assert.ok(outcome.detail.endsWith("\n\n<@synthetic_member>"));
+  assert.ok(outcome.detail.endsWith("\n\n<@sy**er>"), "预览只展示中间掩码");
+  assert.equal(outcome.detail.includes("synthetic_member"), false, "API 预览结果不能暴露完整 userid");
   assert.equal(outcome.detail.includes("<@code.author>"), false, "GitLab 账号不能直接当作企微 userid");
   assert.equal(sent.length, 0, "预览绝不能发群");
 });
@@ -53,7 +55,23 @@ test("实际发送路径同样使用映射后的成员提及，而非只在预�
   assert.equal(outcome.success, true);
   assert.equal(sent.length, 1);
   assert.match(sent[0], /\[验证\]/);
-  assert.ok(sent[0].endsWith("\n\n<@synthetic_member>"));
+  assert.ok(sent[0].endsWith("\n\n<@synthetic_member>"), "真实企微通知必须用原始 userid 才能提醒成员");
+  assert.equal(outcome.detail.includes("synthetic_member"), false, "发送结果也不能回显完整 userid");
+  assert.ok(outcome.detail.endsWith("\n\n<@sy**er>"));
+});
+
+test("企微错误若回显 userid 或 webhook，自检结果也必须脱敏", async (t) => {
+  const { verifier } = harness(t);
+  t.mock.restoreAll();
+  t.mock.method(globalThis, "fetch", async () => new Response(JSON.stringify({
+    errcode: 93000,
+    errmsg: `invalid member synthetic_member at ${WEBHOOK}`,
+  }), { status: 200 }));
+  const outcome = await verifier.verifyWecom({ webhookOverride: WEBHOOK, dryRun: false, gitlabUsername: "Code.Author" });
+  assert.equal(outcome.success, false);
+  assert.equal(outcome.message.includes("synthetic_member"), false);
+  assert.equal(outcome.message.includes(WEBHOOK), false);
+  assert.match(outcome.message, /sy\*\*er/);
 });
 
 test("仅配置中文名的提交人，在自检预览中沿用纯文本降级", async (t) => {
@@ -118,12 +136,14 @@ async function botHarness(t: TestContext, rules: Record<string, string>) {
   await writeFile(join(dir, "default.yaml"), `wecom_score_threshold: 80\n${prompt}`, "utf8");
   for (const [name, body] of Object.entries(rules)) await writeFile(join(dir, `${name}.yaml`), `${body}${prompt}`, "utf8");
   const sent: string[] = [];
-  t.mock.method(globalThis, "fetch", async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+  const targets: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    targets.push(String(input));
     sent.push(String(init?.body));
     return new Response(JSON.stringify({ errcode: 0 }), { status: 200 });
   });
   const config = { ...loadConfig({}), rulesDir: dir };
-  return { verifier: createFeatureVerifier({ config, logger: createSilentLogger() }), sent };
+  return { config, verifier: createFeatureVerifier({ config, logger: createSilentLogger() }), sent, targets };
 }
 
 test("机器人列表按 webhook 去重，并只暴露脱敏 key", async (t) => {
@@ -157,6 +177,64 @@ test("按机器人 id 发送，地址由服务端解析", async (t) => {
   assert.equal(outcome.success, true);
   assert.match(outcome.detail, /机器人 \*\*\*\*dddd/);
   assert.equal(sent.length, 1);
+});
+
+test("机器人列表按正式评审的数据库优先级：DB 独有可选，DB 覆盖的 YAML 旧机器人不可选", async (t) => {
+  const yamlOld = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-yaml-old";
+  const yamlOnly = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-yaml-only";
+  const dbOverride = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-db-override";
+  const dbOnly = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-db-only";
+  const { config, targets, sent } = await botHarness(t, {
+    "team-a": `repository: "group/a"\nwecom_webhook_url: "${yamlOld}"\n`,
+    "team-b": `repository: "group/b"\nwecom_webhook_url: "${yamlOnly}"\n`,
+  });
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const prompts = createPromptRepository(db);
+  prompts.create({ repository: "configured", projects: ["group/a"], systemPrompt: "SYS", userPrompt: "{diffs_text}", wecomWebhookUrl: dbOverride });
+  prompts.create({ repository: "db-only", projects: ["group/new"], systemPrompt: "SYS", userPrompt: "{diffs_text}", wecomWebhookUrl: dbOnly });
+  const verifier = createFeatureVerifier({ config, logger: createSilentLogger(), promptSource: prompts });
+  const bots = await verifier.listWecomBots();
+  assert.equal(bots.length, 3, "DB 项目独有 + 覆盖旧 YAML + 未被覆盖的 YAML");
+  assert.ok(bots.some((bot) => bot.repositories.includes("group/new")), "数据库独有机器人必须可选");
+  assert.ok(bots.some((bot) => bot.repositories.includes("group/b")), "未被 DB 覆盖的 YAML 应保留");
+  assert.equal(JSON.stringify(bots).includes("synthetic-"), false, "列表不能泄露任意 webhook 密钥或完整地址");
+  const selected = bots.find((bot) => bot.repositories.includes("group/a"));
+  assert.ok(selected);
+  const outcome = await verifier.verifyWecom({ webhookId: selected.id, dryRun: false });
+  assert.equal(outcome.success, true);
+  assert.equal(targets.at(-1), dbOverride, "发送必须使用 DB 当前生效地址，不能误用 YAML 旧地址");
+  assert.equal(sent.length, 1);
+});
+
+test("数据库 default 即使未设置 webhook，也会遮蔽未匹配项目的 YAML 机器人", async (t) => {
+  const { config } = await botHarness(t, {
+    "team-a": 'repository: "group/a"\nwecom_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-yaml-a"\n',
+  });
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const prompts = createPromptRepository(db);
+  prompts.create({ repository: "default", projects: [], systemPrompt: "SYS", userPrompt: "{diffs_text}" });
+  const verifier = createFeatureVerifier({ config, logger: createSilentLogger(), promptSource: prompts });
+  assert.deepEqual(await verifier.listWecomBots(), [], "正式评审命中 DB default 后不再回落 YAML");
+});
+
+test("数据库独有机器人在 YAML 目录缺失时仍可列出；数据库 default 也可选择", async (t) => {
+  const { config } = await botHarness(t, {});
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const prompts = createPromptRepository(db);
+  prompts.create({ repository: "db-only", projects: ["group/only"], systemPrompt: "SYS", userPrompt: "{diffs_text}",
+    wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-db-only" });
+  prompts.create({ repository: "default", projects: [], systemPrompt: "SYS", userPrompt: "{diffs_text}",
+    wecomWebhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=synthetic-default" });
+  const verifier = createFeatureVerifier({ config: { ...config, rulesDir: `${config.rulesDir}/not-found` },
+    logger: createSilentLogger(), promptSource: prompts });
+  const bots = await verifier.listWecomBots();
+  assert.equal(bots.length, 2);
+  assert.ok(bots.some((bot) => bot.repositories.includes("group/only")));
+  assert.ok(bots.some((bot) => bot.repositories.includes("default")), "未匹配项目可使用 DB default 机器人");
+  assert.equal(JSON.stringify(bots).includes("synthetic-"), false);
 });
 
 test("未知机器人 id 直接失败，不发送任何消息", async (t) => {
