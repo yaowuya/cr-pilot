@@ -45,3 +45,8 @@ prompts/rules/*.yml
 # to be re-ignored explicitly, including inside the skills tree.
 .agent/**/.env
 .agent/**/*.env.*
+
+# FeaturePilot 执行过程产物：测试日志、截图、回放脚本、E2E/视觉证据等
+# 都是本机验证的临时文件，入库只会让工作区反复变脏。只保留可复用的进度台账 progress.md。
+**/.fp-execute/*
+!**/.fp-execute/progress.md
