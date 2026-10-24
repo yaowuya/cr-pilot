@@ -6,6 +6,7 @@
  * 由 infrastructure 层注入，编排由 application 层完成。
  */
 import type { DiscussionPosition } from "./inline-comment.ts";
+import type { RepositoryReadAccess, RepositoryReviewSnapshot } from "./repository-context.ts";
 
 export type { DiscussionPosition };
 
@@ -93,6 +94,8 @@ export interface MergeRequestTask {
  * `pi-agent/models.json` 里的既有默认配置，保证老部署与未配置厂商时仍可运行。
  */
 export interface ReviewInput {
+  /** 可选的固定仓库只读能力；不能用任意本地目录替代。 */
+  repositoryContext?: RepositoryReadAccess;
   systemPrompt: string;
   code: string;
   context?: string;
@@ -131,6 +134,8 @@ export interface Reviewer {
  * 优先使用它们；为空时回落到构造时的全局配置。
  */
 export interface GitlabClient {
+  /** 开启仓库上下文时使用固定 diff version 与源项目；旧调用方不必实现。 */
+  getRepositoryReviewSnapshot?(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<RepositoryReviewSnapshot>;
   getMergeRequestChanges(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Change[]>;
   getMergeRequestCommits(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<Commit[]>;
   postMergeRequestNote(projectId: number, iid: number, body: string, gitlabUrl?: string, gitlabToken?: string): Promise<void>;

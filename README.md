@@ -104,6 +104,7 @@ npx pi --list-models                        # 期望能列出上面声明的模�
 | `GITLAB_URL` | 无（可选） | GitLab 实例地址。缺省时从 webhook 派生：优先 `X-Gitlab-Instance` 请求头，其次 payload `repository.homepage` 的 origin；显式配置可覆盖派生值，并兜底老版本 GitLab |
 | `GITLAB_INSECURE_TLS` | `0` | 为 `1` 时跳过 GitLab TLS 证书校验（内网自签名） |
 | `GITLAB_API_TIMEOUT` | `15000` | GitLab API 单次请求超时毫秒数 |
+| `REPOSITORY_CLONE_TIMEOUT_MS` | `120000` | 开启项目的仓库 clone/fetch/索引总超时毫秒数；环境配置，修改需重启 |
 | `REVIEW_BATCH_MAX_TOKENS` | `120000` | 单批评审 token 预算（模型上下文 1M，可按需调大） |
 | `REVIEW_TIMEOUT_MS` | `1200000` | 单批评审/汇总超时毫秒数（默认 20 分钟） |
 | `REVIEW_RULES_DIR` | `prompts/rules` | 仓库规则目录（首次启动可用导入接口或脚本写入数据库） |
@@ -146,17 +147,50 @@ curl -X POST http://localhost:5001/api/prompts/import -H "Authorization: Bearer 
 
 匹配优先级：**数据库项目记录 > 数据库 `default` 记录 > `prompts/rules/*.yaml` > `prompts/review.md` 兜底**。
 
+### 修改名称
+
+编辑任意 Prompt 时可修改「名称」，保存后列表立即显示新名称，关联项目、仓库规范和项目开关都保留。改名受以下约束：
+
+- 新名称不能为空，最长 200 字符；
+- 不能与其他 Prompt 重名，冲突返回 409 且本次修改整体不生效；
+- `default` 是全局兜底的保留名称，本身不可改名，其他 Prompt 也不能改名为 `default`；
+- 只包含 `/` 等名称映射关系不变：改名不会改变 Prompt 与项目的关联。
+
 ### 多项目关联
 
 一条 prompt 可以同时关联多个 GitLab 项目，任一项目命中即使用该 prompt。页面上的「关联项目」是标签式多选框：
 
 - 从下拉选择已有项目，或直接输入新项目名回车添加
 - 点标签上的 `×` 删减关联，保存即生效
-- `default` 是全局兜底，不绑定任何项目
+- `default` 是全局兜底，不绑定任何项目，名称不可修改
 
 从 yaml 导入时，`repository` 里的逗号串会被拆成多个项目。例如
 `repository: auto-ops,cw-auto-ops,auto-ops-platform` 会生成一条 prompt 关联三个项目，
 导入后仍可在页面上自由增删。
+
+### 可选仓库上下文与仓库规范
+
+在「Prompt 管理 → 仓库设置」中逐项开启“拉取仓库进行 Review”。项目名可以是完整路径（如 `group/project`），也可以是存量短名（如 `auto-ops`）。旧数据、新项目、未配置项目均默认关闭；同一项目关联多个 Prompt 时共享一个开关，最后一个关联删除后清除开关，重新关联默认关闭。
+
+短名按“路径结尾”匹配真实 MR 项目：`auto-ops` 可匹配 `group/auto-ops`。同一 Prompt 内同时存在 `auto-ops` 与 `group/auto-ops` 时，精确或更长的关联优先，不会套用更宽泛短名的开关，也不会继承另一条 Prompt 的设置。**仓库地址始终由本次 MR 的源项目 API 返回，界面上的项目名从不用于拼接 clone 地址**，因此短名不会造成拉错仓库；但短名仍可能同时匹配多个同结尾项目，需要精确控制时请使用完整路径。
+
+“仓库规范”与 System/User Prompt 独立保存，供同一 Prompt 的关联项目共享，可留空（最多 32,000 字符）。建议写清整个仓库的架构、模块边界、接口、数据、安全、日志、测试和性能要求。只有开启项目会使用该规范；关闭不删除规范。保存只影响后续开始的评审，不扫描无关历史问题。
+
+开启后使用**任务携带的 GitLab token**，需要 Git 仓库读取权限（例如 `read_repository`，同时保留原有 API/评论权限）。不读取示例中的用户名密码，也不新增页面密码配置。服务使用 MR API 的固定 diff version（包含 diff、commits 和 refs），从源项目而非猜测目标项目获取仓库地址，支持 fork。版本协议见 [GitLab MR API](<https://docs.gitlab.com/api/merge_requests/#retrieve-a-merge-request-diff-version>)。
+
+拉取采用单分支浅克隆（`--single-branch --depth=1 --no-checkout`）；若分支已推进，仅补取一次评审 SHA。模型通过受限的文件列表、字面量搜索和文本读取工具核对上下文，不检出工作树，不执行目标仓库脚本、hooks、filters、LFS 或子模块，也不开放命令执行/写文件工具。仓库配置不会成为模型会话的自动加载资源。
+
+运行要求和限制：
+
+- 本机需可用的 `git` 和可信 CA；新 runner 镜像包含 Git 与 CA，**更新源码但继续运行旧镜像不保证具备 Git**。生产建议 HTTPS 与可信企业 CA；HTTP 不加密 token，显式 `GITLAB_INSECURE_TLS` 关闭校验也有中间人风险，不能自动降级。
+- 仓库地址限同一任务 GitLab origin，禁止带凭据和重定向。凭据不写 URL、命令参数、日志、仓库配置或模型输入；子进程环境仍不提供同一 OS 用户之间的秘密隔离。
+- 准备总超时 `REPOSITORY_CLONE_TIMEOUT_MS=120000`（环境配置，修改需重启）。默认监测仓库 512 MiB、索引最多 50,000 条；超限、拉取失败、版本不可得或 diff 截断会**终止本次 Review 并记录失败**，不静默降级。
+- 单文件最多 256 KiB、每次最多 200 行/16,000 字符；搜索每次最多 200 文件/4 MiB/50 命中；每会话最多 40 次工具调用/128,000 字符。分页和截断会明确传给模型。模型按需读取，不保证遍历整个仓库。
+- 拒绝常见凭据文件、符号链接、二进制、LFS 指针和依赖/生成目录；无法保证发现任意源码内硬编码秘密。项目必须已获准向所选模型发送相关源码。
+- 每任务临时目录独立，正常/异常/超时结束都等待读取和子进程停止后清理；进程被系统强杀仍可能遗留系统临时目录下的 `cr-pilot-repo-*`，运维可在确认无活动任务后清理。磁盘监测存在采样窗口，不是操作系统硬配额。
+- 项目配置沿既有名称级模型：不同 GitLab 实例的同名完整路径共享开关，不能冒充逐实例租户隔离；实际仓库和 token 始终按任务隔离。
+
+升级前停止配置写入并关闭服务连接，制作可恢复的一致性 SQLite 备份；WAL 模式不能仅复制运行中的主 DB 文件。升级为增量加表加列，旧配置全部关闭。回退前先关闭仓库开关，不自动删除新表/列；旧代码不会维护新设置，重新升级会忽略或清理已无有效关联的状态。恢复旧备份会丢失备份后的合法写入，需在停写窗口人工选择，不混用旧 DB 与运行中的 WAL。
 
 ## AI 厂商配置
 

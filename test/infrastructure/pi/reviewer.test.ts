@@ -2,8 +2,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { createLogger } from "../../../src/shared/logger.ts";
+import { createAgentSession } from "@earendil-works/pi-coding-agent";
+import type { RepositoryReadAccess } from "../../../src/domain/repository-context.ts";
+
+const repositoryAccess: RepositoryReadAccess = {
+  headSha: "a".repeat(40),
+  list: async () => ({text:"a.ts",truncated:false}),
+  read: async () => ({text:"1: fixture",truncated:false}),
+  search: async () => ({text:"",truncated:false}),
+};
 import {
   buildLoaderOptions,
+  buildRepositorySessionOptions,
   buildUserMessage,
   createIsolatedWorkspace,
   createPiReviewer,
@@ -35,7 +45,7 @@ test("createIsolatedWorkspace 返回已存在且为空的目录", () => {
   }
 });
 
-test("buildLoaderOptions 关闭全部项目资源发现", () => {
+test("buildLoaderOptions 保留旧模式的 context/skills/templates 关闭约定", () => {
   const options = buildLoaderOptions({ prompt: "PROMPT", cwd: "C:/tmp/x", agentDir: "C:/agent" });
   assert.equal(options.cwd, "C:/tmp/x");
   assert.equal(options.agentDir, "C:/agent");
@@ -49,6 +59,51 @@ test("buildLoaderOptions 关闭全部项目资源发现", () => {
 test("buildUserMessage 有上下文时前置背景段", () => {
   assert.match(buildUserMessage("CODE", "CTX"), /CTX[\s\S]*CODE/);
   assert.equal(buildUserMessage("CODE"), "待评审的代码变更：\nCODE");
+});
+
+test("上下文会话初始化期间取消，不执行 prompt 且等待 abort 后释放", async () => {
+  const controller = new AbortController();
+  let resolveFactory!: (session: PiSessionLike) => void;
+  let prompted = false;
+  let aborted = false;
+  let disposed = false;
+  const reviewer = createPiReviewer({sessionFactory:async (options) => {
+    assert.equal(options.repositoryContext, repositoryAccess);
+    return new Promise<PiSessionLike>(resolve => {resolveFactory = resolve;});
+  }});
+  const pending = reviewer.review({systemPrompt:"s",code:"diff",signal:controller.signal,repositoryContext:repositoryAccess});
+  controller.abort();
+  resolveFactory({prompt:async()=>{prompted=true;},getLastAssistantText:()=>"text",model:undefined,
+    abort:async()=>{await new Promise(resolve=>setTimeout(resolve,10));aborted=true;},
+    dispose:()=>{assert.equal(aborted,true);disposed=true;}});
+  await assert.rejects(pending);
+  assert.equal(prompted,false);
+  assert.equal(disposed,true);
+});
+
+test("上下文 SDK options 无发现资源，实际激活工具只有三种仓库读取", async () => {
+  const cwd = createIsolatedWorkspace();
+  const agentDir = createIsolatedWorkspace();
+  const options = buildRepositorySessionOptions({systemPrompt:"trusted-prompt",cwd,agentDir,repositoryContext:repositoryAccess,signal:new AbortController().signal,
+    settings:{defaultProvider:"safe-provider",defaultModel:"safe-model",packages:["must-not-install"],extensions:["must-not-run"],defaultTools:["bash"],defaultThinkingLevel:"low"}});
+  try {
+    assert.equal(options.cwd,cwd);
+    assert.equal(options.settingsManager?.getDefaultProvider(),"safe-provider");
+    assert.equal(options.settingsManager?.getDefaultModel(),"safe-model");
+    assert.equal(options.settingsManager?.getDefaultThinkingLevel(),"low");
+    assert.deepEqual(options.settingsManager?.getSettings().packages,undefined);
+    assert.deepEqual(options.tools,["repo_list","repo_read","repo_search"]);
+    await options.resourceLoader!.reload();
+    assert.deepEqual(options.resourceLoader!.getAgentsFiles(),{agentsFiles:[]});
+    assert.deepEqual(options.resourceLoader!.getAppendSystemPrompt(),[]);
+    assert.deepEqual(options.resourceLoader!.getExtensions().extensions,[]);
+    assert.equal(options.resourceLoader!.getSystemPrompt(),"trusted-prompt");
+    const {session} = await createAgentSession(options);
+    try {
+      assert.deepEqual(session.getActiveToolNames().sort(),["repo_list","repo_read","repo_search"]);
+    } finally {await session.abort();session.dispose();}
+    assert.deepEqual(readdirSync(cwd),[],"SDK cwd 不写入仓库或会话文件");
+  } finally {rmSync(cwd,{recursive:true,force:true});rmSync(agentDir,{recursive:true,force:true});}
 });
 
 test("createPiReviewer 正常路径返回文本与模型并释放一次", async () => {

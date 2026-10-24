@@ -14,6 +14,7 @@
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { REPOSITORY_STANDARDS_MAX_LENGTH } from "../src/domain/review-prompt.ts";
 
 /** 产物路径，相对仓库根目录。 */
 const OUT = join(process.cwd(), "docs", "openapi.json");
@@ -334,14 +335,15 @@ paths["/api/prompts/meta"] = {
   get: {
     tags: ["Prompt 管理"],
     summary: "下拉建议数据",
-    description: "返回已关联的项目合集与可用厂商，供前端下拉选择。",
+    description: "返回已关联的项目合集、项目仓库上下文开关和可用厂商，供前端初始化新关联；不返回规范正文或凭据。",
     operationId: "getPromptsMeta",
     security: [{ [BEARER]: [] }],
     responses: {
       200: jsonResponse("建议数据", {
         type: "object",
-        required: ["projects", "providers"],
+        required: ["projects", "providers", "projectSettings"],
         properties: {
+          projectSettings: { type: "array", items: { $ref: "#/components/schemas/ProjectReviewSetting" } },
           projects: {
             type: "array",
             description: "已关联到任意 prompt 的项目全名（去重排序）",
@@ -1201,6 +1203,22 @@ const schemas: Record<string, JsonObject> = {
     },
   },
 
+  ProjectReviewSetting: {
+    type: "object",
+    required: ["project", "repositoryContextEnabled"],
+    properties: {
+      project: { type: "string", description: "名称级项目键，可为完整路径或存量短名；同项目在多个 Prompt 中共享开关", example: "group/project" },
+      repositoryContextEnabled: { type: "boolean", description: "默认关闭；沿命中 Prompt 的最具体关联生效" },
+    },
+  },
+  ProjectReviewSettingInput: {
+    type: "object",
+    required: ["project", "repository_context_enabled"],
+    properties: {
+      project: { type: "string", description: "必须属于最终关联项目；可传完整路径或存量短名，非法字符会被拒绝" },
+      repository_context_enabled: { type: "boolean", description: "严格布尔；不接受字符串/数字/null" },
+    },
+  },
   PromptSummary: {
     type: "object",
     required: ["id", "repository", "projects", "hasWecomWebhook", "updatedAt"],
@@ -1215,6 +1233,8 @@ const schemas: Record<string, JsonObject> = {
         example: ["auto-ops", "cw-auto-ops"],
       },
       hasWecomWebhook: { type: "boolean", example: true },
+      hasRepositoryStandards: { type: "boolean", description: "列表仅给存在性，不给规范正文" },
+      projectSettings: { type: "array", items: { $ref: "#/components/schemas/ProjectReviewSetting" } },
       wecomScoreThreshold: { type: "integer", description: "总分低于该值才推送企微", example: 70 },
       providerId: { type: "integer", description: "指定的 LLM 厂商 id；未设置则用全局默认", example: 1 },
       providerLabel: { type: "string", description: "厂商展示名；厂商已删除时为空", example: "DeepSeek" },
@@ -1231,6 +1251,7 @@ const schemas: Record<string, JsonObject> = {
         required: ["systemPrompt", "userPrompt"],
         properties: {
           systemPrompt: { type: "string", description: "作为 pi 的 system prompt 全文" },
+          repositoryStandards: { type: "string", maxLength: REPOSITORY_STANDARDS_MAX_LENGTH, description: "关联项目共享的仓库规范，空字符串表示未填写；只在开启项目使用" },
           userPrompt: {
             type: "string",
             description: "含占位符的模板。`{diffs_text}` 必填，`{commits_text}` 与 `{head_sha}` 可选。",
@@ -1249,9 +1270,11 @@ const schemas: Record<string, JsonObject> = {
       repository: { type: "string", description: "唯一键与展示名", example: "通用评审" },
       projects: {
         type: "array",
-        description: "关联项目列表。不传则默认关联同名项目；传空数组表示不关联；default 恒不绑定。",
+        description: "关联项目列表；HTTP 创建省略或传空数组均不关联，default 恒不绑定。",
         items: { type: "string" },
       },
+      repository_standards: { type: "string", maxLength: REPOSITORY_STANDARDS_MAX_LENGTH, description: "选填共享规范；创建省略为空，更新省略保留，显式空字符串清空" },
+      project_settings: { type: "array", description: "项目开关部分更新；省略字段/条目保留，新增项目默认关闭，重复或未知项目返回 400，default 不接受非空条目", items: { $ref: "#/components/schemas/ProjectReviewSettingInput" } },
       system_prompt: { type: "string" },
       user_prompt: { type: "string", description: "必须包含 `{diffs_text}` 占位符" },
       wecom_webhook_url: { type: "string" },
@@ -1265,11 +1288,18 @@ const schemas: Record<string, JsonObject> = {
     type: "object",
     required: ["system_prompt", "user_prompt"],
     properties: {
+      repository: {
+        type: "string",
+        maxLength: 200,
+        description: "可选新名称；省略保留原名。非 default 可改名，重名返回 409；default 不可改名，也不允许把其他 Prompt 改名为 default",
+      },
       projects: {
         type: "array",
         description: "不传则保留原有关联；显式传（含空数组）才覆盖",
         items: { type: "string" },
       },
+      repository_standards: { type: "string", maxLength: REPOSITORY_STANDARDS_MAX_LENGTH, description: "选填共享规范；创建省略为空，更新省略保留，显式空字符串清空" },
+      project_settings: { type: "array", description: "项目开关部分更新；省略字段/条目保留，新增项目默认关闭，重复或未知项目返回 400，default 不接受非空条目", items: { $ref: "#/components/schemas/ProjectReviewSettingInput" } },
       system_prompt: { type: "string" },
       user_prompt: { type: "string" },
       wecom_webhook_url: { type: "string" },

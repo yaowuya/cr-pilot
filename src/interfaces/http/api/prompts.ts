@@ -7,8 +7,15 @@
  * 多项目（D-020）：`projects` 是字符串数组，任一命中即使用该 prompt。
  * 全局默认 prompt（repository="default"）忽略 projects。
  */
-import { Router } from "express";
-import type { PromptRepository } from "../../../domain/review-prompt.ts";
+import { Router, type ErrorRequestHandler } from "express";
+import {
+  normalizePromptName,
+  normalizeRepositoryStandards,
+  validateProjectSettings,
+  PromptValidationError,
+  type ProjectReviewSetting,
+  type PromptRepository,
+} from "../../../domain/review-prompt.ts";
 import type { LlmProviderRepository } from "../../../domain/llm-provider.ts";
 
 /** prompt 路由依赖。 */
@@ -34,16 +41,19 @@ function readPromptBody(body: Record<string, unknown>): { systemPrompt: string; 
   return { systemPrompt, userPrompt };
 }
 
-/** 读取可选的企微配置。 */
+/** 读取可选的企微配置。分数阈值对外始终是整数，避免字符串混入库与响应。 */
 function readWecom(body: Record<string, unknown>): { wecomWebhookUrl?: string; wecomScoreThreshold?: number } {
   const url = typeof body.wecom_webhook_url === "string" ? body.wecom_webhook_url.trim() : "";
   const rawThreshold = body.wecom_score_threshold;
-  const threshold =
-    typeof rawThreshold === "number" && Number.isFinite(rawThreshold) && rawThreshold >= 0
-      ? rawThreshold
-      : typeof rawThreshold === "string" && rawThreshold.trim() !== "" && Number.isFinite(Number(rawThreshold))
-        ? Number(rawThreshold)
-        : undefined;
+  const asNumber = typeof rawThreshold === "number" || typeof rawThreshold === "string"
+    ? Number(rawThreshold)
+    : Number.NaN;
+  // 空白字符串与 undefined 都视为“未配置”；其余必须是可解析的非负整数。
+  const absent = rawThreshold === undefined || rawThreshold === null || (typeof rawThreshold === "string" && rawThreshold.trim() === "");
+  if (!absent && (!Number.isFinite(asNumber) || asNumber < 0 || !Number.isInteger(asNumber))) {
+    throw new PromptValidationError("企微评分阈值必须是非负整数");
+  }
+  const threshold = absent ? undefined : asNumber;
   return { wecomWebhookUrl: url || undefined, wecomScoreThreshold: threshold };
 }
 
@@ -65,6 +75,28 @@ function readProjects(body: Record<string, unknown>): string[] {
       .filter(Boolean);
   }
   return [];
+}
+
+/** 新增配置采用严格类型和部分更新；省略不能变成清空或关闭。 */
+function readRepositoryConfig(body: Record<string, unknown>, projects: string[], repository: string): {
+  repositoryStandards?: string;
+  projectSettings?: ProjectReviewSetting[];
+} {
+  const repositoryStandards = normalizeRepositoryStandards(body.repository_standards);
+  let projectSettings: ProjectReviewSetting[] | undefined;
+  if (body.project_settings !== undefined) {
+    if (!Array.isArray(body.project_settings)) throw new PromptValidationError("project_settings 必须是数组");
+    const settings = body.project_settings.map((item: unknown): ProjectReviewSetting => {
+      if (typeof item !== "object" || item === null || Array.isArray(item) ||
+        !("project" in item) || typeof item.project !== "string" ||
+        !("repository_context_enabled" in item) || typeof item.repository_context_enabled !== "boolean") {
+        throw new PromptValidationError("项目设置必须包含 project 字符串和 repository_context_enabled 布尔值");
+      }
+      return { project: item.project, repositoryContextEnabled: item.repository_context_enabled };
+    });
+    projectSettings = validateProjectSettings(settings, projects, repository);
+  }
+  return { repositoryStandards, projectSettings };
 }
 
 /** 读取可选的厂商/模型绑定。 */
@@ -104,6 +136,7 @@ export function createPromptsRouter(deps: PromptsRouterDeps): Router {
   router.get("/meta", (_req, res) => {
     res.json({
       projects: deps.prompts.listKnownProjects(),
+      projectSettings: deps.prompts.listProjectSettings?.() ?? [],
       providers: (deps.providers?.list() ?? []).map((item) => ({
         id: item.id,
         label: item.label,
@@ -151,11 +184,13 @@ export function createPromptsRouter(deps: PromptsRouterDeps): Router {
       return;
     }
     try {
+      const projects = repository === "default" ? [] : readProjects(body);
       const created = deps.prompts.create({
         repository,
         // default 是全局兜底，不绑定具体项目：即使页面传了也忽略，
         // 避免出现「默认 prompt 只对某几个项目生效」的误解。
-        projects: repository === "default" ? [] : readProjects(body),
+        projects,
+        ...readRepositoryConfig(body, projects, repository),
         systemPrompt,
         userPrompt,
         ...readWecom(body),
@@ -165,7 +200,7 @@ export function createPromptsRouter(deps: PromptsRouterDeps): Router {
       res.json(created);
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
-      res.status(/已存在/.test(message) ? 409 : 500).json({ error: message });
+      res.status(caught instanceof PromptValidationError ? 400 : /已存在/.test(message) ? 409 : 500).json({ error: message });
     }
   });
 
@@ -191,17 +226,37 @@ export function createPromptsRouter(deps: PromptsRouterDeps): Router {
       res.status(400).json({ error: binding.error });
       return;
     }
+    // 缺少 projects 是旧客户端只改正文；显式 [] 才解绑，不能连带清除仓库开关。
+    const projects = existing.repository === "default" ? [] :
+      body.projects === undefined ? undefined : readProjects(body);
+    // 名称可改（default 除外）；省略时保留原名，兼容只改正文的旧客户端。
+    const repository = body.repository === undefined ? undefined : normalizePromptName(body.repository);
+    if (existing.repository === "default" && repository !== undefined && repository !== "default") {
+      res.status(400).json({ error: "default 名称不可修改" });
+      return;
+    }
     // 保存即生效（D-016）：评审每次从库里读，无需重启。
-    res.json(
-      deps.prompts.update(id, {
-        projects: existing.repository === "default" ? [] : readProjects(body),
-        systemPrompt,
-        userPrompt,
-        ...readWecom(body),
-        providerId: binding.providerId,
-        model: binding.model,
-      }),
-    );
+    try {
+      res.json(
+        deps.prompts.update(id, {
+          ...(repository === undefined ? {} : { repository }),
+          projects,
+          ...readRepositoryConfig(body, projects ?? existing.projects, existing.repository),
+          systemPrompt,
+          userPrompt,
+          ...readWecom(body),
+          providerId: binding.providerId,
+          model: binding.model,
+        }),
+      );
+    } catch (caught) {
+      // 新名称撞上已有 Prompt 时按创建语义返回 409，便于页面提示。
+      if (/已存在/.test(caught instanceof Error ? caught.message : "")) {
+        res.status(409).json({ error: caught instanceof Error ? caught.message : "名称已存在" });
+        return;
+      }
+      throw caught;
+    }
   });
 
   router.delete("/:id", (req, res) => {
@@ -214,5 +269,14 @@ export function createPromptsRouter(deps: PromptsRouterDeps): Router {
     res.json({ ok: true });
   });
 
+  // 新配置的业务校验统一 400；数据库/IO 故障仍交全局错误处理，不能假装输入错误。
+  const validationErrors: ErrorRequestHandler = (error: unknown, _req, res, next) => {
+    if (error instanceof PromptValidationError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    next(error);
+  };
+  router.use(validationErrors);
   return router;
 }
