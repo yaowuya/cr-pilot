@@ -22,6 +22,8 @@ export interface AppConfig {
   promptPath: string;
   /** 单次评审（单批 / 汇总）的超时毫秒数。 */
   timeoutMs: number;
+  /** 仓库 clone/fetch/索引总超时；可选类型兼容旧调用者，加载配置默认 2 分钟。 */
+  repositoryCloneTimeoutMs?: number;
   /** 日志级别。默认 info，输出请求处理的每个步骤。 */
   logLevel: LogLevel;
   /** 日志文件路径。空串 = 只写控制台；非空 = 同时写入该文件（目录不存在时自动创建）。 */
@@ -108,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     host: env.HOST?.trim() || DEFAULT_HOST,
     promptPath: env.REVIEW_PROMPT_PATH?.trim() || DEFAULT_PROMPT_PATH,
     timeoutMs: readPositiveInt(env, "REVIEW_TIMEOUT_MS", DEFAULT_TIMEOUT_MS),
+    repositoryCloneTimeoutMs: readPositiveInt(env, "REPOSITORY_CLONE_TIMEOUT_MS", 120000),
     logLevel: parseLogLevel(env.LOG_LEVEL),
     logFile: env.LOG_FILE?.trim() || DEFAULT_LOG_FILE,
     gitlabUrl: normalizeUrl(env.GITLAB_URL),

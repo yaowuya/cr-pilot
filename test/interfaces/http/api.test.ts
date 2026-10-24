@@ -19,6 +19,11 @@ import { createPromptRepository } from "../../../src/infrastructure/sqlite/promp
 import { createReviewRecordRepository } from "../../../src/infrastructure/sqlite/review-record-repo.ts";
 import { createSilentLogger } from "../../../src/shared/logger.ts";
 import { deriveToken } from "../../../src/shared/crypto.ts";
+import type { ProjectReviewSetting, PromptSummary, StoredPrompt } from "../../../src/domain/review-prompt.ts";
+
+/** 当前 API 必须返回完整新字段；旧替身的可选类型不削弱运行时断言。 */
+type ContextPrompt = StoredPrompt & { repositoryStandards: string; projectSettings: ProjectReviewSetting[] };
+type ContextMeta = { projectSettings: ProjectReviewSetting[] };
 
 const AUTH_SALT = "test-auth-salt";
 const ADMIN = "admin";
@@ -367,6 +372,165 @@ test("配置更新拒绝非数组与缺 key 的请求体", async () => {
 });
 
 // ============ backend-021：prompt 管理 ============
+
+test("仓库配置 API 支持独立开关、规范、meta 和旧客户端省略保值", async () => {
+  const { app, token } = buildHarness();
+  await withServer(app, async (base) => {
+    const created = await authed(base, token, "/api/prompts", {
+      method: "POST",
+      body: JSON.stringify({ repository: "rules", projects: ["g/a", "g/b"], system_prompt: "s", user_prompt: "u", repository_standards: "规范", project_settings: [{ project: "g/a", repository_context_enabled: true }] }),
+    });
+    assert.equal(created.status, 200);
+    const detail = await created.json() as ContextPrompt;
+    assert.equal(detail.repositoryStandards, "规范");
+    assert.deepEqual(detail.projectSettings, [{ project: "g/a", repositoryContextEnabled: true }, { project: "g/b", repositoryContextEnabled: false }]);
+    const meta = await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta;
+    assert.deepEqual(meta.projectSettings, detail.projectSettings);
+    const list = await (await authed(base, token, "/api/prompts")).json() as PromptSummary[];
+    assert.equal(list[0].hasRepositoryStandards, true);
+    assert.equal("repositoryStandards" in list[0], false);
+    const updated = await authed(base, token, `/api/prompts/${detail.id}`, { method: "PUT", body: JSON.stringify({ system_prompt: "s2", user_prompt: "u2" }) });
+    assert.equal(updated.status, 200);
+    const kept = await updated.json() as ContextPrompt;
+    assert.deepEqual(kept.projects, ["g/a", "g/b"]);
+    assert.deepEqual(kept.projectSettings, detail.projectSettings);
+    assert.equal(kept.repositoryStandards, "规范");
+    const cleared = await authed(base, token, `/api/prompts/${detail.id}`, { method: "PUT", body: JSON.stringify({ system_prompt: "s2", user_prompt: "u2", repository_standards: "", project_settings: [{project:"g/a",repository_context_enabled:false}] }) });
+    assert.equal(cleared.status, 200);
+    const off = await cleared.json() as ContextPrompt;
+    assert.equal(off.repositoryStandards, "");
+    assert.equal(off.projectSettings[0].repositoryContextEnabled, false);
+  });
+});
+
+test("仓库配置 API 拒绝非法新字段且更新失败不改变配置", async () => {
+  const { app, token } = buildHarness();
+  await withServer(app, async (base) => {
+    const initial = {repository:"r",projects:["g/a"],system_prompt:"s",user_prompt:"u"};
+    const prompt = await (await authed(base, token, "/api/prompts", {method:"POST",body:JSON.stringify(initial)})).json() as ContextPrompt;
+    for (const fields of [
+      {repository_standards:null}, {repository_standards:1}, {repository_standards:"x".repeat(32001)},
+      {project_settings:null}, {project_settings:{}}, {project_settings:[null]},
+      {project_settings:[{project:"g/a",repository_context_enabled:"true"}]},
+      {project_settings:[{project:"g/b",repository_context_enabled:true}]},
+      {project_settings:[{project:"g/a",repository_context_enabled:true},{project:"G/A",repository_context_enabled:false}]},
+      {projects:["g/../escape"],project_settings:[{project:"g/../escape",repository_context_enabled:true}]},
+      {projects:["bad\\name"],project_settings:[{project:"bad\\name",repository_context_enabled:true}]},
+      {projects:["https://git.example/g/a"],project_settings:[{project:"https://git.example/g/a",repository_context_enabled:true}]},
+    ]) {
+      const response = await authed(base, token, `/api/prompts/${prompt.id}`, {method:"PUT",body:JSON.stringify({...initial,system_prompt:"changed",...fields})});
+      assert.equal(response.status, 400, JSON.stringify(fields));
+      assert.equal(typeof (await response.json() as { error: string }).error, "string");
+      const after = await (await authed(base, token, `/api/prompts/${prompt.id}`)).json() as ContextPrompt;
+      assert.equal(after.systemPrompt, "s");
+      assert.deepEqual(after.projects, ["g/a"]);
+    }
+    const invalidCreate = await authed(base, token, "/api/prompts", {method:"POST",body:JSON.stringify({...initial,repository:"default",project_settings:[{project:"g/a",repository_context_enabled:true}]})});
+    assert.equal(invalidCreate.status, 400);
+    assert.equal((await (await authed(base, token, "/api/prompts")).json() as PromptSummary[]).length, 1);
+  });
+});
+
+test("既有短项目名可在页面和 API 正常开启仓库上下文", async () => {
+  const { app, token } = buildHarness();
+  await withServer(app, async (base) => {
+    const body = {repository:"legacy-rules",projects:["auto-ops","cw-auto-ops"],system_prompt:"s",user_prompt:"u",project_settings:[{project:"auto-ops",repository_context_enabled:true}]};
+    const created = await authed(base, token, "/api/prompts", {method:"POST",body:JSON.stringify(body)});
+    assert.equal(created.status, 200);
+    const prompt = await created.json() as ContextPrompt;
+    assert.deepEqual(prompt.projectSettings,[{project:"auto-ops",repositoryContextEnabled:true},{project:"cw-auto-ops",repositoryContextEnabled:false}]);
+    const meta = await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta;
+    assert.deepEqual(meta.projectSettings,[{project:"auto-ops",repositoryContextEnabled:true},{project:"cw-auto-ops",repositoryContextEnabled:false}]);
+  });
+});
+
+test("仓库配置写入继续允许普通登录账号，未认证写入全部拒绝", async () => {
+  const { app, admins } = buildHarness();
+  admins.create("editor", "editor-password");
+  const token = deriveToken("editor", AUTH_SALT);
+  await withServer(app, async (base) => {
+    const body = JSON.stringify({repository:"editor-rules",projects:["g/a"],system_prompt:"s",user_prompt:"u",project_settings:[{project:"g/a",repository_context_enabled:true}]});
+    const created = await authed(base, token, "/api/prompts", {method:"POST",body});
+    assert.equal(created.status, 200);
+    const prompt = await created.json() as ContextPrompt;
+    assert.equal(prompt.projectSettings[0].repositoryContextEnabled, true);
+    for (const [method, path] of [["POST","/api/prompts"],["PUT",`/api/prompts/${prompt.id}`],["DELETE",`/api/prompts/${prompt.id}`]]) {
+      const response = await fetch(`${base}${path}`, {method,headers:{"Content-Type":"application/json"},...(method!=="DELETE"?{body}:{})});
+      assert.equal(response.status, 401);
+    }
+    assert.equal((await authed(base, token, `/api/prompts/${prompt.id}`, {method:"DELETE"})).status, 200);
+    assert.deepEqual((await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta).projectSettings, []);
+  });
+});
+
+test("Prompt 名称可通过 API 修改，重名 409、default 不可改，旧客户端省略名称仍保值", async () => {
+  const { app, token } = buildHarness();
+  await withServer(app, async (base) => {
+    const create = async (repository: string) => (await (await authed(base, token, "/api/prompts", {
+      method:"POST", body:JSON.stringify({repository, projects:["g/a"], system_prompt:"s", user_prompt:"u", repository_standards:"规范"}),
+    })).json()) as ContextPrompt;
+    const target = await create("旧名称");
+    await create("占用名称");
+
+    const renamed = await authed(base, token, `/api/prompts/${target.id}`, {method:"PUT",
+      body:JSON.stringify({repository:"  新名称  ", system_prompt:"s", user_prompt:"u"})});
+    assert.equal(renamed.status, 200);
+    const body = await renamed.json() as ContextPrompt;
+    assert.equal(body.id, target.id);
+    assert.equal(body.repository, "新名称");
+    assert.deepEqual(body.projects, ["g/a"], "改名不得清空关联");
+    assert.equal(body.repositoryStandards, "规范", "改名不得清空规范");
+
+    const conflict = await authed(base, token, `/api/prompts/${target.id}`, {method:"PUT",
+      body:JSON.stringify({repository:"占用名称", system_prompt:"changed", user_prompt:"u"})});
+    assert.equal(conflict.status, 409);
+    const afterConflict = await (await authed(base, token, `/api/prompts/${target.id}`)).json() as ContextPrompt;
+    assert.equal(afterConflict.repository, "新名称", "重名失败不得改名");
+    assert.equal(afterConflict.systemPrompt, "s", "重名失败不得改正文");
+
+    const omitted = await authed(base, token, `/api/prompts/${target.id}`, {method:"PUT",
+      body:JSON.stringify({system_prompt:"s2", user_prompt:"u2"})});
+    assert.equal((await omitted.json() as ContextPrompt).repository, "新名称", "省略名称应保留原名");
+
+    const fallback = await (await authed(base, token, "/api/prompts", {method:"POST",
+      body:JSON.stringify({repository:"default", system_prompt:"s", user_prompt:"u"})})).json() as ContextPrompt;
+    const protectedDefault = await authed(base, token, `/api/prompts/${fallback.id}`, {method:"PUT",
+      body:JSON.stringify({repository:"default-renamed", system_prompt:"s", user_prompt:"u"})});
+    assert.equal(protectedDefault.status, 400);
+    assert.equal((await (await authed(base, token, `/api/prompts/${fallback.id}`)).json() as ContextPrompt).repository, "default");
+
+    const toDefault = await authed(base, token, `/api/prompts/${target.id}`, {method:"PUT",
+      body:JSON.stringify({repository:"default", system_prompt:"s", user_prompt:"u"})});
+    assert.equal(toDefault.status, 400, "不允许改名为保留的 default");
+
+    const empty = await authed(base, token, `/api/prompts/${target.id}`, {method:"PUT",
+      body:JSON.stringify({repository:"   ", system_prompt:"s", user_prompt:"u"})});
+    assert.equal(empty.status, 400);
+  });
+});
+
+test("企微评分阈值以整数落库与回读，非法值 400", async () => {
+  const { app, token } = buildHarness();
+  await withServer(app, async (base) => {
+    const created = await authed(base, token, "/api/prompts", {method:"POST",
+      body:JSON.stringify({repository:"threshold-rules",system_prompt:"s",user_prompt:"u",wecom_score_threshold:"70"})});
+    assert.equal(created.status, 200);
+    const prompt = await created.json() as ContextPrompt & {wecomScoreThreshold?: number};
+    assert.strictEqual(prompt.wecomScoreThreshold, 70, "字符串提交也必须存成整数");
+    const detail = await (await authed(base, token, `/api/prompts/${prompt.id}`)).json() as {wecomScoreThreshold?: number};
+    assert.strictEqual(detail.wecomScoreThreshold, 70);
+    const list = await (await authed(base, token, "/api/prompts")).json() as {wecomScoreThreshold?: number}[];
+    assert.strictEqual(list[0].wecomScoreThreshold, 70);
+    for (const invalid of ["abc", -1, 70.5, {}, true]) {
+      const response = await authed(base, token, `/api/prompts/${prompt.id}`, {method:"PUT",
+        body:JSON.stringify({system_prompt:"s",user_prompt:"u",wecom_score_threshold:invalid})});
+      assert.equal(response.status, 400, `阈值 ${JSON.stringify(invalid)} 应被拒绝`);
+    }
+    const cleared = await authed(base, token, `/api/prompts/${prompt.id}`, {method:"PUT",
+      body:JSON.stringify({system_prompt:"s",user_prompt:"u",wecom_score_threshold:""})});
+    assert.equal((await cleared.json() as {wecomScoreThreshold?: number}).wecomScoreThreshold, undefined);
+  });
+});
 
 test("prompt 增删改查与回落 default", async () => {
   const { app, token } = buildHarness();

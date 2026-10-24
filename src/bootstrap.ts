@@ -7,6 +7,7 @@ import { applyConfigOverrides, loadConfig } from "./shared/config.ts";
 import { createTaskQueue } from "./shared/queue.ts";
 import { createGitlabClient } from "./infrastructure/gitlab/gitlab-client.ts";
 import { createPiReviewer } from "./infrastructure/pi/reviewer.ts";
+import { createRepositoryProvider } from "./infrastructure/git/repository-context.ts";
 import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
 import { createWecomNotifier } from "./infrastructure/wecom/wecom-notifier.ts";
 import { createReviewPipeline } from "./application/review-pipeline.ts";
@@ -217,6 +218,11 @@ async function startApplication(input: {
       wecomNotifier,
       recordWriter: records,
       promptSource: prompts,
+      repositoryProvider: createRepositoryProvider({
+        timeoutMs: config.repositoryCloneTimeoutMs,
+        insecureTls: config.gitlabInsecureTls,
+        logger,
+      }),
       llmProviders: providers,
       wecomContacts,
       findingWriter: findings,

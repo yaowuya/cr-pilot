@@ -11,22 +11,29 @@ import type { DatabaseSync } from "node:sqlite";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeRepositoryKey } from "../../domain/review-rules.ts";
-import type {
-  PromptInput,
-  PromptRepository,
-  PromptSummary,
-  StoredPrompt,
+import {
+  isRepositoryProjectKey,
+  normalizePromptName,
+  normalizeRepositoryStandards,
+  validateProjectSettings,
+  PromptValidationError,
+  DEFAULT_PROMPT_REPOSITORY,
+  type ProjectReviewSetting,
+  type PromptInput,
+  type PromptRepository,
+  type PromptSummary,
+  type StoredPrompt,
 } from "../../domain/review-prompt.ts";
 import { parseRuleFileContent } from "../rules/review-rules.ts";
 
-/** 全局默认 prompt 的保留 repository 值，与 default.yaml 的语义对齐。 */
-export const DEFAULT_PROMPT_REPOSITORY = "default";
+export { DEFAULT_PROMPT_REPOSITORY };
 
 interface PromptRow {
   id: number;
   repository: string;
   system_prompt: string;
   user_prompt: string;
+  repository_standards: string;
   wecom_webhook_url: string | null;
   wecom_score_threshold: number | null;
   provider_id: number | null;
@@ -68,7 +75,59 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     return rows.map((row) => row.project);
   };
 
-  /** 覆盖式写入关联表：先删后插，保证与提交的列表完全一致。 */
+  /** 多表配置一次提交；失败不能留下已变更正文或部分项目开关。 */
+  const transaction = <T>(action: () => T): T => {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = action();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (db.isTransaction) db.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
+  /** 仅保留仍关联到非 default Prompt 的合法配置键，包括存量短项目名。 */
+  const activeProjectKeys = (): Set<string> => {
+    const rows = db.prepare(`SELECT pp.project FROM prompt_projects pp
+      JOIN review_prompts p ON p.id = pp.prompt_id WHERE p.repository <> 'default'`).all();
+    return new Set(rows.map((row) => normalizeRepositoryKey(String(row.project))).filter(isRepositoryProjectKey));
+  };
+
+  const readEnabled = (project: string): boolean => isRepositoryProjectKey(project) &&
+    db.prepare("SELECT repository_context_enabled FROM project_review_settings WHERE project = ?")
+      .get(normalizeRepositoryKey(project))?.repository_context_enabled === 1;
+
+  const readSettings = (projects: readonly string[]): ProjectReviewSetting[] => projects.map((project) => ({
+    project,
+    repositoryContextEnabled: readEnabled(project),
+  }));
+
+  /** 解绑和旧版本遗留的设置必须清理，避免重新关联时意外恢复开启。 */
+  const removeOrphanSettings = (): void => {
+    const active = activeProjectKeys();
+    const remove = db.prepare("DELETE FROM project_review_settings WHERE project = ?");
+    for (const row of db.prepare("SELECT project FROM project_review_settings").all()) {
+      const project = String(row.project);
+      if (!active.has(project)) remove.run(project);
+    }
+  };
+
+  /** 只写显式提交的项目；普通保存或未操作的项目不能重置全局状态。 */
+  const writeSettings = (settings: readonly ProjectReviewSetting[]): void => {
+    const upsert = db.prepare(`INSERT INTO project_review_settings (project, repository_context_enabled, updated_at)
+      VALUES (?, ?, ?) ON CONFLICT(project) DO UPDATE SET
+      repository_context_enabled = excluded.repository_context_enabled, updated_at = excluded.updated_at
+      WHERE project_review_settings.repository_context_enabled <> excluded.repository_context_enabled`);
+    for (const setting of settings) {
+      if (isRepositoryProjectKey(setting.project)) {
+        upsert.run(setting.project, setting.repositoryContextEnabled ? 1 : 0, Date.now());
+      }
+    }
+  };
+
+  /** 覆盖式写入关联表；调用方事务内完成，项目开关保存在独立表而不会被重置。 */
   const writeProjects = (promptId: number, projects: readonly string[] | undefined): void => {
     db.prepare("DELETE FROM prompt_projects WHERE prompt_id = ?").run(promptId);
     const insert = db.prepare("INSERT INTO prompt_projects (prompt_id, project) VALUES (?, ?)");
@@ -84,6 +143,8 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     projects: readProjects(row.id),
     systemPrompt: row.system_prompt,
     userPrompt: row.user_prompt,
+    repositoryStandards: row.repository_standards,
+    projectSettings: readSettings(readProjects(row.id)),
     wecomWebhookUrl: row.wecom_webhook_url ?? undefined,
     wecomScoreThreshold: row.wecom_score_threshold ?? undefined,
     providerId: row.provider_id ?? undefined,
@@ -97,6 +158,8 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     repository: row.repository,
     projects: readProjects(row.id),
     hasWecomWebhook: Boolean(row.wecom_webhook_url),
+    hasRepositoryStandards: row.repository_standards.length > 0,
+    projectSettings: readSettings(readProjects(row.id)),
     wecomScoreThreshold: row.wecom_score_threshold ?? undefined,
     providerId: row.provider_id ?? undefined,
     providerLabel: row.provider_id === null ? undefined : readProviderLabel(row.provider_id),
@@ -120,40 +183,25 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     return row ? toPrompt(row) : undefined;
   };
 
-  /** 插入本体与关联项目，返回完整记录。 */
-  const insert = (input: PromptInput): StoredPrompt => {
-    const now = Date.now();
-    const result = db
-      .prepare(
-        `INSERT INTO review_prompts
-           (repository, system_prompt, user_prompt, wecom_webhook_url, wecom_score_threshold, provider_id, model, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        input.repository,
-        input.systemPrompt,
-        input.userPrompt,
-        input.wecomWebhookUrl ?? null,
-        input.wecomScoreThreshold ?? null,
-        input.providerId ?? null,
-        input.model ?? null,
-        now,
-      );
+  /** 导入与创建共用原子插入，缺少新增字段时不会推测开启仓库上下文。 */
+  const insert = (input: PromptInput): StoredPrompt => transaction(() => {
+    const projects = input.repository === DEFAULT_PROMPT_REPOSITORY ? [] : normalizeProjects(input.projects);
+    const standards = normalizeRepositoryStandards(input.repositoryStandards) ?? "";
+    const settings = validateProjectSettings(input.projectSettings, projects, input.repository);
+    removeOrphanSettings();
+    const result = db.prepare(`INSERT INTO review_prompts
+      (repository, system_prompt, user_prompt, repository_standards, wecom_webhook_url,
+       wecom_score_threshold, provider_id, model, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      input.repository, input.systemPrompt, input.userPrompt, standards,
+      input.wecomWebhookUrl ?? null, input.wecomScoreThreshold ?? null,
+      input.providerId ?? null, input.model ?? null, Date.now(),
+    );
     const id = Number(result.lastInsertRowid);
-    writeProjects(id, input.projects);
-    return {
-      id,
-      repository: input.repository,
-      projects: readProjects(id),
-      systemPrompt: input.systemPrompt,
-      userPrompt: input.userPrompt,
-      wecomWebhookUrl: input.wecomWebhookUrl,
-      wecomScoreThreshold: input.wecomScoreThreshold,
-      providerId: input.providerId,
-      model: input.model,
-      updatedAt: now,
-    };
-  };
+    writeProjects(id, projects);
+    writeSettings(settings);
+    return selectByRepository(input.repository)!;
+  });
 
   return {
     resolve(repositoryFullName) {
@@ -228,36 +276,71 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     },
 
     update(id, input) {
-      const now = Date.now();
-      db.prepare(
-        `UPDATE review_prompts
-            SET system_prompt = ?, user_prompt = ?, wecom_webhook_url = ?, wecom_score_threshold = ?,
-                provider_id = ?, model = ?, updated_at = ?
-          WHERE id = ?`,
-      ).run(
-        input.systemPrompt,
-        input.userPrompt,
-        input.wecomWebhookUrl ?? null,
-        input.wecomScoreThreshold ?? null,
-        input.providerId ?? null,
-        input.model ?? null,
-        now,
-        id,
-      );
-      // projects 未传时保持原有关系不动（只改正文的调用方不该顺带清空项目）；
-      // 显式传入（含空数组）才覆盖。
-      if (input.projects !== undefined) {
-        writeProjects(id, input.projects);
-      }
-      const updated = this.get(id);
-      if (!updated) throw new Error(`prompt ${id} 不存在`);
-      return updated;
+      return transaction(() => {
+        const existing = this.get(id);
+        if (!existing) throw new Error(`prompt ${id} 不存在`);
+        // 名称可改，但 default 是 resolve 的保留兜底键，不允许改名或改名成 default。
+        const repository = input.repository === undefined
+          ? existing.repository : normalizePromptName(input.repository);
+        if (existing.repository === DEFAULT_PROMPT_REPOSITORY && repository !== DEFAULT_PROMPT_REPOSITORY) {
+          throw new PromptValidationError("default 名称不可修改");
+        }
+        if (repository === DEFAULT_PROMPT_REPOSITORY && existing.repository !== DEFAULT_PROMPT_REPOSITORY) {
+          throw new PromptValidationError("不能将其他 Prompt 改名为 default");
+        }
+        const projects = existing.repository === DEFAULT_PROMPT_REPOSITORY ? [] :
+          input.projects === undefined ? existing.projects : normalizeProjects(input.projects);
+        const standards = normalizeRepositoryStandards(input.repositoryStandards) ?? existing.repositoryStandards ?? "";
+        const settings = validateProjectSettings(input.projectSettings, projects, repository);
+        // 添加关联前先清理旧版本残留，防止孤立开启项在重关联时复活。
+        removeOrphanSettings();
+        try {
+          db.prepare(`UPDATE review_prompts SET repository = ?, system_prompt = ?, user_prompt = ?,
+            repository_standards = ?, wecom_webhook_url = ?, wecom_score_threshold = ?,
+            provider_id = ?, model = ?, updated_at = ? WHERE id = ?`).run(
+            repository, input.systemPrompt, input.userPrompt, standards,
+            input.wecomWebhookUrl ?? null, input.wecomScoreThreshold ?? null,
+            input.providerId ?? null, input.model ?? null, Date.now(), id,
+          );
+        } catch (error) {
+          // 重名必须让整笔事务回滚，不能出现正文已改而名称未变。
+          if (isUniqueViolation(error)) throw new Error(`prompt ${repository} 已存在`);
+          throw error;
+        }
+        if (input.projects !== undefined || existing.repository === DEFAULT_PROMPT_REPOSITORY) {
+          writeProjects(id, projects);
+        }
+        writeSettings(settings);
+        removeOrphanSettings();
+        return this.get(id)!;
+      });
     },
 
     remove(id) {
-      // 删除即删（D-015）：被删项目在 resolve 时自然回落到 default。
-      // 关联表由 ON DELETE CASCADE 清理（openDatabase 已开启 foreign_keys）。
-      db.prepare("DELETE FROM review_prompts WHERE id = ?").run(id);
+      transaction(() => {
+        // 关联由外键级联删除；只有最后一个完整关联消失时，项目开关才清除。
+        db.prepare("DELETE FROM review_prompts WHERE id = ?").run(id);
+        removeOrphanSettings();
+      });
+    },
+
+    isRepositoryContextEnabled(repositoryFullName) {
+      const project = normalizeRepositoryKey(repositoryFullName);
+      if (!isRepositoryProjectKey(project)) return false;
+      const prompt = this.resolve(project);
+      if (!prompt || prompt.repository === DEFAULT_PROMPT_REPOSITORY) return false;
+      // 旧配置按项目短名命中 Prompt；开关必须沿同一个 Prompt 的关联查找，
+      // 不能因其他规则里同后缀的项目开启而跨规则继承。精确/较长关联优先，
+      // 即使它没有设置（默认关闭）也不能再被宽泛短名的 true 覆盖。
+      const matched = prompt.projects.map(normalizeRepositoryKey)
+        .filter(key => isRepositoryProjectKey(key) && (key === project || project.endsWith(`/${key}`)))
+        .sort((left, right) => right.length - left.length)[0];
+      return matched !== undefined && readEnabled(matched);
+    },
+
+    listProjectSettings() {
+      const projects = [...new Set(this.listKnownProjects().map(normalizeRepositoryKey))].sort();
+      return readSettings(projects);
     },
 
     listKnownProjects() {

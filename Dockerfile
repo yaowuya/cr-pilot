@@ -87,10 +87,11 @@ ARG APK_MIRROR=mirrors.aliyun.com
 
 # su-exec：极小的降权工具（~10KB），用于 entrypoint 以 root 修完属主后切回 node。
 # Alpine 不预装 gosu，su-exec 是官方推荐替代。
+# 仓库上下文模式运行期需要 git 与可信 CA；不安装 LFS、不执行目标仓库构建。
 RUN if [ -n "${APK_MIRROR}" ]; then \
       sed -i "s|://[^/]*/alpine/|://${APK_MIRROR}/alpine/|g" /etc/apk/repositories; \
     fi \
-    && apk add --no-cache su-exec
+    && apk add --no-cache su-exec git ca-certificates
 
 # 启动脚本：以 root 修正卷属主后降权运行。
 #

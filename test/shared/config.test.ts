@@ -6,6 +6,14 @@ import { applyConfigOverrides, loadConfig } from "../../src/shared/config.ts";
 // 请求头携带（对齐参考项目），不再需要任何必填环境变量。
 const EMPTY_ENV = {};
 
+test("仓库准备超时有独立默认值且拒绝非法环境值", () => {
+  assert.equal(loadConfig({}).repositoryCloneTimeoutMs, 120000);
+  assert.equal(loadConfig({REPOSITORY_CLONE_TIMEOUT_MS:"30000"}).repositoryCloneTimeoutMs, 30000);
+  for (const value of ["0", "-1", "abc", "1.5"]) {
+    assert.throws(() => loadConfig({REPOSITORY_CLONE_TIMEOUT_MS:value}), /REPOSITORY_CLONE_TIMEOUT_MS/);
+  }
+});
+
 test("loadConfig 默认端口为 5001，无任何必填配置", () => {
   assert.equal(loadConfig(EMPTY_ENV).port, 5001);
 });
@@ -22,6 +30,7 @@ test("loadConfig 在无环境变量时返回默认值", () => {
     host: "127.0.0.1",
     promptPath: "prompts/review.md",
     timeoutMs: 1200000,
+    repositoryCloneTimeoutMs: 120000,
     logLevel: "info",
     logFile: "",
     gitlabUrl: "https://gitlab.example.com",

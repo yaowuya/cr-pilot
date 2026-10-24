@@ -51,6 +51,12 @@ export interface ReviewStats {
   byCommitter: DimensionStat[];
 }
 
+/** 项目名称级开关：同项目在不同 Prompt 中共享，不等同逐实例租户配置。 */
+export interface ProjectReviewSetting {
+  project: string;
+  repositoryContextEnabled: boolean;
+}
+
 /** prompt 列表摘要：不含正文。 */
 export interface PromptSummary {
   id: number;
@@ -58,6 +64,8 @@ export interface PromptSummary {
   /** 关联的 GitLab 项目全名列表；任一命中即使用该 prompt。 */
   projects: string[];
   hasWecomWebhook: boolean;
+  hasRepositoryStandards?: boolean;
+  projectSettings?: ProjectReviewSetting[];
   wecomScoreThreshold?: number;
   /** 指定的 LLM 厂商 id；未设置时用全局默认。 */
   providerId?: number;
@@ -74,6 +82,8 @@ export interface StoredPrompt {
   projects: string[];
   systemPrompt: string;
   userPrompt: string;
+  repositoryStandards?: string;
+  projectSettings?: ProjectReviewSetting[];
   wecomWebhookUrl?: string;
   wecomScoreThreshold?: number;
   providerId?: number;
@@ -84,6 +94,7 @@ export interface StoredPrompt {
 /** prompt 页的下拉建议数据：已关联项目 + 可用厂商。 */
 export interface PromptMeta {
   projects: string[];
+  projectSettings?: ProjectReviewSetting[];
   providers: {
     id: number;
     label: string;

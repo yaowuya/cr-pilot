@@ -1,5 +1,6 @@
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
 import type { Change, Commit, Discussion, DiscussionPosition, DiffRefs, GitlabClient } from "../../domain/review-task.ts";
+import { isGitObjectId, parseGitlabHttpUrl, validateRepositoryUrl } from "../../domain/repository-context.ts";
 
 export type { Change, Commit, GitlabClient };
 
@@ -26,6 +27,18 @@ interface CreateGitlabClientOptions {
   fetchFn?: typeof fetch;
   /** changes 为空时的重试间隔毫秒数，测试可缩短。 */
   retryDelayMs?: number;
+}
+
+/** 新快照接口严格解包；错误文案不回显服务器响应或任务凭据。 */
+function snapshotObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("GitLab 仓库快照元数据不完整");
+  }
+  return value as Record<string, unknown>;
+}
+
+function positiveId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 /** changes 为空时的最大重试次数。GitLab 生成 diff 有延迟，空结果可能是时序问题。 */
@@ -128,6 +141,83 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
   };
 
   return {
+    /**
+     * 固定任务开始时的 MR 版本，diff、commits 和 refs 均取自版本详情。
+     * GitLab 的 latest /changes 与 /versions 分开请求存在竞态，不能拼成一个快照。
+     * 版本协议：https://docs.gitlab.com/api/merge_requests/#retrieve-a-merge-request-diff-version
+     */
+    async getRepositoryReviewSnapshot(projectId, iid, gitlabUrl = "", gitlabToken = "") {
+      if (!positiveId(projectId) || !positiveId(iid)) throw new Error("仓库快照的项目或 MR 元数据非法");
+      if (!gitlabToken.trim() || /[\r\n\u0000]/.test(gitlabToken)) throw new Error("仓库快照缺少有效任务凭据");
+      const instance = parseGitlabHttpUrl((gitlabUrl || baseUrl).trim()).href.replace(/\/+$/, "");
+      const mrPath = `/api/v4/projects/${projectId}/merge_requests/${iid}`;
+      // 只对新能力收紧跳转与错误回显，不改变旧集成端点的异常兼容行为。
+      const readSnapshot = async (path: string): Promise<unknown> => {
+        try {
+          return await request<unknown>(instance, gitlabToken, path, { redirect: "error" });
+        } catch (error) {
+          const status = error instanceof GitlabApiError ? error.status : 0;
+          throw new GitlabApiError(status ? `GitLab 仓库快照获取失败（HTTP ${status}）` : "GitLab 仓库快照网络请求失败或超时", status);
+        }
+      };
+      const mr = snapshotObject(await readSnapshot(mrPath));
+      const mrRefs = snapshotObject(mr.diff_refs);
+      if (mr.project_id !== projectId || mr.iid !== iid || !positiveId(mr.id) ||
+        !positiveId(mr.source_project_id) || typeof mr.source_branch !== "string" || !mr.source_branch.trim() ||
+        !isGitObjectId(mr.sha) || mrRefs.head_sha !== mr.sha ||
+        !isGitObjectId(mrRefs.base_sha) || !isGitObjectId(mrRefs.start_sha)) {
+        throw new Error("MR 源项目或版本元数据不完整");
+      }
+      const versions = await readSnapshot(`${mrPath}/versions?per_page=100`);
+      if (!Array.isArray(versions)) throw new Error("MR 版本列表不完整");
+      const selected = versions.map(snapshotObject).find((item) => item.head_commit_sha === mr.sha &&
+        item.base_commit_sha === mrRefs.base_sha && item.start_commit_sha === mrRefs.start_sha);
+      if (!selected || !positiveId(selected.id)) throw new Error("未找到与 MR 当前快照一致的 diff 版本");
+      const version = snapshotObject(await readSnapshot(`${mrPath}/versions/${selected.id}`));
+      if (version.id !== selected.id || version.merge_request_id !== mr.id || version.head_commit_sha !== mr.sha ||
+        version.base_commit_sha !== mrRefs.base_sha || version.start_commit_sha !== mrRefs.start_sha ||
+        version.state !== "collected" || version.overflow === true || !Array.isArray(version.diffs) ||
+        typeof version.real_size !== "string" || !/^\d+$/.test(version.real_size) ||
+        Number(version.real_size) !== version.diffs.length) {
+        throw new Error("MR diff 版本不一致或内容不完整（可能超出 GitLab diff 限额）");
+      }
+      const changes = version.diffs.map((raw): Change => {
+        const diff = snapshotObject(raw);
+        if (diff.too_large === true || diff.collapsed === true || typeof diff.diff !== "string" ||
+          typeof diff.old_path !== "string" || !diff.old_path || typeof diff.new_path !== "string" || !diff.new_path) {
+          throw new Error("MR 版本包含不完整的文件 diff");
+        }
+        return { oldPath: diff.old_path, newPath: diff.new_path, diff: diff.diff };
+      });
+      if (!Array.isArray(version.commits)) throw new Error("MR 版本缺少提交摘要");
+      const commits = version.commits.map((raw): Commit => {
+        const commit = snapshotObject(raw);
+        if (!isGitObjectId(commit.id) || typeof commit.message !== "string") throw new Error("MR 版本提交摘要不完整");
+        return { id: commit.id, message: commit.message };
+      });
+      const source = snapshotObject(await readSnapshot(`/api/v4/projects/${mr.source_project_id}`));
+      if (source.id !== mr.source_project_id || typeof source.http_url_to_repo !== "string") {
+        throw new Error("源项目仓库元数据不完整");
+      }
+      const repositoryUrl = validateRepositoryUrl(source.http_url_to_repo, instance);
+      const finalMr = snapshotObject(await readSnapshot(mrPath));
+      const finalRefs = snapshotObject(finalMr.diff_refs);
+      if (finalMr.id !== mr.id || finalMr.project_id !== projectId || finalMr.iid !== iid ||
+        finalMr.sha !== mr.sha || finalMr.source_project_id !== mr.source_project_id ||
+        finalMr.source_branch !== mr.source_branch || finalMr.target_branch !== mr.target_branch ||
+        finalRefs.head_sha !== mrRefs.head_sha || finalRefs.base_sha !== mrRefs.base_sha || finalRefs.start_sha !== mrRefs.start_sha) {
+        throw new Error("MR 在准备快照期间发生变化，请对新版本重新触发评审");
+      }
+      return {
+        changes, commits,
+        refs: { headSha: mr.sha, baseSha: mrRefs.base_sha, startSha: mrRefs.start_sha },
+        sourceProjectId: mr.source_project_id,
+        sourceBranch: mr.source_branch,
+        repositoryUrl,
+        gitlabUrl: instance,
+      };
+    },
+
     async getMergeRequestChanges(projectId, iid, gitlabUrl = "", gitlabToken = "") {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/changes?access_raw_diffs=true`;
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {

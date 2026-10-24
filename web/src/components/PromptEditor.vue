@@ -1,6 +1,6 @@
 <template>
   <div class="prompt-editor">
-    <el-form-item label="System Prompt（作为模型系统提示）">
+    <el-form-item label="System Prompt（作为模型系统提示）" prop="systemPrompt">
       <el-input
         :model-value="systemPrompt"
         type="textarea"
@@ -12,7 +12,7 @@
       />
     </el-form-item>
 
-    <el-form-item label="User Prompt（评审内容模板）">
+    <el-form-item label="User Prompt（评审内容模板）" prop="userPrompt">
       <el-input
         :model-value="userPrompt"
         type="textarea"

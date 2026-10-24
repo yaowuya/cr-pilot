@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai/compat";
@@ -8,9 +8,15 @@ import {
   getAgentDir,
   ModelRuntime,
   SessionManager,
+  SettingsManager,
+  createExtensionRuntime,
+  type CreateAgentSessionOptions,
+  type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
 import type { ReviewInput, ReviewResult, Reviewer } from "../../domain/review-task.ts";
+import type { RepositoryReadAccess } from "../../domain/repository-context.ts";
+import { createRepositoryTools } from "./repository-tools.ts";
 
 // 领域端口类型由 domain 持有，这里重导出保持既有导入路径兼容。
 export type { ReviewInput, ReviewResult, Reviewer };
@@ -31,6 +37,8 @@ export interface PiSessionLike {
   getLastAssistantText(): string | undefined;
   /** 当前生效模型；尚未选出模型时为 undefined。 */
   readonly model: { id: string } | undefined;
+  /** 请求中断并等当前模型/工具 idle；旧测试替身可省略，由 dispose 兜底。 */
+  abort?(): Promise<void>;
   /** 释放会话。重复调用由实现方保证安全，本服务仍只调用一次。 */
   dispose(): void;
 }
@@ -39,6 +47,9 @@ export interface PiSessionLike {
 export type PiSessionFactory = (options: {
   systemPrompt: string;
   cwd: string;
+  /** 已授权的只读能力与当前会话取消信号；仅新模式使用。 */
+  repositoryContext?: RepositoryReadAccess;
+  signal: AbortSignal;
   /** 目标模型；缺省时用 models.json 的默认配置。 */
   model?: string;
   /** 目标厂商的 provider key。 */
@@ -59,8 +70,8 @@ export function createIsolatedWorkspace(): string {
 /**
  * 构造 pi 的资源加载选项。
  *
- * 三个 `no*` 开关与双 prompt 覆盖共同保证评审上下文只有 prompt 文件与请求里的代码：
- * 关掉上下文文件、skills 与 prompt 模板，并把 `systemPrompt` 设为 prompt 文件全文。
+ * 旧无上下文模式关闭上下文文件、skills 和 prompt 模板，并把 systemPrompt
+ * 设为配置全文；不承诺关闭全局扩展/packages，仓库模式必须改用静态 loader。
  * `appendSystemPromptOverride` 返回空数组是必需的，否则 pi 会自动附加
  * `~/.pi/agent` 或 `<cwd>/.pi` 下的 `APPEND_SYSTEM.md`。
  */
@@ -78,6 +89,65 @@ export function buildLoaderOptions(input: {
     systemPromptOverride: () => input.prompt,
     appendSystemPromptOverride: () => [],
   };
+}
+
+/**
+ * 构造无资源发现的仓库模式选项。DefaultResourceLoader 即使 noExtensions 也可能
+ * resolve/install packages，所以这里不调用它；只保留受信配置的模型选择字段。
+ */
+export function buildRepositorySessionOptions(input: {
+  systemPrompt: string; cwd: string; agentDir: string;
+  repositoryContext: RepositoryReadAccess; signal: AbortSignal;
+  settings?: Record<string, unknown>;
+}): CreateAgentSessionOptions {
+  const runtime = createExtensionRuntime();
+  const loader: ResourceLoader = {
+    getExtensions: () => ({extensions:[],errors:[],runtime}),
+    getSkills: () => ({skills:[],diagnostics:[]}),
+    getPrompts: () => ({prompts:[],diagnostics:[]}),
+    getThemes: () => ({themes:[],diagnostics:[]}),
+    getAgentsFiles: () => ({agentsFiles:[]}),
+    getSystemPrompt: () => input.systemPrompt,
+    getSystemPromptSource: () => undefined,
+    getAppendSystemPrompt: () => [],
+    getAppendSystemPromptSources: () => [],
+    extendResources: () => {},
+    reload: async () => {},
+  };
+  const settings = input.settings ?? {};
+  const thinking = settings.defaultThinkingLevel;
+  const validThinking = ["off","minimal","low","medium","high","xhigh"] as const;
+  const defaultThinkingLevel = validThinking.find(value => value === thinking);
+  const modelThinkingLevels: Record<string, typeof validThinking[number]> = {};
+  if (typeof settings.modelThinkingLevels === "object" && settings.modelThinkingLevels !== null) {
+    for (const [key,value] of Object.entries(settings.modelThinkingLevels)) {
+      const level = validThinking.find(item => item === value);
+      if (level) modelThinkingLevels[key] = level;
+    }
+  }
+  return {
+    cwd: input.cwd,
+    agentDir: input.agentDir,
+    resourceLoader: loader,
+    sessionManager: SessionManager.inMemory(input.cwd),
+    settingsManager: SettingsManager.inMemory({
+      defaultProvider: typeof settings.defaultProvider === "string" ? settings.defaultProvider : undefined,
+      defaultModel: typeof settings.defaultModel === "string" ? settings.defaultModel : undefined,
+      defaultThinkingLevel, modelThinkingLevels,
+      cacheWarming: "off",
+    }),
+    tools: ["repo_list","repo_read","repo_search"],
+    excludeTools: ["mcp__*"],
+    customTools: createRepositoryTools(input.repositoryContext, input.signal),
+  };
+}
+
+/** 只读取服务端 agentDir 的模型默认值；仓库路径从不参与 settings 发现。 */
+function readTrustedSettings(agentDir: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(readFileSync(join(agentDir,"settings.json"),"utf8"));
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string,unknown> : {};
+  } catch { return {}; }
 }
 
 /**
@@ -114,7 +184,7 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
   const logger = options.logger ?? createSilentLogger();
   logger.debug("已创建隔离工作目录", { cwd: workspace });
   return {
-    async review({ systemPrompt, code, context, signal, provider, model }) {
+    async review({ systemPrompt, code, context, signal, provider, model, repositoryContext }) {
       if (signal.aborted) {
         logger.debug("评审在开始前已中断，不创建会话");
         throw signal.reason ?? new Error("评审在开始前已被中断");
@@ -127,7 +197,7 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
         厂商: provider ?? "默认",
         模型: model ?? "默认",
       });
-      const session = await sessionFactory({ systemPrompt, cwd: workspace, provider, model });
+      const session = await sessionFactory({ systemPrompt, cwd: workspace, provider, model, repositoryContext, signal });
       let disposed = false;
       const disposeOnce = (): void => {
         if (disposed) return;
@@ -135,12 +205,22 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
         session.dispose();
         logger.debug("pi 会话已释放");
       };
+      let stopping: Promise<void> | undefined;
+      const stopOnce = (): Promise<void> => {
+        stopping ??= (async () => {
+          if (session.abort) await session.abort();
+          else disposeOnce();
+        })().catch(() => { logger.warn("pi 会话中断等待失败，将释放会话"); });
+        return stopping;
+      };
       const onAbort = (): void => {
-        logger.warn("评审被中断，释放 pi 会话");
-        disposeOnce();
+        logger.warn("评审被中断，等待 pi 会话停止");
+        void stopOnce();
       };
       signal.addEventListener("abort", onAbort, { once: true });
       try {
+        // 工厂初始化可能经历异步 IO；必须复核期间发生的取消，不能漏过后继续 prompt。
+        if (signal.aborted) throw new Error("评审已中断");
         logger.debug("送入 pi 评审", { 用户消息字数: userMessage.length });
         await session.prompt(userMessage);
         if (signal.aborted) {
@@ -152,6 +232,7 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
         return { text, model: session.model?.id ?? "unknown" };
       } finally {
         signal.removeEventListener("abort", onAbort);
+        await stopOnce();
         disposeOnce();
       }
     },
@@ -159,13 +240,19 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
 }
 
 /** 默认会话工厂：按已核实的 SDK 签名装配一次隔离的 pi 会话。 */
-async function createRealSession(options: {
-  systemPrompt: string;
-  cwd: string;
-  provider?: string;
-  model?: string;
-}): Promise<PiSessionLike> {
+async function createRealSession(options: Parameters<PiSessionFactory>[0]): Promise<PiSessionLike> {
   const agentDir = getAgentDir();
+  if (options.repositoryContext) {
+    const sessionOptions = buildRepositorySessionOptions({
+      ...options, agentDir, repositoryContext: options.repositoryContext,
+      settings: readTrustedSettings(agentDir),
+    });
+    const { session } = await createAgentSession({
+      ...sessionOptions,
+      model: await resolveModel(agentDir, options.provider, options.model),
+    });
+    return session;
+  }
   const loader = new DefaultResourceLoader(
     buildLoaderOptions({ prompt: options.systemPrompt, cwd: options.cwd, agentDir }),
   );

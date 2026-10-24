@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS review_prompts (
   repository TEXT NOT NULL UNIQUE,
   system_prompt TEXT NOT NULL,
   user_prompt TEXT NOT NULL,
+  repository_standards TEXT NOT NULL DEFAULT '',
   wecom_webhook_url TEXT,
   wecom_score_threshold INTEGER,
   updated_at INTEGER NOT NULL
@@ -61,6 +62,11 @@ CREATE TABLE IF NOT EXISTS prompt_projects (
   FOREIGN KEY (prompt_id) REFERENCES review_prompts (id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_projects_project ON prompt_projects (project);
+CREATE TABLE IF NOT EXISTS project_review_settings (
+  project TEXT PRIMARY KEY NOT NULL,
+  repository_context_enabled INTEGER NOT NULL DEFAULT 0 CHECK (repository_context_enabled IN (0, 1)),
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS llm_providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -156,9 +162,19 @@ export function openDatabase(path: string): DatabaseSync {
   // SQLite 默认关闭外键约束，必须显式打开，否则 ON DELETE CASCADE 不生效
   // （删 prompt 时关联的 prompt_projects 行会残留）。
   db.exec("PRAGMA foreign_keys = ON");
-  db.exec(SCHEMA);
-  migrate(db);
-  return db;
+  // 建表与补列必须是一次原子升级；IMMEDIATE 也避免两个启动进程同时探测缺列。
+  // 新配置不从历史 Prompt 推测启用，旧库升级后仍保持原有 diff-only 行为。
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    db.exec(SCHEMA);
+    migrate(db);
+    db.exec("COMMIT");
+    return db;
+  } catch (error) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    db.close();
+    throw error;
+  }
 }
 
 /**
@@ -173,6 +189,7 @@ export function openDatabase(path: string): DatabaseSync {
  * 失败（如磁盘只读）也一起吞掉。
  */
 function migrate(db: DatabaseSync): void {
+  addColumnIfMissing(db, "review_prompts", "repository_standards", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "review_prompts", "provider_id", "INTEGER");
   addColumnIfMissing(db, "review_prompts", "model", "TEXT");
   addColumnIfMissing(db, "review_records", "mr_url", "TEXT");
