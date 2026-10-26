@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { createLogger } from "../../../src/shared/logger.ts";
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
-import type { RepositoryReadAccess } from "../../../src/domain/repository-context.ts";
+import type { RepositoryReadAccess, RepositoryToolCallEvent } from "../../../src/domain/repository-context.ts";
 
 const repositoryAccess: RepositoryReadAccess = {
   headSha: "a".repeat(40),
@@ -151,4 +151,103 @@ test("createPiReviewer 在 debug 级别记录会话生命周期", async () => {
   assert.match(text, /系统提示字数=1/);
   assert.match(text, /用户消息字数=\d+/);
   assert.doesNotMatch(text, /CODE/, "用户消息正文不应写入日志");
+});
+
+test("仓库工具事件 buildRepositorySessionOptions 把 observer 交给真实 customTools 而不扩散到 SDK 参数", async () => {
+  const cwd = createIsolatedWorkspace();
+  const agentDir = createIsolatedWorkspace();
+  const events: RepositoryToolCallEvent[] = [];
+  const onRepositoryToolCall = (event: RepositoryToolCallEvent): void => { events.push(event); };
+  try {
+    const options = buildRepositorySessionOptions({
+      systemPrompt: "trusted-system-prompt", cwd, agentDir,
+      repositoryContext: repositoryAccess, signal: new AbortController().signal,
+      onRepositoryToolCall, settings: {},
+    });
+    assert.equal("onRepositoryToolCall" in options, false, "observer 不是 SDK 的额外选项");
+    assert.equal(Object.values(options).includes(onRepositoryToolCall), false);
+    assert.deepEqual(options.tools, ["repo_list", "repo_read", "repo_search"]);
+    assert.deepEqual(options.excludeTools, ["mcp__*"]);
+    assert.equal(options.resourceLoader!.getSystemPrompt(), "trusted-system-prompt");
+    assert.deepEqual(options.resourceLoader!.getAppendSystemPrompt(), []);
+    assert.equal(events.length, 0, "组装会话本身不是工具调用");
+    const tool = options.customTools!.find(item => item.name === "repo_search")!;
+    const context = {} as Parameters<typeof tool.execute>[4];
+    const result = await tool.execute("offline-search", { query: "private-query" }, undefined, undefined, context);
+    const content = result.content[0];
+    if (content.type !== "text") assert.fail("仓库工具必须返回模型文本");
+    assert.equal(events.length, 1);
+    assert.deepEqual(Object.keys(events[0]).sort(), ["durationMs", "outcome", "outputCharacters", "tool", "truncated"]);
+    assert.deepEqual({ ...events[0], durationMs: 0 }, {
+      tool: "repo_search", outcome: "success", durationMs: 0,
+      outputCharacters: content.text.length, truncated: false,
+    });
+    assert.ok(Number.isFinite(events[0].durationMs) && events[0].durationMs >= 0);
+    assert.doesNotMatch(JSON.stringify(events), /private-query|onRepositoryToolCall/);
+    assert.equal(options.resourceLoader!.getSystemPrompt(), "trusted-system-prompt");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("仓库工具事件 createPiReviewer 经离线 sessionFactory 和真实 customTools 透传三工具事件", async () => {
+  const agentDir = createIsolatedWorkspace();
+  let cwd: string | undefined;
+  const events: RepositoryToolCallEvent[] = [];
+  const outputCharacters: number[] = [];
+  const onRepositoryToolCall = (event: RepositoryToolCallEvent): void => { events.push(event); };
+  const controller = new AbortController();
+  const { session, disposeCount } = fakeSession("离线评审结论");
+  let promptText: string | undefined;
+  let sdkOptions: ReturnType<typeof buildRepositorySessionOptions> | undefined;
+  try {
+    const reviewer = createPiReviewer({ sessionFactory: async options => {
+      cwd = options.cwd;
+      assert.equal(options.repositoryContext, repositoryAccess);
+      assert.equal(options.signal, controller.signal);
+      assert.equal(options.onRepositoryToolCall, onRepositoryToolCall, "reviewer 必须传递同一个 observer");
+      // 只替换模型/SDK 会话；仓库工具仍使用生产构造器，避免工厂替身直接调用回调造成伪通过。
+      const built = buildRepositorySessionOptions({ ...options, agentDir, repositoryContext: repositoryAccess, settings: {} });
+      sdkOptions = built;
+      assert.equal("onRepositoryToolCall" in built, false);
+      assert.equal(Object.values(built).includes(onRepositoryToolCall), false);
+      assert.deepEqual(built.tools, ["repo_list", "repo_read", "repo_search"]);
+      assert.deepEqual(built.excludeTools, ["mcp__*"]);
+      session.prompt = async text => {
+        promptText = text;
+        for (const entry of [
+          { name: "repo_list", args: { prefix: "private-prefix" } },
+          { name: "repo_read", args: { path: "private-path.ts" } },
+          { name: "repo_search", args: { query: "private-query" } },
+        ]) {
+          const tool = built.customTools!.find(item => item.name === entry.name)!;
+          const context = {} as Parameters<typeof tool.execute>[4];
+          const result = await tool.execute("offline-tool-call", entry.args, undefined, undefined, context);
+          const content = result.content[0];
+          if (content.type !== "text") assert.fail("仓库工具必须返回模型文本");
+          outputCharacters.push(content.text.length);
+        }
+      };
+      return session;
+    } });
+    const result = await reviewer.review({
+      systemPrompt: "trusted-system-prompt", code: "private-diff", context: "trusted-context",
+      signal: controller.signal, repositoryContext: repositoryAccess, onRepositoryToolCall,
+    });
+    assert.deepEqual(result, { text: "离线评审结论", model: "test-model" });
+    assert.equal(disposeCount(), 1);
+    assert.equal(promptText, buildUserMessage("private-diff", "trusted-context"));
+    assert.equal(sdkOptions!.resourceLoader!.getSystemPrompt(), "trusted-system-prompt");
+    assert.deepEqual(events.map(event => ({ ...event, durationMs: 0 })), [
+      { tool: "repo_list", outcome: "success", durationMs: 0, outputCharacters: outputCharacters[0], truncated: false },
+      { tool: "repo_read", outcome: "success", durationMs: 0, outputCharacters: outputCharacters[1], truncated: false },
+      { tool: "repo_search", outcome: "success", durationMs: 0, outputCharacters: outputCharacters[2], truncated: false },
+    ]);
+    assert.doesNotMatch(JSON.stringify(events), /private-|fixture|a\.ts/);
+    assert.doesNotMatch(promptText!, /onRepositoryToolCall|durationMs|outputCharacters/);
+  } finally {
+    if (cwd) rmSync(cwd, { recursive: true, force: true });
+    rmSync(agentDir, { recursive: true, force: true });
+  }
 });

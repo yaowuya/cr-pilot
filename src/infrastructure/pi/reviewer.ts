@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
 import type { ReviewInput, ReviewResult, Reviewer } from "../../domain/review-task.ts";
-import type { RepositoryReadAccess } from "../../domain/repository-context.ts";
+import type { RepositoryReadAccess, RepositoryToolCallEvent } from "../../domain/repository-context.ts";
 import { createRepositoryTools } from "./repository-tools.ts";
 
 // 领域端口类型由 domain 持有，这里重导出保持既有导入路径兼容。
@@ -49,6 +49,8 @@ export type PiSessionFactory = (options: {
   cwd: string;
   /** 已授权的只读能力与当前会话取消信号；仅新模式使用。 */
   repositoryContext?: RepositoryReadAccess;
+  /** 仅透传给仓库工具包装，不作为模型消息或 SDK 配置传播。 */
+  onRepositoryToolCall?: (event: RepositoryToolCallEvent) => void;
   signal: AbortSignal;
   /** 目标模型；缺省时用 models.json 的默认配置。 */
   model?: string;
@@ -98,6 +100,7 @@ export function buildLoaderOptions(input: {
 export function buildRepositorySessionOptions(input: {
   systemPrompt: string; cwd: string; agentDir: string;
   repositoryContext: RepositoryReadAccess; signal: AbortSignal;
+  onRepositoryToolCall?: (event: RepositoryToolCallEvent) => void;
   settings?: Record<string, unknown>;
 }): CreateAgentSessionOptions {
   const runtime = createExtensionRuntime();
@@ -138,7 +141,7 @@ export function buildRepositorySessionOptions(input: {
     }),
     tools: ["repo_list","repo_read","repo_search"],
     excludeTools: ["mcp__*"],
-    customTools: createRepositoryTools(input.repositoryContext, input.signal),
+    customTools: createRepositoryTools(input.repositoryContext, input.signal, input.onRepositoryToolCall),
   };
 }
 
@@ -184,7 +187,7 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
   const logger = options.logger ?? createSilentLogger();
   logger.debug("已创建隔离工作目录", { cwd: workspace });
   return {
-    async review({ systemPrompt, code, context, signal, provider, model, repositoryContext }) {
+    async review({ systemPrompt, code, context, signal, provider, model, repositoryContext, onRepositoryToolCall }) {
       if (signal.aborted) {
         logger.debug("评审在开始前已中断，不创建会话");
         throw signal.reason ?? new Error("评审在开始前已被中断");
@@ -197,7 +200,7 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
         厂商: provider ?? "默认",
         模型: model ?? "默认",
       });
-      const session = await sessionFactory({ systemPrompt, cwd: workspace, provider, model, repositoryContext, signal });
+      const session = await sessionFactory({ systemPrompt, cwd: workspace, provider, model, repositoryContext, onRepositoryToolCall, signal });
       let disposed = false;
       const disposeOnce = (): void => {
         if (disposed) return;

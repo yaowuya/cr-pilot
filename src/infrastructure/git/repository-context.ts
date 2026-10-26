@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   isGitObjectId, validateRepositoryUrl,
-  type RepositoryProvider, type RepositoryReadAccess, type RepositoryReadResult,
+  type RepositoryProvider, type RepositoryReadAccess, type RepositoryReadResult, type RepositoryPreparationEvent,
 } from "../../domain/repository-context.ts";
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
 import { buildGitEnvironment, createGitRunner, type GitRunner } from "./git-runner.ts";
@@ -132,6 +132,22 @@ export function createRepositoryProvider(options: {
       if (input.signal.aborted) throw new Error("仓库准备已中断");
       const root = await mkdtemp(join(options.tempRoot ?? tmpdir(), "cr-pilot-repo-"));
       const repository = join(root, "repository");
+      // 观察者只接收固定元数据；即使日志回调抛错/拒绝，也不能改变 Git 或清理的结果。
+      const report = (event: RepositoryPreparationEvent): void => {
+        try { void Promise.resolve(input.onProgress?.(event)).catch(() => {}); } catch { /* 诊断失败不影响仓库能力。 */ }
+      };
+      const runStage = async <T>(stage: RepositoryPreparationEvent["stage"], action: () => Promise<T>, counts?: (value: T) => Pick<RepositoryPreparationEvent, "indexedEntries" | "candidateFiles">): Promise<T> => {
+        const startedAt = Date.now();
+        report({ stage, phase: "start" });
+        try {
+          const value = await action();
+          report({ stage, phase: "complete", durationMs: Math.max(0, Date.now() - startedAt), ...counts?.(value) });
+          return value;
+        } catch (error) {
+          report({ stage, phase: "failed", durationMs: Math.max(0, Date.now() - startedAt) });
+          throw error;
+        }
+      };
       const preparation = new AbortController();
       const lifetime = new AbortController();
       const signal = AbortSignal.any([input.signal, preparation.signal]);
@@ -154,44 +170,52 @@ export function createRepositoryProvider(options: {
         if (monitorTimer) clearTimeout(monitorTimer);
         await monitorTask;
       };
-      const cleanup = async (): Promise<void> => {
+      const cleanup = (): Promise<void> => runStage("cleanup", async () => {
         try { await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); }
         catch { throw new Error("仓库临时目录清理失败"); }
-      };
+      });
       try {
         await Promise.all([mkdir(join(root, "empty-template")), mkdir(join(root, "empty-hooks"))]);
         const localEnv = buildGitEnvironment({ root });
         const networkEnv = buildGitEnvironment({ root, repositoryUrl, token: input.token, insecureTls: options.insecureTls });
         monitorTask = monitor();
-        await runner(["clone", "--progress", "--single-branch", "--depth=1", "--no-tags", "--no-checkout", `--branch=${input.sourceBranch}`, "--", repositoryUrl, repository],
-          { cwd: root, env: networkEnv, signal, maxOutputBytes: 1024 * 1024 });
-        await checkDisk(root, limits.maxRepositoryBytes);
+        await runStage("clone", async () => {
+          await runner(["clone", "--progress", "--single-branch", "--depth=1", "--no-tags", "--no-checkout", `--branch=${input.sourceBranch}`, "--", repositoryUrl, repository],
+            { cwd: root, env: networkEnv, signal, maxOutputBytes: 1024 * 1024 });
+          await checkDisk(root, limits.maxRepositoryBytes);
+        });
         const localGit = (args: string[], maximum = limits.indexBytes, operationSignal = signal) =>
           runner(args, { cwd: repository, env: localEnv, signal: operationSignal, maxOutputBytes: maximum });
-        const head = (await localGit(["rev-parse", "--verify", "HEAD"], 256)).toString("utf8").trim();
-        if (head.toLowerCase() !== input.headSha.toLowerCase()) {
-          // 分支推进不等于本次快照失效：只尝试一次精确浅 fetch，绝不回退到新的 HEAD。
-          await runner(["fetch", "--depth=1", "--no-tags", "--", repositoryUrl, input.headSha],
-            { cwd: repository, env: networkEnv, signal, maxOutputBytes: 1024 * 1024 });
-        }
-        const verified = (await localGit(["rev-parse", "--verify", `${input.headSha}^{commit}`], 256)).toString("utf8").trim();
-        if (verified.toLowerCase() !== input.headSha.toLowerCase()) throw new Error("仓库提交版本不一致");
-        await checkDisk(root, limits.maxRepositoryBytes);
-        const tree = new TextDecoder("utf-8", { fatal: true }).decode(await localGit(["ls-tree", "-r", "-l", "-z", verified]));
-        const files: TrackedBlob[] = [];
-        let fileCount = 0;
-        for (const record of tree.split("\0")) {
-          if (!record) continue;
-          const match = /^(\d{6}) (blob|commit) ([a-f0-9]{40,64})\s+(\d+|-)\t([\s\S]+)$/.exec(record);
-          if (!match) throw new Error("仓库文件索引格式非法");
-          if (++fileCount > limits.maxFiles) throw new Error("仓库文件数量超过安全上限");
-          const [, mode, type, oid, sizeText, path] = match;
-          if ((mode !== "100644" && mode !== "100755") || type !== "blob" || !isGitObjectId(oid) || !allowedPath(path)) continue;
-          const size = Number(sizeText);
-          if (!Number.isSafeInteger(size) || size < 0) throw new Error("仓库文件大小非法");
-          files.push({ path, oid, size });
-        }
-        files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+        const verified = await runStage("verify", async () => {
+          const head = (await localGit(["rev-parse", "--verify", "HEAD"], 256)).toString("utf8").trim();
+          if (head.toLowerCase() !== input.headSha.toLowerCase()) {
+            // 分支推进不等于本次快照失效：只尝试一次精确浅 fetch，绝不回退到新的 HEAD。
+            await runStage("fetch", () => runner(["fetch", "--depth=1", "--no-tags", "--", repositoryUrl, input.headSha],
+              { cwd: repository, env: networkEnv, signal, maxOutputBytes: 1024 * 1024 }));
+          }
+          const sha = (await localGit(["rev-parse", "--verify", `${input.headSha}^{commit}`], 256)).toString("utf8").trim();
+          if (sha.toLowerCase() !== input.headSha.toLowerCase()) throw new Error("仓库提交版本不一致");
+          await checkDisk(root, limits.maxRepositoryBytes);
+          return sha;
+        });
+        const { files } = await runStage("index", async () => {
+          const tree = new TextDecoder("utf-8", { fatal: true }).decode(await localGit(["ls-tree", "-r", "-l", "-z", verified]));
+          const files: TrackedBlob[] = [];
+          let fileCount = 0;
+          for (const record of tree.split("\0")) {
+            if (!record) continue;
+            const match = /^(\d{6}) (blob|commit) ([a-f0-9]{40,64})\s+(\d+|-)\t([\s\S]+)$/.exec(record);
+            if (!match) throw new Error("仓库文件索引格式非法");
+            if (++fileCount > limits.maxFiles) throw new Error("仓库文件数量超过安全上限");
+            const [, mode, type, oid, sizeText, path] = match;
+            if ((mode !== "100644" && mode !== "100755") || type !== "blob" || !isGitObjectId(oid) || !allowedPath(path)) continue;
+            const size = Number(sizeText);
+            if (!Number.isSafeInteger(size) || size < 0) throw new Error("仓库文件大小非法");
+            files.push({ path, oid, size });
+          }
+          files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+          return { files, fileCount };
+        }, (index) => ({ indexedEntries: index.fileCount, candidateFiles: index.files.length }));
         const byPath = new Map(files.map(file => [file.path, file]));
         if (signal.aborted) throw monitorFailure ?? new Error("仓库准备已中断或超时");
         await stopMonitor();

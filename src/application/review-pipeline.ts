@@ -17,8 +17,8 @@ import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownF
 import type { ReviewRecord } from "../domain/review-record.ts";
 import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
 import type { PromptRepository, StoredPrompt } from "../domain/review-prompt.ts";
-import type { Change, Commit, DiffRefs, GitlabClient, MergeRequestTask, Reviewer, WecomNotifier } from "../domain/review-task.ts";
-import type { RepositoryProvider, RepositoryWorkspace } from "../domain/repository-context.ts";
+import type { Change, Commit, DiffRefs, GitlabClient, MergeRequestTask, Reviewer, ReviewResult, WecomNotifier } from "../domain/review-task.ts";
+import type { RepositoryProvider, RepositoryWorkspace, RepositoryPreparationEvent, RepositoryToolCallEvent } from "../domain/repository-context.ts";
 
 export type { MergeRequestTask };
 
@@ -413,6 +413,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         return;
       }
       const {ruleSet, source: promptSource, stored: promptStored, repositoryEnabled, llmTarget} = configuration;
+      logger.info("仓库上下文评审状态", { 项目ID: task.projectId, MR编号: task.iid, 已开启: repositoryEnabled });
       const standardsSuffix = repositoryEnabled && promptStored?.repositoryStandards?.trim()
         ? `\n\n## 仓库规范（关联项目共享）\n${promptStored.repositoryStandards.trim()}` : "";
       const effectiveSystemPrompt = ruleSet.systemPrompt + standardsSuffix + (repositoryEnabled
@@ -432,10 +433,18 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         try {
           if (repositoryEnabled) {
             if (!client.getRepositoryReviewSnapshot || !deps.repositoryProvider) throw new Error("仓库上下文准备能力未配置");
+            const preparationStartedAt = Date.now();
+            logger.info("开始准备仓库评审快照", { 项目ID: task.projectId, MR编号: task.iid });
             const snapshot = await client.getRepositoryReviewSnapshot(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
             changes = snapshot.changes;
             commits = snapshot.commits;
             refs = snapshot.refs;
+            const repositoryFields = { 项目ID: task.projectId, MR编号: task.iid, 提交SHA: snapshot.refs.headSha };
+            logger.info("仓库评审快照已锁定", repositoryFields);
+            const stageLabels: Record<RepositoryPreparationEvent["stage"], string> = {
+              clone: "仓库浅克隆", fetch: "仓库指定提交补取", verify: "仓库固定版本校验", index: "仓库文件索引", cleanup: "仓库临时目录清理",
+            };
+            const phaseLabels = { start: "开始", complete: "完成", failed: "失败" };
             repositoryWorkspace = await deps.repositoryProvider.prepare({
               repositoryUrl: snapshot.repositoryUrl,
               gitlabUrl: snapshot.gitlabUrl,
@@ -443,8 +452,15 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
               headSha: snapshot.refs.headSha,
               token: task.gitlabToken ?? "",
               signal: AbortSignal.timeout(timeoutMs),
+              onProgress: (event) => {
+                // 任务标识在应用层闭包绑定；适配器不接触 MR，更不把 URL/分支/原始输出带入日志。
+                const message = stageLabels[event.stage] + phaseLabels[event.phase];
+                const fields = { ...repositoryFields, 耗时毫秒: event.durationMs, 索引条目数: event.indexedEntries, 候选文件数: event.candidateFiles };
+                if (event.phase === "failed") logger.warn(message, fields);
+                else logger.info(message, fields);
+              },
             });
-            logger.info("仓库上下文已准备", {项目ID:task.projectId,MR编号:task.iid,提交SHA:refs.headSha});
+            logger.info("仓库上下文已准备", { ...repositoryFields, 耗时毫秒: Math.max(0, Date.now() - preparationStartedAt) });
           } else {
             changes = await client.getMergeRequestChanges(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
             commits = await client.getMergeRequestCommits(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken);
@@ -522,17 +538,43 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           let succeeded = false;
           while (attempt < BATCH_MAX_ATTEMPTS && !succeeded) {
             attempt += 1;
+            // 每次模型尝试单独统计，闭包固定任务/批次/尝试，避免并发 MR 或重试串账。
+            const repositoryFields = { 项目ID: task.projectId, MR编号: task.iid, 提交SHA: repositoryWorkspace?.access.headSha,
+              批次: `${index + 1}/${batches.length}`, 尝试次数: attempt };
+            const toolCalls = { repo_list: 0, repo_read: 0, repo_search: 0 };
+            let successes = 0;
+            let failures = 0;
+            let outputCharacters = 0;
+            let truncations = 0;
+            const onRepositoryToolCall = repositoryWorkspace ? (event: RepositoryToolCallEvent): void => {
+              toolCalls[event.tool] += 1;
+              if (event.outcome === "success") successes += 1;
+              else failures += 1;
+              outputCharacters += event.outputCharacters;
+              if (event.truncated) truncations += 1;
+              logger.debug("仓库工具调用完成", { ...repositoryFields, 工具: event.tool, 结果: event.outcome,
+                耗时毫秒: event.durationMs, 返回字符数: event.outputCharacters, 已截断: event.truncated });
+            } : undefined;
             try {
-              const result = await reviewer.review({
-                // 统一追加结构化契约：行内评论依赖它，不能寄望每条 prompt 都写。
-                systemPrompt: effectiveSystemPrompt + INLINE_COMMENT_CONTRACT,
-                repositoryContext: repositoryWorkspace?.access,
-                code: userMessage,
-                context: undefined,
-                signal: AbortSignal.timeout(timeoutMs),
-                provider: llmTarget?.provider.name,
-                model: llmTarget?.model,
-              });
+              let result: ReviewResult;
+              try {
+                result = await reviewer.review({
+                  // 统一追加结构化契约：行内评论依赖它，不能寄望每条 prompt 都写。
+                  systemPrompt: effectiveSystemPrompt + INLINE_COMMENT_CONTRACT,
+                  repositoryContext: repositoryWorkspace?.access,
+                  onRepositoryToolCall,
+                  code: userMessage,
+                  context: undefined,
+                  signal: AbortSignal.timeout(timeoutMs),
+                  provider: llmTarget?.provider.name,
+                  model: llmTarget?.model,
+                });
+              } finally {
+                // 包含失败和零调用的尝试；准备了仓库不等于模型实际使用过仓库工具。
+                if (repositoryWorkspace) logger.info("仓库工具调用统计", { ...repositoryFields,
+                  总调用次数: successes + failures, 成功次数: successes, 失败次数: failures, ...toolCalls,
+                  返回字符数: outputCharacters, 截断次数: truncations });
+              }
               batchResults.push(result.text);
               succeeded = true;
               logger.info("单批评审完成", {
