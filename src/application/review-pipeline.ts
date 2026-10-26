@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createSilentLogger, type Logger } from "../shared/logger.ts";
 import { estimateTokens, splitChangesIntoBatches } from "../domain/change.ts";
 import {
@@ -651,6 +652,12 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
 
         let commentUrl: string | null = null;
         try {
+          // 追加降级项、剔除已发行内项后才是实际正文；只记录元数据，不把私有代码写入普通日志。
+          logger.info("准备回写汇总评论", {
+            项目ID: task.projectId, MR编号: task.iid, 评论字数: finalComment.length,
+            评论字节数: Buffer.byteLength(finalComment, "utf8"),
+            评论SHA256: createHash("sha256").update(finalComment, "utf8").digest("hex"),
+          });
           await client.postMergeRequestNote(task.projectId, task.iid, finalComment, task.gitlabUrl, task.gitlabToken);
           commentUrl = `MR !${task.iid}`;
         } catch (error) {

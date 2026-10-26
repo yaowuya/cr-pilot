@@ -192,8 +192,8 @@ test("getDiscussions 单页时只请求一次", async () => {
   assert.match(calls[0].url, /per_page=100&page=1/);
 });
 
-test("postDiscussion 失败时抛出带响应体的 GitlabApiError", async () => {
-  const { fetchFn } = trackFetch(() => jsonResponse(400, { message: "position is invalid" }));
+test("postDiscussion 失败时保留 GitlabApiError 状态码且不重试", async () => {
+  const { calls, fetchFn } = trackFetch(() => jsonResponse(400, { message: "position is invalid" }));
   const client = makeClient(fetchFn);
   await assert.rejects(
     () =>
@@ -208,4 +208,5 @@ test("postDiscussion 失败时抛出带响应体的 GitlabApiError", async () =>
       }),
     (error: unknown) => error instanceof GitlabApiError && error.status === 400,
   );
+  assert.equal(calls.length, 1);
 });
