@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { buildGitEnvironment, createGitRunner, type GitRunner } from "../../../src/infrastructure/git/git-runner.ts";
 import { createRepositoryProvider } from "../../../src/infrastructure/git/repository-context.ts";
+import type { RepositoryPreparationEvent } from "../../../src/domain/repository-context.ts";
 
 const url = "https://git.example/g/repo.git";
 
@@ -60,12 +61,31 @@ async function roots(root:string):Promise<string[]> {
   return (await readdir(root)).filter(name=>name.startsWith("cr-pilot-repo-"));
 }
 
-test("浅克隆不检出工作树，实际从固定 blob 读取且所有出口释放目录", async () => {
+/** 诊断事件只能带阶段与数值，禁止泄漏任务身份、目录、源码或 Git 原始错误。 */
+function assertProgress(events:RepositoryPreparationEvent[], expected:string[]):void {
+  assert.deepEqual(events.map(event=>`${event.stage}:${event.phase}`),expected);
+  const allowed = new Set(["stage","phase","durationMs","indexedEntries","candidateFiles"]);
+  for (const event of events) {
+    assert(Object.keys(event).every(key=>allowed.has(key)),"进度事件不得携带额外字段");
+    if (event.durationMs !== undefined) assert(Number.isFinite(event.durationMs) && event.durationMs >= 0,"阶段耗时应为有限非负数");
+    for (const count of [event.indexedEntries,event.candidateFiles]) {
+      if (count !== undefined) assert(Number.isSafeInteger(count) && count >= 0,"索引计数应为非负整数");
+    }
+  }
+}
+
+test("浅克隆按阶段报告进度与索引数量，不检出工作树且幂等清理只报告一次", async () => {
   await fixture(async ({root,head,runner,calls}) => {
+    const events:RepositoryPreparationEvent[] = [];
     const provider = createRepositoryProvider({runner,tempRoot:root});
-    const handle = await provider.prepare(input(head));
+    const handle = await provider.prepare({...input(head),onProgress:(event:RepositoryPreparationEvent)=>events.push({...event})});
     const taskRoot = join(root,(await roots(root))[0]);
     try {
+      assertProgress(events,["clone:start","clone:complete","verify:start","verify:complete","index:start","index:complete"]);
+      const indexed = events.find(event=>event.stage==="index" && event.phase==="complete")!;
+      // fixture 的 10 个 tree 条目中，5 个普通 blob 通过路径过滤；二进制/大文件/LFS 仍在读取时拒绝。
+      assert.equal(indexed.indexedEntries,10);
+      assert.equal(indexed.candidateFiles,5);
       const clone = calls.find(args=>args[0]==="clone")!;
       for(const flag of ["--progress","--single-branch","--depth=1","--no-checkout"]) assert(clone.includes(flag));
       assert(clone.includes("--branch=feature"));
@@ -78,7 +98,8 @@ test("浅克隆不检出工作树，实际从固定 blob 读取且所有出口�
       assert.match(list.text,/src\/a.ts/);
       assert.doesNotMatch(list.text,/\.env|private\.pem|APPEND_SYSTEM|escape|submodule/);
       assert.match((await handle.access.search({query:"export"})).text,/src\/a.ts:2/);
-    } finally { await handle.dispose(); await handle.dispose(); }
+    } finally { await Promise.all([handle.dispose(),handle.dispose()]); await handle.dispose(); }
+    assertProgress(events,["clone:start","clone:complete","verify:start","verify:complete","index:start","index:complete","cleanup:start","cleanup:complete"]);
     assert.deepEqual(await roots(root),[]);
     await assert.rejects(handle.access.list({}),/释放|关闭/);
   });
@@ -142,16 +163,74 @@ test("真实本地 Git HTTP 拉取收到限定授权头并保持浅克隆，不�
   });
 });
 
-test("分支已推进时只补取指定 SHA，读取旧版本而非新的 branch HEAD", async () => {
+test("分支推进时在 verify 内报告精确 fetch 阶段，只补取指定 SHA 并读取旧版本", async () => {
   await fixture(async ({root,source,head,git,runner,calls}) => {
     await writeFile(join(source,"src","a.ts"),"const value = 2;\n");
     git(["add","src/a.ts"]);git(["commit","-m","advance"]);
-    const handle = await createRepositoryProvider({runner,tempRoot:root}).prepare(input(head));
+    const events:RepositoryPreparationEvent[] = [];
+    const timeline:string[] = [];
+    const observed:GitRunner = async (args,options) => {
+      if (args[0]==="fetch") timeline.push("git:fetch:start");
+      const result = await runner(args,options);
+      if (args[0]==="fetch") timeline.push("git:fetch:complete");
+      return result;
+    };
+    const handle = await createRepositoryProvider({runner:observed,tempRoot:root}).prepare({...input(head),onProgress:(event:RepositoryPreparationEvent)=>{
+      events.push({...event});
+      timeline.push(`${event.stage}:${event.phase}`);
+    }});
     try {
+      assertProgress(events,["clone:start","clone:complete","verify:start","fetch:start","fetch:complete","verify:complete","index:start","index:complete"]);
+      assert.deepEqual(timeline,["clone:start","clone:complete","verify:start","fetch:start","git:fetch:start","git:fetch:complete","fetch:complete","verify:complete","index:start","index:complete"]);
       assert.match((await handle.access.read({path:"src/a.ts"})).text,/value = 1/);
       assert.equal(calls.filter(args=>args[0]==="fetch").length,1);
       assert(calls.find(args=>args[0]==="fetch")!.includes(head));
     } finally { await handle.dispose(); }
+    assertProgress(events,["clone:start","clone:complete","verify:start","fetch:start","fetch:complete","verify:complete","index:start","index:complete","cleanup:start","cleanup:complete"]);
+    assert.deepEqual(await roots(root),[]);
+  });
+});
+
+test("clone 失败报告 failed 并清理，observer 抛异常也不替换原始错误", async () => {
+  await fixture(async ({root,head,runner}) => {
+    const events:RepositoryPreparationEvent[] = [];
+    const observerError = new Error("fixture observer failed");
+    let original:unknown;
+    // 将 transport 指向本机不存在的合成仓库，由真实 Git 产生 clone 错误。
+    const failing:GitRunner = async (args,options) => {
+      try {
+        return await runner(args.map(arg=>arg===url?pathToFileURL(join(root,"missing-source")).href:arg),options);
+      } catch (error) { original=error; throw error; }
+    };
+    await assert.rejects(createRepositoryProvider({runner:failing,tempRoot:root}).prepare({...input(head),onProgress:(event:RepositoryPreparationEvent)=>{
+      events.push({...event});
+      throw observerError;
+    }}),(error:unknown)=>{
+      assert(original instanceof Error,"应由真实 Git clone 失败");
+      assert.equal(error,original,"诊断回调不能改变原错误对象");
+      return true;
+    });
+    assertProgress(events,["clone:start","clone:failed","cleanup:start","cleanup:complete"]);
+    assert.deepEqual(await roots(root),[]);
+  });
+});
+
+test("observer 在每个阶段抛异常也不影响准备结果、受限读取或幂等清理", async () => {
+  await fixture(async ({root,head,runner}) => {
+    const events:RepositoryPreparationEvent[] = [];
+    const handle = await createRepositoryProvider({runner,tempRoot:root}).prepare({...input(head),onProgress:(event:RepositoryPreparationEvent)=>{
+      events.push({...event});
+      throw new Error("fixture observer failed");
+    }});
+    try {
+      assert.equal(handle.access.headSha,head);
+      assert.match((await handle.access.list({})).text,/src\/a.ts/);
+      assert.match((await handle.access.read({path:"src/a.ts"})).text,/1: const value = 1;/);
+      assert.match((await handle.access.search({query:"export"})).text,/src\/a.ts:2/);
+    } finally { await Promise.all([handle.dispose(),handle.dispose()]); await handle.dispose(); }
+    assertProgress(events,["clone:start","clone:complete","verify:start","verify:complete","index:start","index:complete","cleanup:start","cleanup:complete"]);
+    assert.deepEqual(await roots(root),[]);
+    await assert.rejects(handle.access.read({path:"src/a.ts"}),/释放|关闭/);
   });
 });
 

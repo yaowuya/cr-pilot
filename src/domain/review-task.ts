@@ -6,7 +6,7 @@
  * 由 infrastructure 层注入，编排由 application 层完成。
  */
 import type { DiscussionPosition } from "./inline-comment.ts";
-import type { RepositoryReadAccess, RepositoryReviewSnapshot } from "./repository-context.ts";
+import type { RepositoryReadAccess, RepositoryReviewSnapshot, RepositoryToolCallEvent } from "./repository-context.ts";
 
 export type { DiscussionPosition };
 
@@ -96,6 +96,8 @@ export interface MergeRequestTask {
 export interface ReviewInput {
   /** 可选的固定仓库只读能力；不能用任意本地目录替代。 */
   repositoryContext?: RepositoryReadAccess;
+  /** 可选的工具元数据观察，不进入模型消息；实现方须隔离观察回调异常。 */
+  onRepositoryToolCall?: (event: RepositoryToolCallEvent) => void;
   systemPrompt: string;
   code: string;
   context?: string;

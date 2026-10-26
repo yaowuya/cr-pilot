@@ -22,6 +22,29 @@ export interface RepositoryReadResult {
   nextCursor?: number;
 }
 
+/** 准备与清理的固定阶段元数据；不承载地址、目录、凭据、源码或原始 Git 输出。 */
+export interface RepositoryPreparationEvent {
+  stage: "clone" | "fetch" | "verify" | "index" | "cleanup";
+  phase: "start" | "complete" | "failed";
+  durationMs?: number;
+  indexedEntries?: number;
+  /** 仅表示通过路径/对象类型筛选的候选，读取时仍检查体积、二进制和 LFS。 */
+  candidateFiles?: number;
+}
+
+/** 模型会话中唯一允许的三种仓库工具名。 */
+export type RepositoryToolName = "repo_list" | "repo_read" | "repo_search";
+
+/** 单次工具执行尝试的观察事件；失败也计数，不代表已经成功读到仓库内容。 */
+export interface RepositoryToolCallEvent {
+  tool: RepositoryToolName;
+  outcome: "success" | "failed";
+  durationMs: number;
+  /** 实际返回给模型的字符数，包含分页/预算元信息；失败时为 0。 */
+  outputCharacters: number;
+  truncated: boolean;
+}
+
 /** 只读固定提交能力；没有任意路径、命令、写入或凭据访问入口。 */
 export interface RepositoryReadAccess {
   readonly headSha: string;
@@ -44,6 +67,8 @@ export interface RepositoryPrepareInput {
   headSha: string;
   token: string;
   signal: AbortSignal;
+  /** 可选的单向过程观察；适配器必须隔离回调异常，不能影响准备、失败或清理结果。 */
+  onProgress?: (event: RepositoryPreparationEvent) => void;
 }
 
 /** 准备失败必须自行清理尚未交出的资源，调用方不能降级成无上下文评审。 */
