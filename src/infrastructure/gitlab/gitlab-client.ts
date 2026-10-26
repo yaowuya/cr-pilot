@@ -1,17 +1,68 @@
+import { createHash } from "node:crypto";
+import { STATUS_CODES } from "node:http";
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
 import type { Change, Commit, Discussion, DiscussionPosition, DiffRefs, GitlabClient } from "../../domain/review-task.ts";
 import { isGitObjectId, parseGitlabHttpUrl, validateRepositoryUrl } from "../../domain/repository-context.ts";
 
 export type { Change, Commit, GitlabClient };
 
-/** GitLab API 调用失败。`status` 是 HTTP 状态码，调用方据此区分鉴权与网络问题。 */
+/** 响应格式不是权限结论；只有明确的 HTML 拦截页标题才标为 waf。 */
+type GitlabErrorResponseKind = "json" | "waf" | "html" | "unknown";
+
+/** GitLab HTTP 调用失败。保留状态码，并区分 API JSON 与前置网关的错误页。 */
 export class GitlabApiError extends Error {
   override readonly name = "GitlabApiError";
   /** HTTP 状态码。 */
   readonly status: number;
-  constructor(message: string, status: number) {
+  /** 响应证据类别，不据此推断请求是否已经写入或是否可安全重试。 */
+  readonly responseKind: GitlabErrorResponseKind;
+  constructor(message: string, status: number, responseKind: GitlabErrorResponseKind = "unknown") {
     super(message);
     this.status = status;
+    this.responseKind = responseKind;
+  }
+}
+
+/** 仅定位诊断用标题：按顺序跳过注释、原始文本和嵌套模板，不渲染页面或执行脚本。 */
+function findPageTitle(detail: string): string {
+  // 整个属性值作为一个 token 消费，避免把 content="<title>示例</title>" 当成标签。
+  const tags = /<!--[\s\S]*?(?:-->|$)|<![^>]*>|<(\/?)([a-z][a-z0-9:-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
+  let templateDepth = 0;
+  for (let tag = tags.exec(detail); tag; tag = tags.exec(detail)) {
+    const name = tag[2]?.toLowerCase();
+    if (!name) continue;
+    const closing = tag[1] === "/";
+    if (name === "template") {
+      templateDepth = Math.max(0, templateDepth + (closing ? -1 : 1));
+      continue;
+    }
+    if (!closing && /^(title|script|style|textarea)$/.test(name)) {
+      // 原始文本中的 <!--、<template> 等没有外层语义，必须直接跳到对应结束标签。
+      const end = new RegExp(`</${name}\\s*>`, "gi");
+      end.lastIndex = tags.lastIndex;
+      const match = end.exec(detail);
+      if (!match) return "";
+      const text = detail.slice(tags.lastIndex, match.index);
+      tags.lastIndex = end.lastIndex;
+      if (name === "title" && templateDepth === 0) return text;
+    }
+  }
+  return "";
+}
+
+/** 优先解析 JSON，避免把 API message 中引用的 HTML/WAF 示例误判成拦截页。 */
+function describeErrorBody(detail: string, contentType: string | undefined): { kind: GitlabErrorResponseKind; message?: string } {
+  try {
+    const payload: unknown = JSON.parse(detail);
+    const message = typeof payload === "object" && payload !== null && "message" in payload && typeof payload.message === "string"
+      ? payload.message : undefined;
+    return { kind: "json", message };
+  } catch {
+    const html = contentType === "text/html" || contentType === "application/xhtml+xml" || /^\s*(?:<!doctype\s+html\b|<html\b)/i.test(detail);
+    if (!html) return { kind: "unknown" };
+    // 只消费固定标题特征，不回显任意页面文本；普通登录/错误页不能冒称 WAF。
+    const title = findPageTitle(detail);
+    return { kind: /^\s*WAF\s*(?:拦截页面|拦截页|blocked|block\s+page)\s*$/i.test(title) ? "waf" : "html" };
   }
 }
 
@@ -70,8 +121,55 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     );
   }
 
+  /** 三种读取方式共用失败诊断；只留白名单字段，错误页和任意响应字段不进入日志/记录。 */
+  const responseError = async (response: Response, method: string, path: string, gitlabToken: string, requestBody?: string): Promise<GitlabApiError> => {
+    const detail = await response.text().catch(() => "");
+    let comment: string | undefined;
+    try {
+      const payload: unknown = JSON.parse(requestBody ?? "");
+      if (typeof payload === "object" && payload !== null && "body" in payload && typeof payload.body === "string") comment = payload.body;
+    } catch { /* 无请求体的 GET 不需要正文脱敏值。 */ }
+    const privateValues = [gitlabToken, requestBody, comment].filter((value): value is string => Boolean(value));
+    const containsPrivateValue = (value: string): boolean => privateValues.some((secret) => value.includes(secret));
+    const redact = (value: string): string => privateValues.reduce((safe, secret) => safe.replaceAll(secret, "[REDACTED]"), value);
+    const contentTypeValue = response.headers?.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
+    const contentType = contentTypeValue.length <= 128 && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(contentTypeValue) && !containsPrivateValue(contentTypeValue)
+      ? contentTypeValue : undefined;
+    // Header 是不可信输入：不枚举 X-WAF-*，也不记录 Cookie、Location 或认证头。
+    const safeHeader = (name: string, maxLength: number, pattern: RegExp): string | undefined => {
+      const value = response.headers?.get(name) ?? "";
+      return value.length > 0 && value.length <= maxLength && pattern.test(value) && !containsPrivateValue(value) ? value : undefined;
+    };
+    const requestId = safeHeader("x-request-id", 128, /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/);
+    const server = safeHeader("server", 80, /^[a-zA-Z0-9][a-zA-Z0-9 ._/()-]*$/);
+    const { kind, message } = describeErrorBody(detail, contentType);
+    // 自由文本 message 可能编码、截断或拼接私有评论，无法靠精确替换可靠脱敏。
+    // 只回显与固定 HTTP 状态短语完全匹配的摘要，其余内容不进入日志和失败记录。
+    const reason = STATUS_CODES[response.status];
+    const apiMessage = reason && message && [reason, `${response.status} ${reason}`].some((value) => value.toLowerCase() === message.trim().toLowerCase())
+      && !containsPrivateValue(reason) ? `${response.status} ${reason}` : undefined;
+    const category = { json: "JSON 错误响应", waf: "WAF 拦截页，具体规则需查网关记录", html: "HTML 错误页，来源待确认", unknown: "响应来源待确认" }[kind];
+    const safePath = redact(path.split("?")[0]);
+    logger.warn("GitLab API 请求失败", {
+      方法: method, 路径: safePath, 状态码: response.status, 响应类别: kind,
+      响应ContentType: contentType, 请求ID: requestId, 服务标识: server,
+    });
+    return new GitlabApiError(
+      `GitLab API ${safePath} 返回 ${response.status}（${category}）${apiMessage ? `：${apiMessage}` : ""}${requestId ? `；请求ID=${requestId}` : ""}`,
+      response.status,
+      kind,
+    );
+  };
+
   const request = async <T>(gitlabUrl: string, gitlabToken: string, path: string, init: RequestInit = {}): Promise<T> => {
     const base = (gitlabUrl || baseUrl).replace(/\/+$/, "");
+    if (init.method === "POST" && typeof init.body === "string") {
+      // 指纹取最终序列化的 HTTP 请求体，不是模型刚生成的汇总；只记长度和哈希，不记正文/凭据。
+      logger.info("GitLab 写入请求", {
+        方法: init.method, 路径: path.split("?")[0], 请求体字节数: Buffer.byteLength(init.body, "utf8"),
+        请求体SHA256: createHash("sha256").update(init.body, "utf8").digest("hex"),
+      });
+    }
     const response = await fetchFn(
       `${base}${path}`,
       {
@@ -81,13 +179,7 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       },
     );
     if (!response.ok) {
-      // 把响应体带进错误消息：GitLab 的 403 往往在 body 里写明了拒绝原因
-      // （如 token 无写权限、MR 状态不允许评论等），只看状态码无法定位。
-      const detail = await response.text().catch(() => "");
-      throw new GitlabApiError(
-        `GitLab API ${path} 返回 ${response.status}${detail ? `：${detail.slice(0, 300)}` : ""}`,
-        response.status,
-      );
+      throw await responseError(response, init.method ?? "GET", path, gitlabToken, typeof init.body === "string" ? init.body : undefined);
     }
     return (await response.json()) as T;
   };
@@ -109,11 +201,7 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       signal: AbortSignal.timeout(options.timeoutMs),
     });
     if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new GitlabApiError(
-        `GitLab API ${path} 返回 ${response.status}${detail ? `：${detail.slice(0, 300)}` : ""}`,
-        response.status,
-      );
+      throw await responseError(response, "GET", path, gitlabToken);
     }
     return { payload: (await response.json()) as T, nextPage: response.headers.get("x-next-page") ?? "" };
   };
@@ -131,11 +219,7 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       signal: AbortSignal.timeout(options.timeoutMs),
     });
     if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new GitlabApiError(
-        `GitLab API ${path} 返回 ${response.status}${detail ? `：${detail.slice(0, 300)}` : ""}`,
-        response.status,
-      );
+      throw await responseError(response, "GET", path, gitlabToken);
     }
     return response.text();
   };
