@@ -16,7 +16,7 @@ import { sealSecret } from "../shared/secret-box.ts";
 import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
 import type { ReviewRecord } from "../domain/review-record.ts";
 import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
-import type { PromptRepository, StoredPrompt } from "../domain/review-prompt.ts";
+import { PROJECT_REVIEW_DENIED_MESSAGE, PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE, type PromptRepository, type StoredPrompt } from "../domain/review-prompt.ts";
 import type { Change, Commit, DiffRefs, GitlabClient, MergeRequestTask, Reviewer, ReviewResult, WecomNotifier } from "../domain/review-task.ts";
 import type { RepositoryProvider, RepositoryWorkspace, RepositoryPreparationEvent, RepositoryToolCallEvent } from "../domain/repository-context.ts";
 
@@ -89,6 +89,8 @@ export interface ReviewRecordWriter {
 }
 
 interface PipelineDeps {
+  /** 每次任务开始时复核项目关联；未装配或查询失败必须拒绝，不能退回默认/YAML 放行。 */
+  isProjectAllowed?: (repositoryFullName: string) => boolean;
   client: GitlabClient;
   rules: ReviewRules;
   reviewer: Reviewer;
@@ -288,13 +290,13 @@ export interface InlineCommentStats {
 /**
  * 创建评审管线（application 用例编排）。
  *
- * 编排「拉取 → 分批 → 逐批评审 → 行内评论 → 汇总 → 回写 → 落记录」，依赖 domain
- * 端口（Reviewer / GitlabClient / ReviewRules / PromptRepository）与 domain 纯函数
+ * 编排「项目资格复核 → 拉取 → 分批 → 逐批评审 → 汇总 → 行内评论 → 回写 → 落记录」，
+ * 依赖 domain 端口（Reviewer / GitlabClient / ReviewRules / PromptRepository）与纯函数
  * （分批、渲染、解析、position、marker），不触碰任何 IO 细节。
  *
- * 失败语义：拉取失败、单批失败、汇总失败都记日志并结束任务，不回写；只有全部批次
- * 与汇总成功才回写一条 MR 评论。**任何**失败路径都会写入一条 `result="failed"`
- * 的评审记录（若注入了 recordWriter），因此失败不会在数据里消失。
+ * 项目未关联、白名单不可用、拉取/汇总/最终回写失败时尝试写失败记录并结束；拒绝
+ * 发生在外部调用前。单批重试耗尽可跳过，有可用批次才继续汇总并标明缺口。记录
+ * 写入由可选 recordWriter 承担，其自身异常不属于管线可保证落库的范围。
  *
  * 行内评论降级规则（design 状态章节）：行号未落在 diff 变更行、评审 head 与当前
  * head 不一致、单条发布失败三种情况都把该条并入汇总评论，不丢弃内容，也不中断
@@ -397,6 +399,22 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         // 保证既有 recordWriter 实现（返回 void）行为不变。
         return typeof inserted === "number" ? inserted : undefined;
       };
+
+      // 入口通过后仍可能排队：执行前再次读取实时关联，且必须早于作者查询/Git/模型等外部副作用。
+      let allowed: boolean;
+      try {
+        if (!deps.isProjectAllowed) throw new Error("项目评审白名单检查器未装配");
+        allowed = deps.isProjectAllowed(task.fullName) === true;
+      } catch {
+        logger.error(PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE, { 项目ID: task.projectId, MR编号: task.iid, 项目全名: task.fullName });
+        writeRecord({ result: "failed", errorMessage: PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE });
+        return;
+      }
+      if (!allowed) {
+        logger.warn(PROJECT_REVIEW_DENIED_MESSAGE, { 项目ID: task.projectId, MR编号: task.iid, 项目全名: task.fullName });
+        writeRecord({ result: "failed", errorMessage: PROJECT_REVIEW_DENIED_MESSAGE });
+        return;
+      }
 
       // 配置快照必须在任何外部 await 前确定；网络期间保存页面只影响下一次任务。
       let configuration: ReturnType<typeof resolveRuleSet> & { repositoryEnabled: boolean; llmTarget: ResolvedLlmTarget | undefined };

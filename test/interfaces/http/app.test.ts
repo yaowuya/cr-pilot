@@ -57,7 +57,7 @@ function makeDeps(): { deps: AppDeps; enqueued: MergeRequestTask[] } {
     enqueued.push(task);
   };
   return {
-    deps: { logger: createSilentLogger(), enqueue },
+    deps: { logger: createSilentLogger(), enqueue, isProjectAllowed: () => true },
     enqueued,
   };
 }

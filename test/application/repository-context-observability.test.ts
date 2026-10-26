@@ -60,7 +60,7 @@ function harness(options: {
     getLatestHeadSha: async () => head, getFileRaw: async () => "fixture", getUser: async () => ({ id: 1, name: "fixture", username: "fixture" }),
   };
   const pipeline = createReviewPipeline({
-    client, promptSource: prompts, logger, batchMaxTokens: 6000, retryDelayMs: 1,
+    client, promptSource: prompts, isProjectAllowed: (project) => prompts.isProjectConfigured(project), logger, batchMaxTokens: 6000, retryDelayMs: 1,
     rules: { resolve: () => ({ systemPrompt: "fallback", userPrompt: "{diffs_text}" }) },
     repositoryProvider: { prepare: async (input) => {
       prepared.push(input);

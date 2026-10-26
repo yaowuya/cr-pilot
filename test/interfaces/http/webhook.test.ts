@@ -11,6 +11,7 @@ function buildApp(): { app: Express; review: MergeRequestTask[]; tracking: Merge
   const tracking: MergeRequestTask[] = [];
   const app = createApp({
     logger: createSilentLogger(),
+    isProjectAllowed: () => true,
     enqueue: (task) => review.push(task),
     enqueueTracking: (task) => tracking.push(task),
   });
@@ -81,7 +82,7 @@ test("update 改动标题（无 oldrev）仍进入评审队列", async () => {
 
 test("未装配追踪入口时 update 事件退化为原评审队列", async () => {
   const review: MergeRequestTask[] = [];
-  const app = createApp({ logger: createSilentLogger(), enqueue: (task) => review.push(task) });
+  const app = createApp({ logger: createSilentLogger(), isProjectAllowed: () => true, enqueue: (task) => review.push(task) });
   await withServer(app, async (base) => {
     await send(base, payload({ action: "update", oldrev: "abc" }));
     assert.equal(review.length, 1, "不能静默丢弃事件");
