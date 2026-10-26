@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createReviewPipeline, type MergeRequestTask, type PendingFinding } from "../../src/application/review-pipeline.ts";
+import { createReviewPipeline as buildReviewPipeline, type MergeRequestTask, type PendingFinding } from "../../src/application/review-pipeline.ts";
 import { estimateTokens, splitChangesIntoBatches } from "../../src/domain/change.ts";
 import { fingerprintLine } from "../../src/domain/review-finding.ts";
 import { stripMarkdownFences } from "../../src/domain/review-rules.ts";
@@ -11,6 +11,11 @@ import type { PromptRepository } from "../../src/domain/review-prompt.ts";
 import { createSilentLogger } from "../../src/shared/logger.ts";
 import type { ReviewRules } from "../../src/infrastructure/rules/review-rules.ts";
 import type { Reviewer } from "../../src/infrastructure/pi/reviewer.ts";
+
+/** 既有编排用例显式使用已获准项目；白名单拒绝/真实关联由独立测试覆盖。 */
+function createReviewPipeline(deps: Parameters<typeof buildReviewPipeline>[0]) {
+  return buildReviewPipeline({ isProjectAllowed: () => true, ...deps });
+}
 
 function change(diff: string, newPath = "a.ts"): Change {
   return { newPath, oldPath: newPath, diff };

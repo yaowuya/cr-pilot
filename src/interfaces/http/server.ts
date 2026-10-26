@@ -8,7 +8,7 @@ import type { ReviewPipeline } from "../../application/review-pipeline.ts";
 import type { AppDeps } from "./app.ts";
 
 /** `startServer` 的装配依赖：webhook 路由所需的队列、入队与管线，以及管理 API。 */
-export interface ServerDeps extends Partial<Pick<AppDeps, "apiRoutes" | "publicApiRoutes" | "authMiddleware" | "staticAssets">> {
+export interface ServerDeps extends Partial<Pick<AppDeps, "apiRoutes" | "publicApiRoutes" | "authMiddleware" | "staticAssets" | "isProjectAllowed">> {
   queue: TaskQueue;
   pipeline: ReviewPipeline;
   logger: Logger;
@@ -66,6 +66,7 @@ export async function startServer(
     // 追踪事件不进评审队列：它只重新判定已有建议，与真实评审争抢并发槽位
     // 会延长评审等待时间，也会让同一 MR 被重复评审。
     enqueueTracking: deps.enqueueTracking,
+    isProjectAllowed: deps.isProjectAllowed,
     apiRoutes: deps.apiRoutes,
     publicApiRoutes: deps.publicApiRoutes,
     authMiddleware: deps.authMiddleware,

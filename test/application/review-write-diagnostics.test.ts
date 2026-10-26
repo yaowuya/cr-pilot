@@ -51,7 +51,7 @@ function harness(batch: string, summary: string, failNote = false) {
     getUser: async (id) => ({ id, name: "fixture author", username: "fixture-author" }),
   };
   const pipeline = createReviewPipeline({
-    client, logger, batchMaxTokens: 6000,
+    client, logger, isProjectAllowed: () => true, batchMaxTokens: 6000,
     rules: { resolve: () => ({ systemPrompt: "SYS", userPrompt: "评审 {diffs_text}", wecomWebhookUrl: "https://wecom.example.invalid" }) },
     reviewer: {
       review: async ({ systemPrompt }) => ({

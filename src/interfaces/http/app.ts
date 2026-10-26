@@ -1,6 +1,7 @@
 import express, { type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import type { Logger } from "../../shared/logger.ts";
 import type { MergeRequestTask } from "../../domain/review-task.ts";
+import { PROJECT_REVIEW_DENIED_MESSAGE, PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE } from "../../domain/review-prompt.ts";
 import { parseMergeRequestTask } from "./webhook-parser.ts";
 
 /**
@@ -15,6 +16,8 @@ export interface AppDeps {
   logger: Logger;
   /** 把 MR 任务转成后台队列任务的入口。 */
   enqueue: WebhookEnqueue;
+  /** 只依据 Prompt 显式关联授权新评审；缺少检查器或查询抛错返回 503，绝不默认放行。 */
+  isProjectAllowed?: (repositoryFullName: string) => boolean;
   /**
    * 采纳追踪登记入口：收到「MR 有新提交」的 update 事件时调用。
    *
@@ -40,8 +43,8 @@ export interface AppDeps {
 /**
  * 创建 Express 应用（HTTP 表现层）。不含监听逻辑，便于测试用随机端口启动。
  *
- * 本路由只做一件事：按事件类型分派并立即响应。拉取、评审、汇总、回写全部在
- * 后台队列中完成。日志不记录 payload 正文，只记录事件类型与 MR 标识。
+ * 本路由校验请求和项目评审资格，按事件类型分派并立即响应。拉取、评审、汇总、
+ * 回写全部在后台队列中完成。日志不记录 payload 正文，只记录事件类型与 MR 标识。
  *
  * 来源校验（内网隔离、网关白名单等）由部署层负责：一个 GitLab 实例可以有多个
  * 项目，每个项目在 GitLab 侧配置的 Secret token 各不相同，单实例无法用一份全局
@@ -106,6 +109,22 @@ export function createApp(deps: AppDeps): Express {
         处理耗时毫秒: Date.now() - receivedAt,
       });
       res.json({ message: `merge_request !${task.iid} 已进入采纳追踪` });
+      return;
+    }
+
+    // 历史建议追踪不属于新评审；其余所有入队路径（包括追踪入口缺省的回退）都必须过白名单。
+    let allowed: boolean;
+    try {
+      if (!deps.isProjectAllowed) throw new Error("项目评审白名单检查器未装配");
+      allowed = deps.isProjectAllowed(task.fullName) === true;
+    } catch {
+      logger.error(PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE, { 项目ID: task.projectId, MR编号: task.iid, 项目全名: task.fullName, 状态码: 503 });
+      res.status(503).json({ error: PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE });
+      return;
+    }
+    if (!allowed) {
+      logger.warn(PROJECT_REVIEW_DENIED_MESSAGE, { 项目ID: task.projectId, MR编号: task.iid, 项目全名: task.fullName, 状态码: 403 });
+      res.status(403).json({ error: PROJECT_REVIEW_DENIED_MESSAGE });
       return;
     }
 

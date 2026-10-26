@@ -36,7 +36,7 @@ function harness(options:{enabled?:boolean;fail?:'snapshot'|'prepare'|'batch'|'s
     prepared.push(input);if(options.fail==='prepare')throw new Error('prepare failed');
     return{access,dispose:async()=>{disposed++;if(options.cleanupFailure)throw new Error('cleanup failed');}};
   }};
-  const pipeline=createReviewPipeline({client,promptSource:prompts,rules:{resolve:()=>({systemPrompt:'fallback',userPrompt:'{diffs_text}'})},
+  const pipeline=createReviewPipeline({client,promptSource:prompts,isProjectAllowed:project=>prompts.isProjectConfigured(project),rules:{resolve:()=>({systemPrompt:'fallback',userPrompt:'{diffs_text}'})},
     reviewer:{review:async input=>{
       calls.push(input);const summary=input.systemPrompt.includes('你之前分批评审了同一变更的各部分');
       if(!summary){batchAttempts++;if(options.fail==='batch'||(options.retryBatch&&batchAttempts===1))throw new Error('transient batch');}

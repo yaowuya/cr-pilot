@@ -2,7 +2,7 @@
  * 评审 prompt 的领域模型与持久化端口。
  *
  * 语义（P-015 / D-015 / D-016）：prompt 以数据库为准，yaml 文件降级为
- * 初始导入源与兜底；每次评审按项目读取，因此页面保存后下一次评审即生效。
+ * 初始导入源与规则兜底，但不能授予未关联项目的评审资格；页面保存后下一次检查即生效。
  *
  * 多项目关联（D-020）：一条 prompt 可同时关联多个 GitLab 项目，任一项目命中即
  * 使用该 prompt。这样同一套评审规则不必为同组项目各存一份。`repository` 字段
@@ -71,6 +71,11 @@ export function validateProjectSettings(
 
 /** 保留名称：全局兜底不可改名，避免破坏 resolve 的兜底语义。 */
 export const DEFAULT_PROMPT_REPOSITORY = "default";
+
+/** 入口拒绝与排队任务复核共用固定文案，不能回显配置异常或任务凭据。 */
+export const PROJECT_REVIEW_DENIED_MESSAGE = "项目未在 Prompt 管理中配置，拒绝评审";
+/** 配置不可用与明确未关联分开处置，仍拒绝执行且不回显读取异常。 */
+export const PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE = "读取项目评审白名单失败，拒绝评审";
 
 /** 校验并规范化用户提交的 Prompt 名称；空值与超长拒绝。 */
 export function normalizePromptName(value: unknown): string {
@@ -150,6 +155,8 @@ export interface PromptRepository {
    * 两者都没有时返回 undefined，由调用方继续回落 yaml 与 Markdown 兜底链。
    */
   resolve(repositoryFullName?: string): StoredPrompt | undefined;
+  /** 仅明确关联的非 default 项目可评审；匹配兼容 resolve，但不使用任何兜底配置授权。 */
+  isProjectConfigured(repositoryFullName: string): boolean;
   list(): PromptSummary[];
   get(id: number): StoredPrompt | undefined;
   findByRepository(repository: string): StoredPrompt | undefined;

@@ -104,7 +104,7 @@
           "Webhook"
         ],
         "summary": "GitLab Merge Request Webhook（评审入口）",
-        "description": "GitLab 推送 MR 事件后，本接口把任务放进后台队列并立即返回 200。\n后台管线：拉取变更 → 按仓库规则分批评审 → 汇总 → 回写 MR 评论。\n\n**来源校验**：不校验 `X-Gitlab-Token` 的 secret 语义。一个 GitLab 实例有多个项目、\n每个项目 secret 各不相同，单实例无法用一份全局 secret 校验所有来源，\n来源保护由部署层（内网隔离、网关白名单）负责。\n\n**访问令牌**：请求头 `X-Gitlab-Token` 会被当作 GitLab API 访问令牌使用（拉取变更与回写评论）。",
+        "description": "GitLab 推送 MR 事件后，仅项目白名单检查通过的新评审会进入后台队列并返回 200。\n后台管线：拉取变更 → 按仓库规则分批评审 → 汇总 → 回写 MR 评论。\n\n**项目白名单**：仅允许 Prompt 管理中非 default 记录的显式关联项目。未关联返回 403，配置读取异常返回 503，均不入评审队列。\n沿用完整路径和短项目名匹配；default、YAML 或 Markdown 兜底不能授予项目评审资格。队列任务开始时会再次复核。\n已装配的历史采纳追踪分支不受该限制；若追踪事件回退到完整评审，则同样检查项目白名单。\n\n**来源校验**：不校验 `X-Gitlab-Token` 的 secret 语义。一个 GitLab 实例有多个项目、\n每个项目 secret 各不相同，单实例无法用一份全局 secret 校验所有来源，\n来源保护由部署层（内网隔离、网关白名单）负责。\n\n**访问令牌**：请求头 `X-Gitlab-Token` 会被当作 GitLab API 访问令牌使用（拉取变更与回写评论）。",
         "operationId": "postReviewWebhook",
         "security": [],
         "parameters": [
@@ -174,6 +174,19 @@
               }
             }
           },
+          "403": {
+            "description": "项目未关联到 Prompt，拒绝评审且不入队",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "项目未在 Prompt 管理中配置，拒绝评审"
+                }
+              }
+            }
+          },
           "404": {
             "description": "路径不存在",
             "content": {
@@ -196,6 +209,19 @@
                 },
                 "example": {
                   "error": "服务器内部错误"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "项目白名单不可用，拒绝评审且不入队",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "读取项目评审白名单失败，拒绝评审"
                 }
               }
             }

@@ -59,6 +59,13 @@ function normalizeProjects(projects: readonly string[] | undefined): string[] {
   return result;
 }
 
+/** 与既有 Prompt 选择共用匹配口径；这里只比较显式关联，不把 Prompt 名称当项目。 */
+function matchesAssociatedProject(repositoryFullName: string, associatedProject: string): boolean {
+  const normalized = normalizeRepositoryKey(repositoryFullName);
+  const stored = normalizeRepositoryKey(associatedProject);
+  return Boolean(normalized && stored) && (stored === normalized || stored.endsWith(`/${normalized}`) || normalized.endsWith(`/${stored}`));
+}
+
 /** 判断是否为 repository 唯一约束冲突。 */
 function isUniqueViolation(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -206,7 +213,6 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
   return {
     resolve(repositoryFullName) {
       if (repositoryFullName) {
-        const normalized = normalizeRepositoryKey(repositoryFullName);
         // 先按关联表匹配：多对多关系下一条 prompt 可能覆盖多个项目。
         // 归一化在读取侧完成，库里保留用户输入的大小写。
         const rows = db
@@ -227,13 +233,19 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
                JOIN prompt_projects pp ON pp.prompt_id = p.id`,
           )
           .all() as unknown as Array<PromptRow & { matched_project: string }>;
-        const loose = candidates.find((row) => {
-          const stored = normalizeRepositoryKey(row.matched_project);
-          return stored === normalized || stored.endsWith(`/${normalized}`) || normalized.endsWith(`/${stored}`);
-        });
+        const loose = candidates.find((row) => matchesAssociatedProject(repositoryFullName, row.matched_project));
         if (loose) return toPrompt(loose);
       }
       return selectByRepository(DEFAULT_PROMPT_REPOSITORY);
+    },
+
+    isProjectConfigured(repositoryFullName) {
+      // 不能拿 resolve 的非空结果当许可：它会回退 default；也不能只看首条命中，
+      // 旧库的 default 关联可能遮蔽其他有效关联。每次读实时关联，读取异常交给调用方拒绝执行。
+      const projects = db.prepare(`SELECT pp.project FROM prompt_projects pp
+        JOIN review_prompts p ON p.id = pp.prompt_id WHERE p.repository <> 'default'`)
+        .all() as unknown as Array<{ project: string }>;
+      return projects.some((row) => matchesAssociatedProject(repositoryFullName, row.project));
     },
 
     list() {

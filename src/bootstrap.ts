@@ -208,7 +208,10 @@ async function startApplication(input: {
       logger.info("管理员权限归属", { 管理员账号: config.adminUsername });
     }
 
+    // 入口与执行时都查询同一份实时关联：default/YAML 只提供规则，不能授予项目评审资格。
+    const isProjectAllowed = (project: string): boolean => prompts.isProjectConfigured(project);
     const pipeline = createReviewPipeline({
+      isProjectAllowed,
       client,
       rules,
       reviewer,
@@ -261,6 +264,7 @@ async function startApplication(input: {
         queue,
         pipeline,
         logger,
+        isProjectAllowed,
         // 有新提交时只登记追踪，不重复跑完整评审。追踪轮次由定时器驱动，
         // 这里只记日志；定时器保证最终会被处理。
         enqueueTracking: (task) => {
