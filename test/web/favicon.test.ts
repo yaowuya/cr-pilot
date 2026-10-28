@@ -27,15 +27,19 @@ test("favicon.svg 存在于 public 目录且是合法 SVG", () => {
   assert.match(svg, /viewBox="0 0 64 64"/, "应声明 viewBox");
 });
 
-test("favicon 用品牌主色，与侧边栏标识一致", () => {
-  // 图标与 UI 品牌色必须同源，否则标签页和页面看起来像两个产品
+test("favicon 使用 Framed Sheet 的 CR 线框标识并适配浏览器暗色主题", () => {
   const svg = readFileSync(join(ROOT, "web", "public", "favicon.svg"), "utf8");
-  assert.match(svg, /#5b5bd6/i, "应使用主色 #5b5bd6");
-  assert.match(svg, /#7c7cdf/i, "应使用主色浅色 #7c7cdf");
+  assert.doesNotMatch(svg, /linearGradient|url\(#brand\)/, "新图标不再使用旧版渐变方块");
+  assert.match(svg, /#eef2f7/i, "亮色底应复用页面框架色");
+  assert.match(svg, /#20293a/i, "亮色线框应复用主文本墨色");
+  assert.match(svg, /prefers-color-scheme:\s*dark/i, "SVG 应跟随浏览器标签的暗色偏好");
+  assert.match(svg, /#151e30/i, "暗色底应复用工作表色");
+  assert.match(svg, /#f1f5f9/i, "暗色线框与字标应使用亮色文本色");
   assert.match(svg, />CR</, "应包含 CR 字标");
 });
 
-test("index.html 同时声明 apple-touch-icon，移动端主屏不留白块", () => {
+test("index.html 用版本参数刷新 favicon 缓存，并同时声明 apple-touch-icon", () => {
   const html = readFileSync(join(ROOT, "web", "index.html"), "utf8");
-  assert.match(html, /apple-touch-icon/, "应声明 apple-touch-icon");
+  assert.match(html, /rel="icon"[^>]+href="\/favicon\.svg\?v=2"/, "浏览器标签图标应使用版本化地址");
+  assert.match(html, /rel="apple-touch-icon"[^>]+href="\/favicon\.svg\?v=2"/, "主屏图标应与标签图标同版本");
 });
