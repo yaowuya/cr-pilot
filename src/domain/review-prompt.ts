@@ -14,10 +14,43 @@ import { normalizeRepositoryKey } from "./review-rules.ts";
 /** 仓库规范的字符上限；独立于整个 HTTP 请求的字节限制。 */
 export const REPOSITORY_STANDARDS_MAX_LENGTH = 32_000;
 
-/** 项目名称级的执行设置；同一完整项目在不同 Prompt 中共享此状态。 */
+/** GitLab 合并方式；不支持 rebase 等隐式降级。 */
+export type AutoMergeMethod = "merge" | "squash";
+
+/** 项目级自动合并策略；评分达到门槛且目标分支精确命中时才允许进入执行决策。 */
+export interface ProjectAutoMergePolicy {
+  enabled: boolean;
+  /** 1..100 的整数；默认 100，避免启用后意外放宽质量门槛。 */
+  minimumScore: number;
+  /** GitLab 目标分支的大小写敏感精确列表，不做通配或后缀匹配。 */
+  targetBranches: string[];
+  method: AutoMergeMethod;
+  removeSourceBranch: boolean;
+}
+
+/** 返回新的安全默认值，避免共享数组被调用方修改。 */
+export function defaultProjectAutoMergePolicy(): ProjectAutoMergePolicy {
+  return {
+    enabled: false,
+    minimumScore: 100,
+    targetBranches: [],
+    method: "merge",
+    removeSourceBranch: false,
+  };
+}
+
+/** 项目名称级的完整执行设置；同一完整项目在不同 Prompt 中共享此状态。 */
 export interface ProjectReviewSetting {
   project: string;
   repositoryContextEnabled: boolean;
+  autoMergePolicy: ProjectAutoMergePolicy;
+}
+
+/** 项目设置部分更新；省略的能力必须保留原值。 */
+export interface ProjectReviewSettingPatch {
+  project: string;
+  repositoryContextEnabled?: boolean;
+  autoMergePolicy?: ProjectAutoMergePolicy;
 }
 
 /** 可预期的配置错误，供 HTTP 层映射为 400，不能混同数据库故障。 */
@@ -41,22 +74,86 @@ export function normalizeRepositoryStandards(value: unknown): string | undefined
   return value.trim();
 }
 
+/** 完整项目必须至少包含 namespace/project 两段；自动合并不接受旧短名兼容匹配。 */
+function isFullRepositoryProjectKey(project: string): boolean {
+  return project.split("/").length >= 2 && isRepositoryProjectKey(project);
+}
+
+/**
+ * 校验 Git 分支名的安全子集。
+ *
+ * 自动合并会把该值直接作为 GitLab 目标分支精确匹配，因此拒绝
+ * `git check-ref-format --branch` 不接受的控制符与危险片段，不做通配或后缀解释。
+ */
+function normalizeTargetBranch(value: unknown): string {
+  if (typeof value !== "string") throw new PromptValidationError("目标分支必须是字符串");
+  const branch = value.trim();
+  if (!branch) throw new PromptValidationError("目标分支必须非空");
+  const parts = branch.split("/");
+  const invalid = branch.startsWith("-") || branch.startsWith("/") || branch.endsWith("/") ||
+    branch.endsWith(".") || branch.includes("//") || branch.includes("..") || branch.includes("@{") ||
+    /[\u0000-\u0020\u007f~^:?*\[\\]/u.test(branch) ||
+    parts.some((part) => part.startsWith(".") || part.endsWith(".lock"));
+  if (invalid) throw new PromptValidationError(`目标分支格式非法：${branch}`);
+  return branch;
+}
+
+/** 校验并复制完整自动合并策略，避免外部数组引用进入持久化模型。 */
+function normalizeAutoMergePolicy(value: unknown, project: string): ProjectAutoMergePolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new PromptValidationError("auto_merge_policy 必须是对象");
+  }
+  const policy = value as Record<string, unknown>;
+  if (typeof policy.enabled !== "boolean") throw new PromptValidationError("自动合并 enabled 必须是布尔值");
+  if (!Number.isInteger(policy.minimumScore)) throw new PromptValidationError("自动合并最低分必须是整数");
+  const minimumScore = Number(policy.minimumScore);
+  if (minimumScore < 1 || minimumScore > 100) throw new PromptValidationError("自动合并最低分必须在 1..100 之间");
+  if (!Array.isArray(policy.targetBranches)) throw new PromptValidationError("自动合并目标分支必须是数组");
+  const targetBranches = policy.targetBranches.map(normalizeTargetBranch);
+  if (new Set(targetBranches).size !== targetBranches.length) throw new PromptValidationError("自动合并目标分支存在重复项");
+  if (policy.enabled && targetBranches.length === 0) throw new PromptValidationError("启用自动合并时目标分支至少一项");
+  if (policy.enabled && !isFullRepositoryProjectKey(project)) {
+    throw new PromptValidationError("启用自动合并需要完整 namespace/project 项目路径");
+  }
+  if (policy.method !== "merge" && policy.method !== "squash") {
+    throw new PromptValidationError("自动合并方式只能是 merge 或 squash");
+  }
+  if (typeof policy.removeSourceBranch !== "boolean") {
+    throw new PromptValidationError("自动合并 remove_source_branch 必须是布尔值");
+  }
+  return {
+    enabled: policy.enabled,
+    minimumScore,
+    targetBranches,
+    method: policy.method,
+    removeSourceBranch: policy.removeSourceBranch,
+  };
+}
+
 /** 校验项目部分更新：只能修改最终关联中的项目，重复/冲突条目一并拒绝。 */
 export function validateProjectSettings(
-  settings: readonly ProjectReviewSetting[] | undefined,
+  settings: readonly ProjectReviewSettingPatch[] | undefined,
   projects: readonly string[],
   repository: string,
-): ProjectReviewSetting[] {
+): ProjectReviewSettingPatch[] {
   if (settings === undefined) return [];
   if (!Array.isArray(settings)) throw new PromptValidationError("project_settings 必须是数组");
   if (repository === "default" && settings.length > 0) {
-    throw new PromptValidationError("default 不允许配置项目仓库开关");
+    throw new PromptValidationError("default 不允许配置项目执行设置");
   }
   const associated = new Set(projects.map(normalizeRepositoryKey));
   const seen = new Set<string>();
   return settings.map((entry) => {
-    if (!entry || typeof entry.project !== "string" || typeof entry.repositoryContextEnabled !== "boolean") {
-      throw new PromptValidationError("项目设置必须包含项目名和布尔开关");
+    if (!entry || typeof entry !== "object" || typeof entry.project !== "string") {
+      throw new PromptValidationError("项目设置必须包含 project 字符串");
+    }
+    const hasRepositoryContext = entry.repositoryContextEnabled !== undefined;
+    const hasAutoMergePolicy = entry.autoMergePolicy !== undefined;
+    if (!hasRepositoryContext && !hasAutoMergePolicy) {
+      throw new PromptValidationError("项目设置至少包含一个执行配置");
+    }
+    if (hasRepositoryContext && typeof entry.repositoryContextEnabled !== "boolean") {
+      throw new PromptValidationError("repository_context_enabled 必须是布尔值");
     }
     const project = normalizeRepositoryKey(entry.project);
     if (!project || !associated.has(project)) throw new PromptValidationError("项目设置必须属于当前关联项目");
@@ -65,7 +162,11 @@ export function validateProjectSettings(
     if (entry.repositoryContextEnabled && !isRepositoryProjectKey(project)) {
       throw new PromptValidationError("开启仓库上下文需要合法的项目名或相对项目路径");
     }
-    return { project, repositoryContextEnabled: entry.repositoryContextEnabled };
+    return {
+      project,
+      ...(hasRepositoryContext ? { repositoryContextEnabled: entry.repositoryContextEnabled } : {}),
+      ...(hasAutoMergePolicy ? { autoMergePolicy: normalizeAutoMergePolicy(entry.autoMergePolicy, project) } : {}),
+    };
   });
 }
 
@@ -103,7 +204,7 @@ export interface StoredPrompt {
   userPrompt: string;
   /** 独立共享规范；省略兼容旧调用方，仓储返回时规范化为空字符串。 */
   repositoryStandards?: string;
-  /** 创建/更新时为部分设置；读取时为全部关联的当前项目状态。 */
+  /** 读取时为全部关联项目的完整执行设置。 */
   projectSettings?: ProjectReviewSetting[];
   wecomWebhookUrl?: string;
   wecomScoreThreshold?: number;
@@ -140,8 +241,8 @@ export interface PromptInput {
   userPrompt: string;
   /** 独立共享规范；省略兼容旧调用方，仓储返回时规范化为空字符串。 */
   repositoryStandards?: string;
-  /** 创建/更新时为部分设置；读取时为全部关联的当前项目状态。 */
-  projectSettings?: ProjectReviewSetting[];
+  /** 创建/更新时为部分设置；省略能力表示保留原值。 */
+  projectSettings?: ProjectReviewSettingPatch[];
   wecomWebhookUrl?: string;
   wecomScoreThreshold?: number;
   providerId?: number;
@@ -172,4 +273,9 @@ export interface PromptRepository {
   isRepositoryContextEnabled?(repositoryFullName: string): boolean;
   /** 已知关联项目的名称级状态，供新增关联时展示，避免误用关闭默认值。 */
   listProjectSettings?(): ProjectReviewSetting[];
+  /**
+   * 精确读取完整 namespace/project 的执行设置。
+   * 不接受短名/default/fallback，供自动合并等高风险动作使用。
+   */
+  resolveProjectSetting?(repositoryFullName: string): ProjectReviewSetting | undefined;
 }

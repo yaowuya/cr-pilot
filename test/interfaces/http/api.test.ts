@@ -19,7 +19,7 @@ import { createPromptRepository } from "../../../src/infrastructure/sqlite/promp
 import { createReviewRecordRepository } from "../../../src/infrastructure/sqlite/review-record-repo.ts";
 import { createSilentLogger } from "../../../src/shared/logger.ts";
 import { deriveToken } from "../../../src/shared/crypto.ts";
-import type { ProjectReviewSetting, PromptSummary, StoredPrompt } from "../../../src/domain/review-prompt.ts";
+import { defaultProjectAutoMergePolicy, type ProjectReviewSetting, type PromptSummary, type StoredPrompt } from "../../../src/domain/review-prompt.ts";
 
 /** 当前 API 必须返回完整新字段；旧替身的可选类型不削弱运行时断言。 */
 type ContextPrompt = StoredPrompt & { repositoryStandards: string; projectSettings: ProjectReviewSetting[] };
@@ -405,7 +405,10 @@ test("仓库配置 API 支持独立开关、规范、meta 和旧客户端省略�
     assert.equal(created.status, 200);
     const detail = await created.json() as ContextPrompt;
     assert.equal(detail.repositoryStandards, "规范");
-    assert.deepEqual(detail.projectSettings, [{ project: "g/a", repositoryContextEnabled: true }, { project: "g/b", repositoryContextEnabled: false }]);
+    assert.deepEqual(detail.projectSettings, [
+      { project: "g/a", repositoryContextEnabled: true, autoMergePolicy: defaultProjectAutoMergePolicy() },
+      { project: "g/b", repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy() },
+    ]);
     const meta = await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta;
     assert.deepEqual(meta.projectSettings, detail.projectSettings);
     const list = await (await authed(base, token, "/api/prompts")).json() as PromptSummary[];
@@ -460,9 +463,13 @@ test("既有短项目名可在页面和 API 正常开启仓库上下文", async 
     const created = await authed(base, token, "/api/prompts", {method:"POST",body:JSON.stringify(body)});
     assert.equal(created.status, 200);
     const prompt = await created.json() as ContextPrompt;
-    assert.deepEqual(prompt.projectSettings,[{project:"auto-ops",repositoryContextEnabled:true},{project:"cw-auto-ops",repositoryContextEnabled:false}]);
+    const expectedSettings = [
+      {project:"auto-ops",repositoryContextEnabled:true,autoMergePolicy:defaultProjectAutoMergePolicy()},
+      {project:"cw-auto-ops",repositoryContextEnabled:false,autoMergePolicy:defaultProjectAutoMergePolicy()},
+    ];
+    assert.deepEqual(prompt.projectSettings, expectedSettings);
     const meta = await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta;
-    assert.deepEqual(meta.projectSettings,[{project:"auto-ops",repositoryContextEnabled:true},{project:"cw-auto-ops",repositoryContextEnabled:false}]);
+    assert.deepEqual(meta.projectSettings, expectedSettings);
   });
 });
 

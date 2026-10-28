@@ -101,11 +101,18 @@ export interface ParsedFinding {
   line: number;
 }
 
-/** AI 输出的结构化评审结果。 */
+/** 自动合并门禁汇总，覆盖正文中包括无法定位行在内的全部问题。 */
+export interface ParsedMergeGate {
+  maxSeverity: "none" | "info" | "low" | "medium" | "high" | "critical";
+  blockingFindings: number;
+}
+
+/** AI 输出的结构化评审结果。mergeGate 可选以兼容旧的非自动合并评审。 */
 export interface ParsedReview {
   reviewedHeadSha: string;
   summaryBody: string;
   findings: ParsedFinding[];
+  mergeGate?: ParsedMergeGate;
 }
 
 /** GitLab Discussions API 的 position 对象：new_line 与 old_line 互斥。 */
@@ -120,20 +127,26 @@ export type DiscussionPosition = {
 
 /** 合法 severity 取值，与参考实现 review.schema.json 的 enum 一致。 */
 const VALID_SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
+const VALID_MERGE_GATE_SEVERITIES = new Set(["none", ...VALID_SEVERITIES]);
 
 /**
  * 解析 AI 输出的 JSON 评审结果（零 IO 纯函数）。
  *
- * schema 对齐参考实现 `references/review.schema.json`：reviewed_head_sha 必须是
+ * 支持裸 JSON，也支持人读 Markdown 末尾的 fenced JSON。reviewed_head_sha 必须是
  * 40 位 hex；findings 中 new_line 与 old_line 必须恰好出现一个——GitLab 的
- * position 只接受其中一个，同时给出说明模型无法确定锚点在哪一侧，此时判为非法
- * 而非猜一个。任一校验失败返回 null，由调用方把该批次整体降级进汇总评论，
- * 而不是丢弃内容。
+ * position 只接受其中一个。merge_gate 对旧结果可缺省以保持普通评审兼容，但一旦
+ * 出现就严格校验；自动合并层会要求每批都存在。任一结构校验失败返回 null，由
+ * 调用方把该批次整体降级进汇总评论，而不是丢弃内容。
  */
 export function parseReviewJson(text: string): ParsedReview | null {
   let root: unknown;
   try {
-    root = JSON.parse(text);
+    const trimmed = text.trim();
+    // 模型契约要求先输出人读 Markdown，再在末尾给 fenced JSON；裸 JSON 继续兼容。
+    // 从最后一个 json fence 开始匹配，正文即使含 JSON 示例也不会吞进机器契约。
+    const lastFence = trimmed.toLowerCase().lastIndexOf("```json");
+    const fenced = lastFence >= 0 ? /^```json\s*\n?([\s\S]*?)\n?```\s*$/i.exec(trimmed.slice(lastFence)) : null;
+    root = JSON.parse(fenced?.[1]?.trim() ?? trimmed);
   } catch {
     return null;
   }
@@ -150,6 +163,17 @@ export function parseReviewJson(text: string): ParsedReview | null {
 
   const rawFindings = record.findings;
   if (!Array.isArray(rawFindings)) return null;
+
+  let mergeGate: ParsedMergeGate | undefined;
+  if (record.merge_gate !== undefined) {
+    if (typeof record.merge_gate !== "object" || record.merge_gate === null || Array.isArray(record.merge_gate)) return null;
+    const gate = record.merge_gate as Record<string, unknown>;
+    const maxSeverity = typeof gate.max_severity === "string" ? gate.max_severity.toLowerCase() : "";
+    const blockingFindings = gate.blocking_findings;
+    if (!VALID_MERGE_GATE_SEVERITIES.has(maxSeverity) || typeof blockingFindings !== "number" ||
+      !Number.isInteger(blockingFindings) || blockingFindings < 0) return null;
+    mergeGate = { maxSeverity: maxSeverity as ParsedMergeGate["maxSeverity"], blockingFindings };
+  }
 
   const findings: ParsedFinding[] = [];
   const seenIds = new Set<string>();
@@ -181,7 +205,7 @@ export function parseReviewJson(text: string): ParsedReview | null {
     findings.push({ id, severity, path, body, lineKey, line: rawLine });
   }
 
-  return { reviewedHeadSha, summaryBody, findings };
+  return { reviewedHeadSha, summaryBody, findings, ...(mergeGate ? { mergeGate } : {}) };
 }
 
 /**

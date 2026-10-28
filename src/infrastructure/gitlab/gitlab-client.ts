@@ -163,7 +163,7 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
 
   const request = async <T>(gitlabUrl: string, gitlabToken: string, path: string, init: RequestInit = {}): Promise<T> => {
     const base = (gitlabUrl || baseUrl).replace(/\/+$/, "");
-    if (init.method === "POST" && typeof init.body === "string") {
+    if ((init.method === "POST" || init.method === "PUT") && typeof init.body === "string") {
       // 指纹取最终序列化的 HTTP 请求体，不是模型刚生成的汇总；只记长度和哈希，不记正文/凭据。
       logger.info("GitLab 写入请求", {
         方法: init.method, 路径: path.split("?")[0], 请求体字节数: Buffer.byteLength(init.body, "utf8"),
@@ -224,6 +224,41 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     return response.text();
   };
 
+  type RawMergeRequest = {
+    state?: string;
+    sha?: string;
+    target_branch?: string;
+    diff_refs?: { base_sha?: string; start_sha?: string; head_sha?: string };
+  };
+
+  /** 读取权威 MR 详情；追踪兼容映射与自动合并严格映射在各自 seam 完成。 */
+  const readMergeRequest = async (projectId: number, iid: number, gitlabUrl: string, gitlabToken: string): Promise<RawMergeRequest> =>
+    request<RawMergeRequest>(gitlabUrl, gitlabToken, `/api/v4/projects/${projectId}/merge_requests/${iid}`);
+
+  const stateFields = (payload: RawMergeRequest) => ({
+    headSha: payload.sha ?? payload.diff_refs?.head_sha ?? "",
+    ...(typeof payload.target_branch === "string" && payload.target_branch ? { targetBranch: payload.target_branch } : {}),
+  });
+
+  /** 采纳追踪保留历史行为：未知生命周期按 opened，不提前终结建议。 */
+  const readTrackingState = async (projectId: number, iid: number, gitlabUrl: string, gitlabToken: string) => {
+    const payload = await readMergeRequest(projectId, iid, gitlabUrl, gitlabToken);
+    const state: "opened" | "closed" | "merged" = payload.state === "merged" || payload.state === "closed" ? payload.state : "opened";
+    return { ...stateFields(payload), state };
+  };
+
+  /** 自动合并只接受 GitLab 明确返回 opened；locked/未知/缺失状态一律 other。 */
+  const readAutoMergeState = async (projectId: number, iid: number, gitlabUrl: string, gitlabToken: string) => {
+    const payload = await readMergeRequest(projectId, iid, gitlabUrl, gitlabToken);
+    const state: "opened" | "closed" | "merged" | "other" =
+      payload.state === "opened" || payload.state === "closed" || payload.state === "merged" ? payload.state : "other";
+    const refs = payload.diff_refs;
+    const completeRefs = refs && isGitObjectId(refs.base_sha) && isGitObjectId(refs.start_sha) && isGitObjectId(refs.head_sha)
+      ? { baseSha: refs.base_sha, startSha: refs.start_sha, headSha: refs.head_sha }
+      : undefined;
+    return { ...stateFields(payload), state, ...(completeRefs ? { refs: completeRefs } : {}) };
+  };
+
   return {
     /**
      * 固定任务开始时的 MR 版本，diff、commits 和 refs 均取自版本详情。
@@ -248,6 +283,7 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       const mrRefs = snapshotObject(mr.diff_refs);
       if (mr.project_id !== projectId || mr.iid !== iid || !positiveId(mr.id) ||
         !positiveId(mr.source_project_id) || typeof mr.source_branch !== "string" || !mr.source_branch.trim() ||
+        typeof mr.target_branch !== "string" || !mr.target_branch.trim() ||
         !isGitObjectId(mr.sha) || mrRefs.head_sha !== mr.sha ||
         !isGitObjectId(mrRefs.base_sha) || !isGitObjectId(mrRefs.start_sha)) {
         throw new Error("MR 源项目或版本元数据不完整");
@@ -297,6 +333,7 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
         refs: { headSha: mr.sha, baseSha: mrRefs.base_sha, startSha: mrRefs.start_sha },
         sourceProjectId: mr.source_project_id,
         sourceBranch: mr.source_branch,
+        targetBranch: mr.target_branch,
         repositoryUrl,
         gitlabUrl: instance,
       };
@@ -433,15 +470,47 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     },
 
     async getMergeRequestTrackingState(projectId, iid, gitlabUrl = "", gitlabToken = "") {
-      type RawMergeRequest = { state?: string; sha?: string; diff_refs?: { head_sha?: string } };
-      const payload = await request<RawMergeRequest>(
-        gitlabUrl,
-        gitlabToken,
-        `/api/v4/projects/${projectId}/merge_requests/${iid}`,
-      );
-      // GitLab 还可能返回 locked 等状态；未知状态必须保守按 opened，避免错误终结建议。
-      const state = payload.state === "merged" || payload.state === "closed" ? payload.state : "opened";
-      return { headSha: payload.sha ?? payload.diff_refs?.head_sha ?? "", state };
+      return readTrackingState(projectId, iid, gitlabUrl, gitlabToken);
+    },
+
+    async getMergeRequestAutoMergeState(projectId, iid, gitlabUrl = "", gitlabToken = "") {
+      return readAutoMergeState(projectId, iid, gitlabUrl, gitlabToken);
+    },
+
+    async mergeMergeRequest(projectId, iid, command, gitlabUrl = "", gitlabToken = "") {
+      const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/merge`;
+      try {
+        const result = await request<RawMergeRequest>(gitlabUrl, gitlabToken, path, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sha: command.sha,
+            squash: command.method === "squash",
+            should_remove_source_branch: command.removeSourceBranch,
+          }),
+        });
+        if (result.state !== "merged" || (result.sha && result.sha !== command.sha)) {
+          throw new Error("GitLab 合并响应未确认同一 head 已 merged");
+        }
+        logger.info("MR 已自动合并", { 项目ID: projectId, MR编号: iid, 合并方式: command.method });
+      } catch (error) {
+        // 401/403 是明确拒绝，不再发起对账；其余异常可能发生在 GitLab 已提交写入但响应丢失之后。
+        if (error instanceof GitlabApiError && (error.status === 401 || error.status === 403)) throw error;
+        try {
+          const current = await readTrackingState(projectId, iid, gitlabUrl, gitlabToken);
+          if (current.state === "merged" && current.headSha === command.sha) {
+            logger.info("自动合并响应未知，但状态对账确认已合并", { 项目ID: projectId, MR编号: iid });
+            return;
+          }
+        } catch (reconcileError) {
+          logger.warn("自动合并失败后状态对账也失败", {
+            项目ID: projectId,
+            MR编号: iid,
+            错误: reconcileError instanceof Error ? reconcileError.message : String(reconcileError),
+          });
+        }
+        throw error;
+      }
     },
 
     async getFileRaw(projectId, iid, path, headSha, gitlabUrl = "", gitlabToken = "") {

@@ -10,7 +10,7 @@
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>
-        <el-button type="primary" @click="openCreate">
+        <el-button type="primary" :disabled="providerWritesBlocked" @click="openCreate">
           <el-icon><Plus /></el-icon>
           新增厂商
         </el-button>
@@ -21,6 +21,11 @@
       <template #title>
         密钥只以掩码回显，留空表示不修改。未指定厂商的项目使用「全局默认」厂商。
       </template>
+    </el-alert>
+
+    <el-alert v-if="providerWritesBlocked" type="warning" :closable="false" show-icon class="write-protection-alert">
+      <template #title>AI 厂商与项目绑定当前为只读</template>
+      这些配置属于自动合并的 evaluator 信任根，只有管理员可以修改。
     </el-alert>
 
     <el-alert v-if="loadError" type="error" :closable="false" show-icon class="load-alert">
@@ -39,7 +44,7 @@
 
       <div v-if="loaded && providers.length === 0 && !loading" class="empty-wrap">
         <el-empty description="尚未配置任何厂商，评审将使用 pi-agent/models.json 里的既有配置">
-          <el-button type="primary" @click="openCreate">立即新增</el-button>
+          <el-button type="primary" :disabled="providerWritesBlocked" @click="openCreate">立即新增</el-button>
         </el-empty>
       </div>
 
@@ -56,21 +61,21 @@
                 <span class="provider-card__kind">{{ provider.name }} · {{ apiLabel(provider.api) }}</span>
               </div>
             </div>
-            <el-dropdown trigger="click" @command="(cmd: string) => onCommand(cmd, provider)">
-              <button class="icon-button" type="button" :aria-label="`${provider.label} 更多操作`" title="更多操作">
+            <el-dropdown :disabled="providerWritesBlocked" trigger="click" @command="(cmd: string) => onCommand(cmd, provider)">
+              <button class="icon-button" type="button" :disabled="providerWritesBlocked" :aria-label="`${provider.label} 更多操作`" title="更多操作">
                 <el-icon><MoreFilled /></el-icon>
               </button>
               <template #dropdown>
                 <el-dropdown-menu>
-                  <el-dropdown-item v-if="!provider.isDefault" command="default">
+                  <el-dropdown-item v-if="!provider.isDefault" command="default" :disabled="providerWritesBlocked">
                     <el-icon><Star /></el-icon>
                     设为全局默认
                   </el-dropdown-item>
-                  <el-dropdown-item command="edit">
+                  <el-dropdown-item command="edit" :disabled="providerWritesBlocked">
                     <el-icon><Edit /></el-icon>
                     编辑
                   </el-dropdown-item>
-                  <el-dropdown-item command="delete" divided>
+                  <el-dropdown-item command="delete" divided :disabled="providerWritesBlocked">
                     <el-icon><Delete /></el-icon>
                     删除
                   </el-dropdown-item>
@@ -128,7 +133,7 @@
         </div>
         <div class="binding-panel__actions">
           <span class="sheet-panel__meta">{{ bindings.length }} 条绑定</span>
-          <el-button size="small" @click="openBinding">新增绑定</el-button>
+          <el-button size="small" :disabled="providerWritesBlocked" @click="openBinding">新增绑定</el-button>
         </div>
       </div>
       <div class="table-shell">
@@ -150,7 +155,7 @@
             <template #default="{ row }">
               <el-popconfirm title="解除该项目的厂商绑定？" @confirm="onUnbind(row.project)">
                 <template #reference>
-                  <el-button link type="danger">解除</el-button>
+                  <el-button link type="danger" :disabled="providerWritesBlocked">解除</el-button>
                 </template>
               </el-popconfirm>
             </template>
@@ -166,7 +171,7 @@
     <el-dialog v-model="dialogVisible" :title="editingId !== null ? '编辑厂商' : '新增厂商'"
       class="provider-editor-dialog" width="min(960px, calc(100vw - 32px))" top="4vh" destroy-on-close
       :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving">
-      <el-form label-position="top" :disabled="saving" class="provider-editor-form" @submit.prevent="onSave">
+      <el-form label-position="top" :disabled="saving || providerWritesBlocked" class="provider-editor-form" @submit.prevent="onSave">
         <section class="template-strip" aria-labelledby="provider-template-title">
           <div>
             <h3 id="provider-template-title">厂商模板</h3>
@@ -265,7 +270,7 @@
           <span class="cell-muted">保存后下一次评审使用新配置</span>
           <div>
             <el-button :disabled="saving" @click="dialogVisible = false">取消</el-button>
-            <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
+            <el-button type="primary" :loading="saving" :disabled="providerWritesBlocked" @click="onSave">保存</el-button>
           </div>
         </div>
       </template>
@@ -273,7 +278,7 @@
 
     <!-- 新增项目绑定 -->
     <el-dialog v-model="bindingVisible" title="新增项目绑定" width="520px" destroy-on-close>
-      <el-form label-position="top">
+      <el-form label-position="top" :disabled="saving || providerWritesBlocked" class="binding-form">
         <el-form-item label="项目全名">
           <el-input v-model="bindingForm.project" placeholder="例如 group/project" />
         </el-form-item>
@@ -290,7 +295,7 @@
       </el-form>
       <template #footer>
         <el-button @click="bindingVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="onBind">保存</el-button>
+        <el-button type="primary" :loading="saving" :disabled="providerWritesBlocked" @click="onBind">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -302,7 +307,8 @@
  *
  * 管理多个 LLM 厂商：每个厂商有自己的 baseUrl、apiKey、协议与模型清单。
  * 保存后后端把全部厂商写进 `pi-agent/models.json` 并把密钥导出到环境变量，
- * 下一次评审即按「项目绑定 > 全局默认」选用。
+ * 下一次评审即按「项目绑定 > 全局默认」选用。登录账号均可读取，只有管理员能修改，
+ * 因为厂商与绑定会直接决定 evaluator 输出并可能被自动合并继承。
  *
  * 密钥三态：页面只拿到掩码；留空或提交掩码都表示「不修改原密钥」，
  * 由后端判定（见 providers.ts 的 looksMasked），避免掩码被当成新密钥写回。
@@ -311,6 +317,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { Delete, Edit, MoreFilled, Plus, Refresh, Star } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
+import { currentIsAdmin } from "../stores/auth.ts";
 import type {
   LlmApiKind,
   LlmProjectBinding,
@@ -319,6 +326,8 @@ import type {
   LlmProvidersResponse,
 } from "../types.ts";
 
+const isAdmin = currentIsAdmin();
+const providerWritesBlocked = computed(() => !isAdmin.value);
 const loading = ref(false);
 const loaded = ref(false);
 const loadError = ref("");
@@ -368,6 +377,13 @@ const bindingModelOptions = computed(() => {
   const provider = providers.value.find((item) => item.id === bindingForm.providerId);
   return provider?.models ?? [];
 });
+
+/** UI 禁用之外再守卫事件处理器，避免程序化触发绕过只读裁剪。 */
+function ensureProviderWritesAllowed(): boolean {
+  if (!providerWritesBlocked.value) return true;
+  ElMessage.warning("AI 厂商与项目模型绑定仅允许管理员修改");
+  return false;
+}
 
 /** 协议类型的展示名。 */
 function apiLabel(api: LlmApiKind): string {
@@ -440,12 +456,14 @@ function resetForm(): void {
 }
 
 function openCreate(): void {
+  if (!ensureProviderWritesAllowed()) return;
   editingId.value = null;
   resetForm();
   dialogVisible.value = true;
 }
 
 function openEdit(provider: LlmProviderSummary): void {
+  if (!ensureProviderWritesAllowed()) return;
   editingId.value = provider.id;
   form.name = provider.name;
   form.label = provider.label;
@@ -461,6 +479,7 @@ function openEdit(provider: LlmProviderSummary): void {
 }
 
 async function onSave(): Promise<void> {
+  if (!ensureProviderWritesAllowed()) return;
   if (!form.label.trim()) {
     ElMessage.warning("请填写展示名");
     return;
@@ -508,6 +527,7 @@ async function onSave(): Promise<void> {
 
 /** 下拉菜单命令分发。 */
 async function onCommand(command: string, provider: LlmProviderSummary): Promise<void> {
+  if (!ensureProviderWritesAllowed()) return;
   if (command === "edit") {
     openEdit(provider);
     return;
@@ -543,6 +563,7 @@ async function onCommand(command: string, provider: LlmProviderSummary): Promise
 }
 
 function openBinding(): void {
+  if (!ensureProviderWritesAllowed()) return;
   bindingForm.project = "";
   bindingForm.providerId = undefined;
   bindingForm.model = "";
@@ -550,6 +571,7 @@ function openBinding(): void {
 }
 
 async function onBind(): Promise<void> {
+  if (!ensureProviderWritesAllowed()) return;
   if (!bindingForm.project.trim()) {
     ElMessage.warning("请填写项目全名");
     return;
@@ -575,6 +597,7 @@ async function onBind(): Promise<void> {
 }
 
 async function onUnbind(project: string): Promise<void> {
+  if (!ensureProviderWritesAllowed()) return;
   try {
     await api.delete(`/api/providers/bindings/${encodeURIComponent(project)}`);
     ElMessage.success("已解除绑定");

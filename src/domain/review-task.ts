@@ -7,6 +7,7 @@
  */
 import type { DiscussionPosition } from "./inline-comment.ts";
 import type { RepositoryReadAccess, RepositoryReviewSnapshot, RepositoryToolCallEvent } from "./repository-context.ts";
+import type { ProjectAutoMergePolicy } from "./review-prompt.ts";
 
 export type { DiscussionPosition };
 
@@ -114,10 +115,167 @@ export interface ReviewInput {
   api?: string;
 }
 
-/** 评审结果。model 取自实际会话，便于调用方确认真正生效的模型。 */
+/** 评审结果。模型身份取自实际会话，供高风险调用方核对真正生效的 evaluator。 */
 export interface ReviewResult {
   text: string;
+  /** 实际会话身份字段均可选，兼容尚未提供完整证据的旧 Reviewer 实现。 */
+  provider?: string;
   model: string;
+  baseUrl?: string;
+  api?: string;
+}
+
+/** 管线沿用项目设置的权威自动合并类型，不维护第二份结构。 */
+export type AutoMergePolicy = ProjectAutoMergePolicy;
+
+/** GitLab 合并写请求；sha 是防止评审后新提交被误合并的乐观锁。 */
+export interface AutoMergeCommand {
+  sha: string;
+  method: "merge" | "squash";
+  removeSourceBranch: boolean;
+}
+
+/** 自动合并纯决策的完整输入；当前 MR 状态必须由 PUT 前的 GET 获取。 */
+export interface AutoMergeDecisionInput {
+  /** 任务开始时快照，用于防止配置在评审过程中被修改后仍沿旧策略合并。 */
+  policy?: AutoMergePolicy;
+  /** 合并前再次解析的策略；缺失、关闭或关键字段变化都必须阻断。 */
+  currentPolicy?: AutoMergePolicy;
+  score: number | null;
+  skippedBatches: number;
+  expectedBatchCount: number;
+  structuredBatchCount: number;
+  structuredHeadShas: string[];
+  mergeGateCount: number;
+  mergeGateMaxSeverities: string[];
+  mergeGateBlockingFindings: number;
+  severities: string[];
+  /** changes/commits/refs 是否来自同一个 GitLab diff version 快照。 */
+  versionSnapshotLocked: boolean;
+  inlinePublishFailed: number;
+  finalComment: string;
+  reviewedHeadSha: string;
+  currentHeadSha: string;
+  reviewedRefs?: DiffRefs;
+  currentRefs?: DiffRefs;
+  currentState: "opened" | "closed" | "merged" | "other";
+  reviewedTargetBranch?: string;
+  currentTargetBranch?: string;
+}
+
+export type AutoMergeBlockReason =
+  | "disabled"
+  | "policy-revoked"
+  | "policy-changed"
+  | "invalid-policy"
+  | "score-missing"
+  | "score-below-threshold"
+  | "batch-skipped"
+  | "structured-output-incomplete"
+  | "merge-gate-incomplete"
+  | "review-snapshot-unlocked"
+  | "inline-publish-failed"
+  | "final-comment-missing"
+  | "blocking-finding"
+  | "review-version-missing"
+  | "merge-request-not-open"
+  | "head-changed"
+  | "diff-refs-missing"
+  | "diff-refs-changed"
+  | "target-branch-missing"
+  | "target-branch-changed"
+  | "target-branch-not-allowed";
+
+export type AutoMergeDecision =
+  | { allowed: true; command: AutoMergeCommand }
+  | { allowed: false; reason: AutoMergeBlockReason };
+
+/**
+ * 对自动合并执行最后一道纯安全判定。
+ *
+ * critical/high、跳批、非结构化批次、缺分和版本漂移均是硬阻断；策略还必须在
+ * PUT 前二次解析且与任务开始快照一致，管理员撤销或修改配置会立即生效。
+ */
+export function decideAutoMerge(input: AutoMergeDecisionInput): AutoMergeDecision {
+  const policy = input.policy;
+  if (!policy?.enabled) return { allowed: false, reason: "disabled" };
+  const currentPolicy = input.currentPolicy;
+  if (!currentPolicy?.enabled) return { allowed: false, reason: "policy-revoked" };
+  if (!validAutoMergePolicy(policy) || !validAutoMergePolicy(currentPolicy)) {
+    return { allowed: false, reason: "invalid-policy" };
+  }
+  if (!sameAutoMergePolicy(policy, currentPolicy)) return { allowed: false, reason: "policy-changed" };
+  if (input.score === null || !Number.isFinite(input.score) || input.score < 0 || input.score > 100) {
+    return { allowed: false, reason: "score-missing" };
+  }
+  if (input.score < currentPolicy.minimumScore) return { allowed: false, reason: "score-below-threshold" };
+  if (!Number.isInteger(input.skippedBatches) || input.skippedBatches !== 0) {
+    return { allowed: false, reason: "batch-skipped" };
+  }
+  if (!input.versionSnapshotLocked) return { allowed: false, reason: "review-snapshot-unlocked" };
+  if (!/^[0-9a-f]{40}$/.test(input.reviewedHeadSha)) return { allowed: false, reason: "review-version-missing" };
+  if (input.expectedBatchCount < 1 || input.structuredBatchCount !== input.expectedBatchCount ||
+    input.structuredHeadShas.length !== input.expectedBatchCount ||
+    input.structuredHeadShas.some((sha) => sha !== input.reviewedHeadSha)) {
+    return { allowed: false, reason: "structured-output-incomplete" };
+  }
+  const validGateSeverities = new Set(["none", "info", "low", "medium", "high", "critical"]);
+  if (input.mergeGateCount !== input.expectedBatchCount || input.mergeGateMaxSeverities.length !== input.expectedBatchCount ||
+    input.mergeGateMaxSeverities.some((value) => !validGateSeverities.has(value.toLowerCase())) ||
+    !Number.isInteger(input.mergeGateBlockingFindings) || input.mergeGateBlockingFindings < 0) {
+    return { allowed: false, reason: "merge-gate-incomplete" };
+  }
+  if (!Number.isInteger(input.inlinePublishFailed) || input.inlinePublishFailed !== 0) {
+    return { allowed: false, reason: "inline-publish-failed" };
+  }
+  if (!input.finalComment.trim()) return { allowed: false, reason: "final-comment-missing" };
+  const hasBlockingSeverity = [...input.severities, ...input.mergeGateMaxSeverities]
+    .some((value) => value.toLowerCase() === "critical" || value.toLowerCase() === "high");
+  if (hasBlockingSeverity || input.mergeGateBlockingFindings > 0) {
+    return { allowed: false, reason: "blocking-finding" };
+  }
+  if (input.currentState !== "opened") return { allowed: false, reason: "merge-request-not-open" };
+  if (input.currentHeadSha !== input.reviewedHeadSha) return { allowed: false, reason: "head-changed" };
+  if (!validDiffRefs(input.reviewedRefs) || !validDiffRefs(input.currentRefs)) {
+    return { allowed: false, reason: "diff-refs-missing" };
+  }
+  if (input.reviewedRefs.headSha !== input.reviewedHeadSha || input.currentRefs.headSha !== input.currentHeadSha ||
+    input.reviewedRefs.baseSha !== input.currentRefs.baseSha || input.reviewedRefs.startSha !== input.currentRefs.startSha ||
+    input.reviewedRefs.headSha !== input.currentRefs.headSha) {
+    return { allowed: false, reason: "diff-refs-changed" };
+  }
+  if (!input.reviewedTargetBranch || !input.currentTargetBranch) return { allowed: false, reason: "target-branch-missing" };
+  if (input.currentTargetBranch !== input.reviewedTargetBranch) return { allowed: false, reason: "target-branch-changed" };
+  if (!currentPolicy.targetBranches.includes(input.currentTargetBranch)) {
+    return { allowed: false, reason: "target-branch-not-allowed" };
+  }
+  return {
+    allowed: true,
+    command: {
+      sha: input.reviewedHeadSha,
+      method: currentPolicy.method,
+      removeSourceBranch: currentPolicy.removeSourceBranch,
+    },
+  };
+}
+
+function validDiffRefs(refs: DiffRefs | undefined): refs is DiffRefs {
+  return Boolean(refs && [refs.baseSha, refs.startSha, refs.headSha].every((sha) => /^[0-9a-f]{40}$/.test(sha)));
+}
+
+function validAutoMergePolicy(policy: AutoMergePolicy): boolean {
+  return Number.isInteger(policy.minimumScore) && policy.minimumScore >= 1 && policy.minimumScore <= 100 &&
+    (policy.method === "merge" || policy.method === "squash") && policy.targetBranches.length > 0 &&
+    new Set(policy.targetBranches).size === policy.targetBranches.length &&
+    policy.targetBranches.every((branch) => branch.length > 0 && branch === branch.trim());
+}
+
+function sameAutoMergePolicy(left: AutoMergePolicy, right: AutoMergePolicy): boolean {
+  if (left.enabled !== right.enabled || left.minimumScore !== right.minimumScore || left.method !== right.method ||
+    left.removeSourceBranch !== right.removeSourceBranch) return false;
+  const leftTargets = [...new Set(left.targetBranches)].sort();
+  const rightTargets = [...new Set(right.targetBranches)].sort();
+  return leftTargets.length === rightTargets.length && leftTargets.every((branch, index) => branch === rightTargets[index]);
 }
 
 /**
@@ -177,7 +335,27 @@ export interface GitlabClient {
     iid: number,
     gitlabUrl?: string,
     gitlabToken?: string,
-  ): Promise<{ headSha: string; state: "opened" | "closed" | "merged" }>;
+  ): Promise<{ headSha: string; state: "opened" | "closed" | "merged"; targetBranch?: string }>;
+  /**
+   * 自动合并专用的严格状态读取；GitLab locked/未知状态必须返回 other，不能沿用追踪器的 opened 兼容映射。
+   */
+  getMergeRequestAutoMergeState?(
+    projectId: number,
+    iid: number,
+    gitlabUrl?: string,
+    gitlabToken?: string,
+  ): Promise<{ headSha: string; state: "opened" | "closed" | "merged" | "other"; targetBranch?: string; refs?: DiffRefs }>;
+  /**
+   * 按预期 head 合并 MR。该写请求不可自动重试；调用方必须先完成只读状态复核。
+   * 可选以兼容既有离线适配器，生产 GitLab 客户端必须实现。
+   */
+  mergeMergeRequest?(
+    projectId: number,
+    iid: number,
+    command: AutoMergeCommand,
+    gitlabUrl?: string,
+    gitlabToken?: string,
+  ): Promise<void>;
   /**
    * 读取某文件在指定 head 下的原始内容。
    *

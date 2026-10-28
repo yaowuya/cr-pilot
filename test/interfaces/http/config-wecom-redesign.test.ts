@@ -33,7 +33,7 @@ test("环境变量页重排后仍保留密钥、只读、脏值提交、重启�
 
   assert.match(source, /draft:\s*item\.masked\s*\?\s*""\s*:\s*item\.value/, "密钥初始草稿必须为空，不能回写掩码");
   assert.match(source, /row\.dirty\s*&&\s*!row\.readOnly\s*&&\s*row\.draft\.trim\(\)\s*!==\s*""/, "只能提交非空的可编辑脏值");
-  assert.match(source, /:disabled="row\.readOnly"/, "只读配置仍须禁用输入");
+  assert.match(source, /:disabled="row\.readOnly \|\| configWritesBlocked"/, "只读配置与普通账号只读模式均须禁用输入");
   assert.match(source, /@input="row\.dirty = true"/, "用户输入仍须标记脏值");
   assert.match(source, /留空表示不修改/, "密钥空值保留原配置的提示不能丢失");
   assert.match(source, /router\.push\("\/providers"\)/, "AI 模型分组仍须跳转厂商页");

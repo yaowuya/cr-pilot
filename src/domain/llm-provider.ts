@@ -113,10 +113,18 @@ export interface LlmProviderRepository {
   unbindProject(project: string): void;
   listProjectBindings(): LlmProjectBinding[];
   /**
+   * 只解析指定项目的显式绑定，不回落全局默认。
+   *
+   * 该窄接缝让 application 能在项目绑定与全局默认之间插入 Prompt 选择，落实
+   * 「项目绑定 > Prompt > 全局默认」的优先级。可选是为了兼容尚未实现新接缝的旧替身；
+   * 生产 SQLite 仓储必须实现。
+   */
+  resolveProjectTarget?(project: string): ResolvedLlmTarget | undefined;
+  /**
    * 解析一次评审应使用的厂商与模型。
    *
-   * 优先级：项目绑定 > 全局默认。都未配置时返回 undefined，由调用方
-   * 回落到 models.json 里的既有配置（保证老部署升级后仍能跑）。
+   * 传项目时保持既有「项目绑定 > 全局默认」行为；不传项目时只解析全局默认。
+   * 都未配置时返回 undefined，由调用方回落 models.json 的既有配置。
    */
   resolveTarget(project?: string): ResolvedLlmTarget | undefined;
 }

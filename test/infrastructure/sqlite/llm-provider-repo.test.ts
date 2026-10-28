@@ -105,6 +105,32 @@ test("update 保留未提交的 apiKey", () => {
   db.close();
 });
 
+test("resolveProjectTarget 只解析项目绑定，不把全局默认伪装成项目配置", () => {
+  const db = openDatabase(":memory:");
+  const repo = createLlmProviderRepository(db);
+  const global = repo.create(input({ name: "global", label: "Global", isDefault: true }));
+  const project = repo.create(input({ name: "project", label: "Project", defaultModel: "deepseek-reasoner" }));
+  repo.bindProject(" Group/Special ", project.id);
+
+  assert.equal(repo.resolveProjectTarget?.("group/normal"), undefined, "未绑定项目不得回落全局默认");
+  assert.deepEqual(repo.resolveProjectTarget?.("group/special"), {
+    provider: project,
+    model: "deepseek-reasoner",
+  });
+  assert.equal(global.name, "global");
+  db.close();
+});
+
+test("resolveProjectTarget 在绑定模型失效后回落厂商默认模型", () => {
+  const db = openDatabase(":memory:");
+  const repo = createLlmProviderRepository(db);
+  const project = repo.create(input({ name: "project", label: "Project", defaultModel: "deepseek-reasoner" }));
+  repo.bindProject("group/special", project.id, "removed-model");
+
+  assert.equal(repo.resolveProjectTarget?.("group/special")?.model, "deepseek-reasoner");
+  db.close();
+});
+
 test("resolveTarget：项目绑定优先于全局默认", () => {
   const db = openDatabase(":memory:");
   const repo = createLlmProviderRepository(db);

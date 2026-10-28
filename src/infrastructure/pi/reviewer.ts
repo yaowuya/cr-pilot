@@ -35,8 +35,8 @@ export interface PiSessionLike {
   prompt(text: string): Promise<void>;
   /** 取最近一条助手消息的文本；没有助手消息时返回 undefined。 */
   getLastAssistantText(): string | undefined;
-  /** 当前生效模型；尚未选出模型时为 undefined。 */
-  readonly model: { id: string } | undefined;
+  /** 当前生效模型身份都来自实际会话，尚未选出模型时为 undefined。 */
+  readonly model: { provider?: string; id: string; baseUrl?: string; api?: string } | undefined;
   /** 请求中断并等当前模型/工具 idle；旧测试替身可省略，由 dispose 兜底。 */
   abort?(): Promise<void>;
   /** 释放会话。重复调用由实现方保证安全，本服务仍只调用一次。 */
@@ -231,8 +231,19 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
         }
         const text = session.getLastAssistantText()?.trim() ?? "";
         if (!text) throw new EmptyReviewError("pi 返回了空评审文本");
-        logger.debug("pi 已返回", { 评审字数: text.length, 模型: session.model?.id ?? "unknown" });
-        return { text, model: session.model?.id ?? "unknown" };
+        logger.debug("pi 已返回", {
+          评审字数: text.length,
+          厂商: session.model?.provider ?? "unknown",
+          模型: session.model?.id ?? "unknown",
+          协议: session.model?.api ?? "unknown",
+        });
+        return {
+          text,
+          provider: session.model?.provider,
+          model: session.model?.id ?? "unknown",
+          baseUrl: session.model?.baseUrl,
+          api: session.model?.api,
+        };
       } finally {
         signal.removeEventListener("abort", onAbort);
         await stopOnce();

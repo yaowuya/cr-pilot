@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../../../src/infrastructure/sqlite/database.ts";
 import { createPromptRepository, DEFAULT_PROMPT_REPOSITORY } from "../../../src/infrastructure/sqlite/prompt-repo.ts";
+import { defaultProjectAutoMergePolicy } from "../../../src/domain/review-prompt.ts";
 
 /** 创建一条 prompt 的输入。 */
 function input(repository: string, systemPrompt = `sys-${repository}`) {
@@ -23,12 +24,12 @@ test("项目开关独立且跨 Prompt 共享，规范仍归 Prompt", () => {
     assert.equal(repo.isRepositoryContextEnabled!("group/b"), false);
     assert.equal(repo.isRepositoryContextEnabled!("a"), false, "新开关不得使用短名匹配");
     assert.equal(repo.isRepositoryContextEnabled!("other/a"), false);
-    assert.deepEqual(b.projectSettings, [{ project: "Group/A", repositoryContextEnabled: true }]);
+    assert.deepEqual(b.projectSettings, [{ project: "Group/A", repositoryContextEnabled: true, autoMergePolicy: defaultProjectAutoMergePolicy() }]);
     assert.equal(repo.list()[0].hasRepositoryStandards, true);
     assert.equal("repositoryStandards" in repo.list()[0], false);
     assert.deepEqual(repo.listProjectSettings!(), [
-      { project: "group/a", repositoryContextEnabled: true },
-      { project: "group/b", repositoryContextEnabled: false },
+      { project: "group/a", repositoryContextEnabled: true, autoMergePolicy: defaultProjectAutoMergePolicy() },
+      { project: "group/b", repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy() },
     ]);
   } finally { db.close(); }
 });
@@ -39,7 +40,10 @@ test("旧短项目名开关可保存，并仅对命中该 Prompt 的 MR 项目�
     const repo = createPromptRepository(db);
     const p = repo.create({ ...input("legacy"), projects:["auto-ops","cw-auto-ops"],
       projectSettings:[{project:"auto-ops",repositoryContextEnabled:true}] });
-    assert.deepEqual(p.projectSettings,[{project:"auto-ops",repositoryContextEnabled:true},{project:"cw-auto-ops",repositoryContextEnabled:false}]);
+    assert.deepEqual(p.projectSettings,[
+      {project:"auto-ops",repositoryContextEnabled:true,autoMergePolicy:defaultProjectAutoMergePolicy()},
+      {project:"cw-auto-ops",repositoryContextEnabled:false,autoMergePolicy:defaultProjectAutoMergePolicy()},
+    ]);
     assert.equal(repo.isRepositoryContextEnabled!("team/auto-ops"),true);
     assert.equal(repo.isRepositoryContextEnabled!(" TEAM/AUTO-OPS "),true);
     assert.equal(repo.isRepositoryContextEnabled!("team/cw-auto-ops"),false);
@@ -144,7 +148,7 @@ test("旧版本遗留孤立设置不启用，重关联前会清理", () => {
   const db = openDatabase(":memory:");
   try {
     const repo = createPromptRepository(db);
-    db.prepare("INSERT INTO project_review_settings VALUES (?, 1, 1)").run("g/orphan");
+    db.prepare("INSERT INTO project_review_settings (project, repository_context_enabled, updated_at) VALUES (?, 1, 1)").run("g/orphan");
     assert.equal(repo.isRepositoryContextEnabled!("g/orphan"), false);
     const p = repo.create({ ...input("r"), projects: ["g/orphan"] });
     assert.equal(p.projectSettings?.[0].repositoryContextEnabled, false);

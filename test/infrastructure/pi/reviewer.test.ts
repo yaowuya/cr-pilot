@@ -26,7 +26,12 @@ function fakeSession(text: string | undefined) {
   const session: PiSessionLike = {
     prompt: async () => {},
     getLastAssistantText: () => text,
-    model: { id: "test-model" },
+    model: {
+      provider: "test-provider",
+      id: "test-model",
+      baseUrl: "https://test-provider.example/v1",
+      api: "openai-responses",
+    },
     dispose: () => {
       disposeCount += 1;
     },
@@ -111,7 +116,10 @@ test("createPiReviewer 正常路径返回文本与模型并释放一次", async 
   const reviewer = createPiReviewer({ sessionFactory: async () => session });
   const result = await reviewer.review({ systemPrompt: "P", code: "CODE", signal: AbortSignal.timeout(5000) });
   assert.equal(result.text, "评审结论");
+  assert.equal(result.provider, "test-provider");
   assert.equal(result.model, "test-model");
+  assert.equal(result.baseUrl, "https://test-provider.example/v1");
+  assert.equal(result.api, "openai-responses");
   assert.equal(disposeCount(), 1);
 });
 
@@ -235,7 +243,13 @@ test("仓库工具事件 createPiReviewer 经离线 sessionFactory 和真实 cus
       systemPrompt: "trusted-system-prompt", code: "private-diff", context: "trusted-context",
       signal: controller.signal, repositoryContext: repositoryAccess, onRepositoryToolCall,
     });
-    assert.deepEqual(result, { text: "离线评审结论", model: "test-model" });
+    assert.deepEqual(result, {
+      text: "离线评审结论",
+      provider: "test-provider",
+      model: "test-model",
+      baseUrl: "https://test-provider.example/v1",
+      api: "openai-responses",
+    });
     assert.equal(disposeCount(), 1);
     assert.equal(promptText, buildUserMessage("private-diff", "trusted-context"));
     assert.equal(sdkOptions!.resourceLoader!.getSystemPrompt(), "trusted-system-prompt");

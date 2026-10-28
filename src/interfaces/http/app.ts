@@ -44,7 +44,8 @@ export interface AppDeps {
  * 创建 Express 应用（HTTP 表现层）。不含监听逻辑，便于测试用随机端口启动。
  *
  * 本路由校验请求和项目评审资格，按事件类型分派并立即响应。拉取、评审、汇总、
- * 回写全部在后台队列中完成。日志不记录 payload 正文，只记录事件类型与 MR 标识。
+ * 回写，以及项目显式启用且全部安全门通过后的合并请求，都在后台队列中完成。
+ * 日志不记录 payload 正文，只记录事件类型与 MR 标识。
  *
  * 来源校验（内网隔离、网关白名单等）由部署层负责：一个 GitLab 实例可以有多个
  * 项目，每个项目在 GitLab 侧配置的 Secret token 各不相同，单实例无法用一份全局
@@ -91,7 +92,7 @@ export function createApp(deps: AppDeps): Express {
       return;
     }
     if (!task.gitlabToken) {
-      // 访问令牌随 webhook 请求头携带（对齐参考项目）：缺失时无法拉取/回写，直接拒绝。
+      // 访问令牌随 webhook 请求头携带：缺失时无法拉取/回写，也无法执行显式启用的自动合并，直接拒绝。
       logger.warn("webhook 缺少 X-Gitlab-Token", { status: 400 });
       res.status(400).json({ error: "缺少 X-Gitlab-Token 请求头（GitLab 访问令牌）" });
       return;
