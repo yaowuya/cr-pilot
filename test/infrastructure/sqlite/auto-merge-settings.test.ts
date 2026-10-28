@@ -238,3 +238,25 @@ test("解绑最后一个 Prompt 会清理项目自动合并设置", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM project_review_settings").get()?.n, 0);
   } finally { db.close(); }
 });
+
+test("回退门禁批量关闭全部策略且保留配置供管理员重新审核", () => {
+  const db = openDatabase(":memory:");
+  try {
+    const repo = createPromptRepository(db);
+    repo.create({
+      ...input("rules-a"), projects: ["group/a"],
+      projectSettings: [{ project: "group/a", autoMergePolicy: policy }],
+    });
+    repo.create({
+      ...input("rules-b"), projects: ["group/b"],
+      projectSettings: [{ project: "group/b", autoMergePolicy: { ...policy, minimumScore: 98, targetBranches: ["release"] } }],
+    });
+
+    assert.equal(repo.disableAllAutoMergePolicies?.(), 2);
+    const first = repo.resolveProjectSetting?.("group/a")?.autoMergePolicy;
+    const second = repo.resolveProjectSetting?.("group/b")?.autoMergePolicy;
+    assert.deepEqual(first, { ...policy, enabled: false });
+    assert.deepEqual(second, { ...policy, enabled: false, minimumScore: 98, targetBranches: ["release"] });
+    assert.equal(repo.disableAllAutoMergePolicies?.(), 0, "重复执行必须幂等");
+  } finally { db.close(); }
+});

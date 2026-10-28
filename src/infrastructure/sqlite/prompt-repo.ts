@@ -471,6 +471,14 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
       return readSetting(project);
     },
 
+    disableAllAutoMergePolicies() {
+      // 回退旧版本前只撤销授权，不删除门槛/分支：旧二进制会忽略新增列，日后重新
+      // 升级时仍能展示原配置，但必须由管理员逐项重新开启，不能自动复活。
+      const result = db.prepare(`UPDATE project_review_settings
+        SET auto_merge_enabled = 0, updated_at = ? WHERE auto_merge_enabled = 1`).run(Date.now());
+      return Number(result.changes);
+    },
+
     listKnownProjects() {
       const rows = db
         .prepare("SELECT DISTINCT project FROM prompt_projects ORDER BY project ASC")

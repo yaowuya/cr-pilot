@@ -278,4 +278,9 @@ export interface PromptRepository {
    * 不接受短名/default/fallback，供自动合并等高风险动作使用。
    */
   resolveProjectSetting?(repositoryFullName: string): ProjectReviewSetting | undefined;
+  /**
+   * 运维回退门禁：批量撤销全部自动合并授权，返回实际关闭条数。
+   * 只关闭 enabled，保留门槛与分支供管理员重新升级后逐项复核。
+   */
+  disableAllAutoMergePolicies?(): number;
 }
