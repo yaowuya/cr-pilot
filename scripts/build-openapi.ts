@@ -268,8 +268,10 @@ paths["/api/reviews/stats"] = {
     operationId: "getReviewStats",
     security: [{ [BEARER]: [] }],
     parameters: [
+      { name: "project_id", in: "query", description: "按 GitLab 项目 ID 过滤，与记录列表口径一致", schema: { type: "integer", minimum: 1 } },
+      { name: "committer", in: "query", description: "按提交人过滤，与记录列表口径一致", schema: { type: "string" } },
       { name: "from", in: "query", description: "起始时间（Unix 毫秒）", schema: { type: "integer" } },
-      { name: "to", in: "query", description: "结束时间（Unix 毫秒）", schema: { type: "integer" } },
+      { name: "to", in: "query", description: "结束时间（Unix 毫秒，包含边界）", schema: { type: "integer" } },
     ],
     responses: {
       200: jsonResponse("统计结果", { $ref: "#/components/schemas/ReviewStats" }),
@@ -1429,6 +1431,7 @@ const schemas: Record<string, JsonObject> = {
     required: ["name", "tracked", "adopted", "pending", "rate"],
     properties: {
       name: { type: "string", example: "group/app" },
+      projectId: { type: "integer", description: "仅项目维度返回，供按项目重新查询", example: 3982 },
       tracked: { type: "integer", description: "已完成判定、进入采纳率分母的建议数", example: 12 },
       adopted: { type: "integer", description: "代码已变化的建议数", example: 7 },
       pending: { type: "integer", description: "有行锚点、等待新提交或 MR 结束判定的建议数", example: 5 },

@@ -1,5 +1,5 @@
 <template>
-  <div class="page-container">
+  <div class="page-container verify-page">
     <header class="page-header">
       <div>
         <h1 class="page-header__title">功能自检</h1>
@@ -7,29 +7,36 @@
       </div>
     </header>
 
-    <el-alert type="info" :closable="false" show-icon>
-      <template #title>
-        AI 验证会真实调用一次模型（约 1 分钟，消耗额度）；企微验证默认只预览，确认后才真的发到群里。
-      </template>
-    </el-alert>
-
-    <div class="verify-grid">
-      <!-- AI 评审验证 -->
-      <el-card>
+    <div class="verify-workbench">
+      <el-card
+        shadow="never"
+        class="verify-channel"
+        aria-labelledby="ai-channel-title"
+      >
         <template #header>
-          <div class="card-header">
-            <span>验证 AI 评审</span>
-            <el-tag size="small" type="info" effect="plain">真实调用模型</el-tag>
+          <div class="channel-header">
+            <div>
+              <h2 id="ai-channel-title" class="channel-title">AI 评审链路</h2>
+              <p class="channel-summary">验证模型配置、Prompt 解析与结构化结果</p>
+            </div>
+            <el-tag size="small" type="info" effect="plain">真实调用</el-tag>
           </div>
         </template>
         <p class="verify-desc">
-          用一段固定样例 diff 调用真实模型，检查能否返回评审正文并解析出总分。
-          样例包含 SQL 注入、硬编码密钥、N+1 查询三类典型问题。
+          使用固定的合成 diff 调用真实模型，检查能否返回评审正文并解析出总分；过程不会写入真实 MR。
         </p>
-        <el-button type="primary" :loading="aiRunning" :disabled="wecomRunning" @click="runAi">
-          <el-icon><Cpu /></el-icon>
-          开始验证 AI 评审
-        </el-button>
+        <ul class="channel-facts" aria-label="AI 自检范围">
+          <li><span class="channel-fact__mark" />读取当前生效的 Prompt 与模型绑定</li>
+          <li><span class="channel-fact__mark" />创建隔离会话并执行合成评审</li>
+          <li><span class="channel-fact__mark" />异步轮询任务状态与解析结果</li>
+        </ul>
+        <div class="channel-actions">
+          <el-button type="primary" :loading="aiRunning" :disabled="wecomRunning" @click="runAi">
+            <el-icon><Cpu /></el-icon>
+            开始验证 AI 评审
+          </el-button>
+          <span>约 1 分钟，会消耗一次模型额度</span>
+        </div>
 
         <div v-if="aiTask" class="verify-result">
           <el-alert :type="resultType(aiTask)" :closable="false" show-icon>
@@ -42,17 +49,22 @@
         </div>
       </el-card>
 
-      <!-- 企微推送验证 -->
-      <el-card>
+      <el-card
+        shadow="never"
+        class="verify-channel"
+        aria-labelledby="wecom-channel-title"
+      >
         <template #header>
-          <div class="card-header">
-            <span>验证企微推送</span>
-            <el-tag size="small" type="warning" effect="plain">会发群消息</el-tag>
+          <div class="channel-header">
+            <div>
+              <h2 id="wecom-channel-title" class="channel-title">企微通知链路</h2>
+              <p class="channel-summary">先选择目标与提交人，预览后再确认实发</p>
+            </div>
+            <el-tag size="small" type="warning" effect="light" class="send-warning">可真实发送</el-tag>
           </div>
         </template>
         <p class="verify-desc">
-          组装一条带 <strong>[验证]</strong> 前缀的消息，确认配置的群机器人能否正常收到。
-          消息明确标注不是真实评审提醒。
+          组装一条带 <strong>[验证]</strong> 前缀的通知；仅预览不会请求机器人，确认发送才会真正发到群里。
         </p>
         <div class="verify-submitter">
           <label for="verify-bot">企微机器人</label>
@@ -128,7 +140,7 @@
             @confirm="sendWecom"
           >
             <template #reference>
-              <el-button type="danger" :loading="wecomRunning" :disabled="aiRunning || !canVerifyWecom">
+              <el-button class="send-button" type="danger" :loading="wecomRunning" :disabled="aiRunning || !canVerifyWecom">
                 <el-icon><Promotion /></el-icon>
                 发送验证消息
               </el-button>
@@ -145,6 +157,69 @@
           </el-alert>
           <pre v-if="wecomTask.detail" class="verify-result__detail">{{ wecomTask.detail }}</pre>
         </div>
+      </el-card>
+    </div>
+
+    <div class="verify-support-grid">
+      <el-card shadow="never" class="support-panel recent-panel">
+        <template #header>
+          <div class="support-header">
+            <div>
+              <h2>最近自检</h2>
+              <p>仅展示本次页面会话提交的任务，不把结果伪装成持久审计记录。</p>
+            </div>
+            <span>{{ recentTasks.length }} 条</span>
+          </div>
+        </template>
+        <el-table v-if="recentTasks.length > 0" :data="recentTasks" class="recent-table">
+          <el-table-column label="类型" min-width="100">
+            <template #default="{ row }">{{ taskKindLabel(row) }}</template>
+          </el-table-column>
+          <el-table-column label="目标" min-width="170">
+            <template #default="{ row }">{{ taskTarget(row) }}</template>
+          </el-table-column>
+          <el-table-column label="结果" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.status === 'failed' ? 'danger' : resultType(row)" effect="plain">{{ taskStatusLabel(row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="耗时" width="90">
+            <template #default="{ row }"><span class="num">{{ taskDuration(row) }}</span></template>
+          </el-table-column>
+          <el-table-column label="开始时间" min-width="150">
+            <template #default="{ row }"><span class="num">{{ formatTaskTime(row.startedAt) }}</span></template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-else description="本次页面会话尚未运行自检" :image-size="64" />
+      </el-card>
+
+      <el-card shadow="never" class="support-panel safety-panel">
+        <template #header>
+          <div class="support-header">
+            <div>
+              <h2>安全说明</h2>
+              <p>自检触达真实外部边界，但将写入和敏感信息控制在明确范围内。</p>
+            </div>
+          </div>
+        </template>
+        <dl class="safety-list">
+          <div>
+            <dt>AI 评审</dt>
+            <dd>使用合成 diff 调用真实模型，不会写入真实 MR，也不会修改仓库文件。</dd>
+          </div>
+          <div>
+            <dt>企微预览</dt>
+            <dd>只组装带 [验证] 前缀的消息，不向群机器人发起请求。</dd>
+          </div>
+          <div>
+            <dt>确认发送</dt>
+            <dd>二次确认后才实发；机器人与提交人选择会同时锁定，避免重复操作。</dd>
+          </div>
+          <div>
+            <dt>敏感信息</dt>
+            <dd>页面只使用脱敏标识，不接触完整机器人地址或成员 userid。</dd>
+          </div>
+        </dl>
       </el-card>
     </div>
   </div>
@@ -170,6 +245,12 @@ const POLL_INTERVAL_MS = 2000;
 
 const aiTask = ref<VerifyTask | null>(null);
 const wecomTask = ref<VerifyTask | null>(null);
+/** 当前页面会话里的任务，按最近开始时间排序；不伪造服务端不存在的历史记录。 */
+const recentTasks = computed<VerifyTask[]>(() =>
+  [aiTask.value, wecomTask.value]
+    .filter((task): task is VerifyTask => task !== null)
+    .sort((left, right) => right.startedAt - left.startedAt),
+);
 // 在 POST 返回任务 ID 之前也要防重复提交，不能只根据任务状态禁用按钮。
 const submitting = ref<"ai" | "wecom" | null>(null);
 const bots = ref<WecomBot[]>([]);
@@ -258,10 +339,33 @@ function clearWecomResult(): void {
   if (!wecomRunning.value) wecomTask.value = null;
 }
 
-/** 任务状态映射成 el-alert 类型。 */
+/** 任务状态映射成 Element Plus 的统一状态语义。 */
 function resultType(task: VerifyTask): "success" | "error" | "info" {
   if (task.status === "running") return "info";
   return task.status === "success" ? "success" : "error";
+}
+
+function taskKindLabel(task: VerifyTask): string {
+  return task.kind === "ai" ? "AI 评审" : "企微通知";
+}
+
+function taskTarget(task: VerifyTask): string {
+  if (task.kind === "ai") return "当前模型 · 合成 diff";
+  const contact = selectedContact.value?.wecomName || selectedContact.value?.gitlabUsername;
+  return contact ? `所选机器人 · ${contact}` : "所选机器人与提交人";
+}
+
+function taskStatusLabel(task: VerifyTask): string {
+  if (task.status === "running") return "运行中";
+  return task.status === "success" ? "成功" : "失败";
+}
+
+function taskDuration(task: VerifyTask): string {
+  return task.durationMs > 0 ? `${(task.durationMs / 1000).toFixed(1)} 秒` : "—";
+}
+
+function formatTaskTime(value: number): string {
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
 /** 停止轮询。 */
@@ -382,41 +486,146 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.verify-grid {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.verify-page {
+  min-width: 0;
 }
 
-.card-header {
+.verify-workbench {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.verify-channel,
+.support-panel {
+  min-width: 0;
+  border-color: var(--el-border-color);
+  box-shadow: none; /* taste-skill-ignore: cancel the global resting-card shadow. */
+}
+
+.verify-channel:hover,
+.support-panel:hover {
+  box-shadow: none; /* taste-skill-ignore: resting panels stay flat on hover. */
+}
+
+.verify-channel :deep(.el-card__header),
+.support-panel :deep(.el-card__header) {
+  padding: 17px 19px 14px;
+  background-color: var(--el-bg-color);
+  border-bottom-color: var(--el-border-color-lighter);
+}
+
+.verify-channel :deep(.el-card__body) {
+  padding: 18px 20px 20px;
+}
+
+.channel-header,
+.support-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 14px;
+}
+
+.channel-title,
+.support-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--el-text-color-primary);
+}
+
+.channel-summary,
+.support-header p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  color: var(--el-text-color-regular);
+}
+
+.support-header > span {
+  flex: none;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 22px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
 }
 
 .verify-desc {
   margin: 0 0 16px;
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 1.65;
   color: var(--el-text-color-regular);
+}
+
+.channel-facts {
+  padding: 0;
+  margin: 0 0 18px;
+  list-style: none;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.channel-facts li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-regular);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.channel-fact__mark {
+  width: 8px;
+  height: 8px;
+  background-color: var(--el-color-primary);
+  border-radius: 50%;
+}
+
+.channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.channel-actions > span {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .verify-submitter {
   display: grid;
-  gap: 8px;
-  margin-bottom: 16px;
+  gap: 7px;
+  min-width: 0;
+  margin-bottom: 14px;
 }
 
 .verify-submitter label {
-  color: var(--el-text-color-primary);
   font-size: 13px;
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+}
+
+.verify-submitter :deep(.el-select) {
+  width: 100%;
 }
 
 .verify-submitter__hint {
   margin: 0;
-  color: var(--el-text-color-secondary);
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.55;
+  color: var(--el-text-color-secondary);
+}
+
+.verify-submitter__hint[role="alert"] {
+  color: var(--el-color-danger);
 }
 
 .verify-submitter__hint a {
@@ -444,7 +653,7 @@ onBeforeUnmount(() => {
   padding: 12px;
   margin: 8px 0 0;
   overflow: auto;
-  font-family: var(--el-font-family-mono, "SFMono-Regular", Consolas, monospace);
+  font-family: var(--el-font-family-mono, "SFMono-Regular", Consolas, monospace); /* taste-skill-ignore: task output can contain literal code. */
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -453,9 +662,89 @@ onBeforeUnmount(() => {
   border-radius: var(--el-border-radius-small);
 }
 
-/* 窄屏下两列并排会挤成一条，改为单列 */
-@media (max-width: 900px) {
-  .verify-grid {
+.verify-support-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.recent-panel :deep(.el-card__body) {
+  padding: 0;
+}
+
+.recent-panel :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.recent-panel :deep(.el-table th.el-table__cell) {
+  background-color: var(--el-bg-color);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.safety-panel :deep(.el-card__body) {
+  padding: 0;
+}
+
+.safety-list {
+  margin: 0;
+}
+
+.safety-list > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.safety-list > div:last-child {
+  border-bottom: 0;
+}
+
+.safety-list dt {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--el-text-color-primary);
+}
+
+.safety-list dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--el-text-color-regular);
+}
+
+.send-warning {
+  --el-tag-text-color: #6f4700;
+  --el-tag-bg-color: #fff6df;
+  --el-tag-border-color: #e8c675;
+}
+
+:global(html.dark .send-warning) {
+  --el-tag-text-color: #f6c453;
+  --el-tag-bg-color: #3a2f18;
+  --el-tag-border-color: #7a5d21;
+}
+
+.send-button.is-disabled,
+.send-button.is-disabled:hover {
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-light);
+  border-color: var(--el-border-color);
+}
+
+/* 768px 档位给双通道和表格完整宽度，避免侧栏折叠后内容仍横向溢出。 */
+@media (max-width: 960px) {
+  .verify-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .verify-support-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

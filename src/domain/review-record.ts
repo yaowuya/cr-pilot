@@ -62,6 +62,9 @@ export interface DimensionStat {
   maxScore: number | null;
 }
 
+/** 统计查询条件；与列表共享过滤口径，但不包含分页。 */
+export type ReviewStatsQuery = Omit<ReviewListQuery, "page" | "pageSize">;
+
 /** 基础统计结果。`avgScore` 为 `null` 表示没有任何带分数的记录。 */
 export interface ReviewStats {
   total: number;
@@ -86,5 +89,5 @@ export interface ReviewRecordRepository {
    */
   insert(record: ReviewRecord): number | void;
   getList(query: ReviewListQuery): { items: ReviewRecord[]; total: number };
-  getStats(query: { from?: number; to?: number }): ReviewStats;
+  getStats(query: ReviewStatsQuery): ReviewStats;
 }

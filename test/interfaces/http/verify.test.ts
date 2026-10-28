@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Express } from "express";
 import { createApp } from "../../../src/interfaces/http/app.ts";
 import { createAuthMiddleware } from "../../../src/interfaces/http/auth-middleware.ts";
@@ -215,7 +218,22 @@ test("HTTP 自检通过真实用例与内存映射仓储，预览末行保留提
   t.after(() => db.close());
   const contacts = createWecomContactRepository(db);
   contacts.upsert({ gitlabUsername: "selected-author", wecomName: "测试提交人", wecomUserId: "selected_member" });
-  const verifier = createFeatureVerifier({ config: loadConfig({}), logger: createSilentLogger(), wecomContacts: contacts });
+  // 测试自带隔离机器人规则，不能依赖开发机 prompts/rules 中恰好存在真实 webhook。
+  const rulesDir = mkdtempSync(join(tmpdir(), "cr-pilot-verify-rules-"));
+  t.after(() => rmSync(rulesDir, { recursive: true, force: true }));
+  writeFileSync(join(rulesDir, "verify.yaml"), [
+    "repository: group/verify",
+    "wecom_webhook_url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=verify_test_key_123456",
+    "wecom_score_threshold: 70",
+    "code_review_prompt:",
+    "  system_prompt: VERIFY",
+    "  user_prompt: \"评：{diffs_text}\"",
+  ].join("\n"));
+  const verifier = createFeatureVerifier({
+    config: loadConfig({ REVIEW_RULES_DIR: rulesDir }),
+    logger: createSilentLogger(),
+    wecomContacts: contacts,
+  });
   const { app, token } = buildHarness(verifier);
   await withServer(app, async (base) => {
     // 用仓库里真实配置的机器人 id，避免测试依赖硬编码的合成 id。

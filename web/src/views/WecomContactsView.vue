@@ -1,9 +1,9 @@
 <template>
-  <div class="page-container">
+  <div class="page-container wecom-page">
     <header class="page-header">
       <div>
         <h1 class="page-header__title">企微映射</h1>
-        <p class="page-header__desc">把 GitLab 账号对应到企微成员，评审提醒才能 @ 到正确的人</p>
+        <p class="page-header__desc">维护 GitLab 账号到企微成员的通知映射，让评审消息准确提及提交人</p>
       </div>
       <div class="page-header__actions">
         <el-button type="primary" @click="openCreate">
@@ -13,63 +13,106 @@
       </div>
     </header>
 
-    <el-alert type="info" :closable="false" class="hint" show-icon>
+    <el-alert v-if="loadError" type="error" :closable="false" show-icon class="load-alert">
+      <template #title>企微映射加载失败</template>
+      {{ loadError }} <el-button link type="primary" :loading="loading" @click="load">重新加载</el-button>
+    </el-alert>
+
+    <!-- 概览只使用当前接口列表推导，不展示原型中的虚构通知或机器人统计。 -->
+    <section v-if="loaded" v-loading="loading" class="mapping-overview" aria-label="企微映射概览">
+      <div v-for="item in mappingOverview" :key="item.label" class="mapping-overview__item">
+        <span class="mapping-overview__label">{{ item.label }}</span>
+        <strong class="mapping-overview__value">{{ item.value }}</strong>
+        <small class="mapping-overview__detail">{{ item.detail }}</small>
+      </div>
+    </section>
+
+    <el-alert type="info" :closable="false" class="mapping-hint" show-icon>
       <template #title>
         只填「企微姓名」时，通知里显示 <strong>@中文名</strong> 但不会真正提醒；填写「企微 userid」后才是真实成员提醒。
       </template>
-      <div class="hint__body">
+      <div class="mapping-hint__body">
         userid 由企微管理后台分配，可在「通讯录 → 成员 → 账号」查看，需由管理员提供。
       </div>
     </el-alert>
 
-    <el-card>
-      <el-table v-loading="loading" :data="contacts">
-        <el-table-column label="GitLab 账号" min-width="200">
-          <template #default="{ row }">
-            <code class="username">{{ row.gitlabUsername }}</code>
-          </template>
-        </el-table-column>
-        <el-table-column label="企微姓名" min-width="160">
-          <template #default="{ row }">
-            <span v-if="row.wecomName">{{ row.wecomName }}</span>
-            <span v-else class="cell-muted">未填写</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="企微 userid" min-width="200">
-          <template #default="{ row }">
-            <span v-if="row.hasWecomUserId" class="mono">{{ row.wecomUserIdMasked }}</span>
-            <span v-else class="cell-muted">未填写（不会真实提醒）</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="更新时间" min-width="180">
-          <template #default="{ row }">
-            <span class="cell-muted">{{ formatTime(row.updatedAt) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-popconfirm title="确认删除该映射？" @confirm="onDelete(row)">
-              <template #reference>
-                <el-button link type="danger">删除</el-button>
-              </template>
-            </el-popconfirm>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="还没有映射，新增后通知会优先使用企微姓名" :image-size="90" />
-        </template>
-      </el-table>
-    </el-card>
+    <section v-if="loaded" class="mapping-panel">
+      <header class="mapping-panel__header">
+        <div>
+          <h2 class="mapping-panel__title">账号映射</h2>
+          <p class="mapping-panel__desc">完整 userid 不在列表或接口响应中回显；这里只显示安全掩码。</p>
+        </div>
+        <span class="mapping-panel__count">{{ contacts.length }} 条</span>
+      </header>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑映射' : '新增映射'" width="480px" destroy-on-close>
-      <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
+      <div class="mapping-table">
+        <el-table v-loading="loading" :data="contacts">
+          <el-table-column label="GitLab 账号" min-width="190">
+            <template #default="{ row }">
+              <code class="username">{{ row.gitlabUsername }}</code>
+            </template>
+          </el-table-column>
+          <el-table-column label="企微姓名" min-width="150">
+            <template #default="{ row }">
+              <span v-if="row.wecomName">{{ row.wecomName }}</span>
+              <span v-else class="cell-muted">未填写</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="企微 userid" min-width="190">
+            <template #default="{ row }">
+              <div class="userid-cell">
+                <code v-if="row.hasWecomUserId" class="userid-cell__masked">{{ row.wecomUserIdMasked }}</code>
+                <span v-else class="cell-muted">未填写</span>
+                <span :class="row.hasWecomUserId ? 'reminder-state--ready' : 'cell-muted'">
+                  {{ row.hasWecomUserId ? "可真实提醒" : "仅姓名展示" }}
+                </span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="更新时间" min-width="170">
+            <template #default="{ row }">
+              <span class="cell-muted mapping-time">{{ formatTime(row.updatedAt) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="140" fixed="right">
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+                <el-popconfirm
+                  :title="deleteConfirmTitle(row)"
+                  confirm-button-text="删除"
+                  cancel-button-text="取消"
+                  confirm-button-type="danger"
+                  @confirm="onDelete(row)"
+                >
+                  <template #reference>
+                    <el-button link type="danger" :loading="deletingUsername === row.gitlabUsername">删除</el-button>
+                  </template>
+                </el-popconfirm>
+              </div>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="还没有映射，新增后通知会优先使用企微姓名" :image-size="80" />
+          </template>
+        </el-table>
+      </div>
+    </section>
+
+    <el-dialog
+      v-model="dialogVisible"
+      :title="editing ? '编辑映射' : '新增映射'"
+      width="480px"
+      destroy-on-close
+    >
+      <el-form ref="formRef" class="mapping-form" :model="form" :rules="rules" label-position="top">
         <el-form-item label="GitLab 账号" prop="gitlabUsername">
           <el-input
             v-model="form.gitlabUsername"
             :disabled="editing"
             placeholder="MR 作者的 GitLab 登录名，如 samxiao"
           />
+          <p v-if="editing" class="form-help">账号是映射记录的唯一标识，编辑时不可修改。</p>
         </el-form-item>
         <el-form-item label="企微姓名" prop="wecomName">
           <el-input v-model="form.wecomName" placeholder="成员在企微里的姓名，如 王秦" />
@@ -82,13 +125,17 @@
             :disabled="form.clearWecomUserId"
             :placeholder="editing && editingHasUserId ? '留空保留已配置的 userid；输入新值则替换' : '选填；填写后才会真实提醒该成员'"
           />
-          <p v-if="editing && editingHasUserId" class="cell-muted">已配置：{{ editingMaskedUserId }}。留空不会清除原值。</p>
+          <p v-if="editing && editingHasUserId" class="form-help">
+            已配置：<code class="userid-cell__masked">{{ editingMaskedUserId }}</code>。留空不会清除原值。
+          </p>
         </el-form-item>
-        <el-checkbox
-          v-if="editing && editingHasUserId"
-          v-model="form.clearWecomUserId"
-          :disabled="Boolean(form.wecomUserId.trim())"
-        >清除已配置的 userid</el-checkbox>
+        <div v-if="editing && editingHasUserId" class="clear-userid">
+          <el-checkbox
+            v-model="form.clearWecomUserId"
+            :disabled="Boolean(form.wecomUserId.trim())"
+          >清除已配置的 userid</el-checkbox>
+          <p class="form-help">只有明确勾选后才会清除；输入新 userid 时不能同时清除。</p>
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -102,32 +149,50 @@
 /**
  * 企微映射页：维护 GitLab 账号到企微成员的对应关系。
  *
- * 为什么单独一页而不是塞进环境变量：映射是**多条**记录，且每条的账号、
- * 姓名、userid 需要一起校验；塞进键值配置会变成手工拼 JSON，既难改也易错。
- *
- * 校验以后端为准：前端只做必填与格式的即时提示，真正拦截在
- * `/api/wecom-contacts` 里，避免两套规则漂移。
+ * 前端即时校验账号与 userid 的字符集，并保留后端作为最终校验边界。接口只
+ * 返回 userid 掩码；编辑时空输入保留原值，只有显式勾选才提交清除指令。
  */
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage, type FormInstance, type FormRules } from "element-plus";
 import { Plus } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
 import type { WecomContact } from "../types.ts";
 
+interface MappingOverviewItem {
+  label: string;
+  value: number;
+  detail: string;
+}
+
 const loading = ref(false);
+const loaded = ref(false);
+const loadError = ref("");
 const saving = ref(false);
+const deletingUsername = ref("");
 const contacts = ref<WecomContact[]>([]);
 const dialogVisible = ref(false);
-/** 编辑态：为 true 时账号不可改，避免改键导致旧记录残留。 */
+/** 编辑态账号不可改，避免改主键后遗留旧记录。 */
 const editing = ref(false);
 const editingHasUserId = ref(false);
 const editingMaskedUserId = ref("");
 const formRef = ref<FormInstance>();
 const form = reactive({ gitlabUsername: "", wecomName: "", wecomUserId: "", clearWecomUserId: false });
 
-/** 与后端一致的账号字符集。 */
+/** 概览始终由已加载列表推导，真实零值也按零展示。 */
+const mappingOverview = computed<MappingOverviewItem[]>(() => {
+  const total = contacts.value.length;
+  const withUserId = contacts.value.filter((row) => row.hasWecomUserId).length;
+  const nameOnly = total - withUserId;
+  return [
+    { label: "映射总数", value: total, detail: `${withUserId} 个含 userid，${nameOnly} 个仅姓名` },
+    { label: "真实提醒", value: withUserId, detail: "群消息可触发成员通知" },
+    { label: "仅姓名展示", value: nameOnly, detail: "只显示 @姓名，不触发提醒" },
+  ];
+});
+
+/** 与后端一致的 GitLab 账号字符集。 */
 const GITLAB_USERNAME_PATTERN = /^[a-zA-Z0-9_.-]+$/;
-/** 与后端一致的 userid 字符集。 */
+/** 与后端一致的企微 userid 字符集。 */
 const WECOM_USERID_PATTERN = /^[a-zA-Z0-9_.@-]+$/;
 
 const rules: FormRules = {
@@ -147,7 +212,7 @@ const rules: FormRules = {
   wecomName: [
     {
       validator: (_rule, value: string, callback) => {
-        // 编辑仅改姓名时留空 userid 会保留旧值；显式清除后则必须另填姓名。
+        // 编辑时空 userid 默认保留旧值；显式清除后必须另有姓名或新 userid。
         const retained = editing.value && editingHasUserId.value && !form.clearWecomUserId;
         if (!value?.trim() && !form.wecomUserId.trim() && !retained) {
           callback(new Error("企微姓名与 userid 至少填写一项"));
@@ -175,10 +240,13 @@ const rules: FormRules = {
 
 async function load(): Promise<void> {
   loading.value = true;
+  loadError.value = "";
   try {
     contacts.value = await api.get<WecomContact[]>("/api/wecom-contacts");
+    loaded.value = true;
   } catch (error) {
-    ElMessage.error(isApiError(error) ? error.message : "加载映射失败");
+    loadError.value = isApiError(error) ? error.message : "加载映射失败";
+    ElMessage.error(loadError.value);
   } finally {
     loading.value = false;
   }
@@ -204,7 +272,7 @@ function openEdit(row: WecomContact): void {
   editing.value = true;
   form.gitlabUsername = row.gitlabUsername;
   form.wecomName = row.wecomName;
-  // API 不再返回明文；不能把中间掩码当作真实 userid 回填或再次保存。
+  // API 不返回明文，掩码只能展示，绝不能回填为待保存的 userid。
   form.wecomUserId = "";
   form.clearWecomUserId = false;
   editingHasUserId.value = row.hasWecomUserId;
@@ -217,6 +285,7 @@ async function onSave(): Promise<void> {
   if (saving.value) return;
   const valid = await formRef.value?.validate().catch(() => false);
   if (!valid) return;
+
   saving.value = true;
   try {
     const userId = form.wecomUserId.trim();
@@ -236,13 +305,22 @@ async function onSave(): Promise<void> {
   }
 }
 
+/** 删除确认明确包含账号，避免管理员误删相邻行。 */
+function deleteConfirmTitle(row: WecomContact): string {
+  return `确认删除 ${row.gitlabUsername} 的企微映射？`;
+}
+
 async function onDelete(row: WecomContact): Promise<void> {
+  if (deletingUsername.value) return;
+  deletingUsername.value = row.gitlabUsername;
   try {
     await api.delete(`/api/wecom-contacts/${encodeURIComponent(row.gitlabUsername)}`);
     ElMessage.success("已删除");
     await load();
   } catch (error) {
     ElMessage.error(isApiError(error) ? error.message : "删除失败");
+  } finally {
+    deletingUsername.value = "";
   }
 }
 
@@ -256,23 +334,218 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.hint {
-  margin-bottom: 16px;
+.wecom-page {
+  gap: 18px;
 }
 
-.hint__body {
+.mapping-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-width: 0;
+  overflow: hidden;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+}
+
+.mapping-overview__item {
+  min-width: 0;
+  padding: 16px 18px;
+}
+
+.mapping-overview__item + .mapping-overview__item {
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.mapping-overview__label,
+.mapping-overview__value,
+.mapping-overview__detail {
+  display: block;
+}
+
+.mapping-overview__label {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.mapping-overview__value {
+  margin-top: 4px;
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 34px;
+  color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.mapping-overview__detail {
+  margin-top: 4px;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-regular);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mapping-hint {
+  border: 1px solid var(--el-border-color-lighter);
+}
+
+.mapping-hint__body {
   margin-top: 4px;
   font-size: 13px;
   color: var(--el-text-color-regular);
+}
+
+.mapping-panel {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+}
+
+.mapping-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.mapping-panel__header > div {
+  min-width: 0;
+}
+
+.mapping-panel__title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 22px;
+  color: var(--el-text-color-primary);
+}
+
+.mapping-panel__desc {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.mapping-panel__count {
+  flex: none;
+  padding-top: 2px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.mapping-table {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mapping-table :deep(.el-table) {
+  --el-table-header-bg-color: var(--el-fill-color-light);
+  --el-table-border-color: var(--el-border-color-lighter);
+}
+
+.mapping-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.username,
+.userid-cell__masked {
+  font-family: var(--el-font-family-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 13px;
+}
+
+.username {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.userid-cell {
+  display: grid;
+  gap: 3px;
+  align-items: start;
+}
+
+.userid-cell__masked {
+  color: var(--el-text-color-regular);
+  letter-spacing: 0.04em;
+}
+
+.reminder-state--ready,
+.cell-muted {
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.reminder-state--ready {
+  color: var(--el-color-success);
 }
 
 .cell-muted {
   color: var(--el-text-color-secondary);
 }
 
-.username,
-.mono {
-  font-family: var(--el-font-family-mono, "SFMono-Regular", Consolas, monospace);
-  font-size: 13px;
+.mapping-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.mapping-form :deep(.el-form-item) {
+  margin-bottom: 20px;
+}
+
+.form-help {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.clear-userid {
+  padding: 12px 14px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+}
+
+.clear-userid .form-help {
+  margin-left: 24px;
+}
+
+@media (max-width: 900px) {
+  .mapping-overview__item,
+  .mapping-panel__header {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+}
+
+@media (max-width: 680px) {
+  .mapping-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .mapping-overview__item + .mapping-overview__item {
+    border-top: 1px solid var(--el-border-color-lighter);
+    border-left: 0;
+  }
+
+  .page-header {
+    flex-direction: column;
+  }
 }
 </style>

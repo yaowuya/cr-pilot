@@ -221,7 +221,7 @@ curl -X POST http://localhost:5001/api/prompts/import -H "Authorization: Bearer 
 
 ## 管理控制台
 
-内置管理前端（Vue 3 + Vite + Element Plus），包含六个模块：管理员登录、评审记录与统计、prompt 管理、AI 厂商配置、环境变量管理、管理员账号管理。
+内置管理前端（Vue 3 + Vite + Element Plus），包含一个登录入口和九个登录后页面：评审记录、统计分析、采纳率、Prompt 管理、AI 厂商、环境变量、企微映射、功能自检与管理员账号管理。
 
 - 访问 `http://<host>:5001/` 进入控制台，未登录自动跳转登录页
 - 首次部署需在 `.env` 设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`AUTH_SALT`（`AUTH_SALT` 必填，留空拒绝启动）

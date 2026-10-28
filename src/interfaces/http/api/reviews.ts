@@ -89,13 +89,18 @@ export function createReviewsRouter(deps: ReviewsRouterDeps): Router {
   });
 
   router.get("/stats", (req, res) => {
-    const from = readOptionalPositiveInt(req.query.from);
-    const to = readOptionalPositiveInt(req.query.to);
-    if (from === null || to === null) {
-      res.status(400).json({ error: "查询参数必须是正整数" });
+    // 概览与列表必须使用同一过滤口径；否则页面筛选后列表变化、指标仍显示全局值。
+    const parsed = parseListQuery(req.query as Record<string, unknown>);
+    if ("error" in parsed) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-    res.json(deps.records.getStats({ from: from ?? undefined, to: to ?? undefined }));
+    res.json(deps.records.getStats({
+      projectId: parsed.projectId,
+      committer: parsed.committer,
+      from: parsed.from,
+      to: parsed.to,
+    }));
   });
 
   // 采纳统计：与 /stats 同级，复用同一鉴权；路径放在 "/" 之前注册，

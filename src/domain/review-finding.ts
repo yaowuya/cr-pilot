@@ -75,6 +75,8 @@ export interface ReviewFinding {
 /** 一组维度的采纳聚合。`rate` 为 0-1，分母为 0 时为 null（不是 0）。 */
 export interface AdoptionDimensionRow {
   name: string;
+  /** 项目维度携带数字 ID，供工作台按项目重新查询；其他维度省略。 */
+  projectId?: number;
   /** 可统计建议数（不含 pending、unknown 与不可追踪项）。 */
   tracked: number;
   adopted: number;

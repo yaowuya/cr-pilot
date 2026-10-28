@@ -47,7 +47,9 @@ export function createStaticAssets(deps: StaticAssetsDeps): RequestHandler[] {
       next();
       return;
     }
-    res.sendFile(indexFile);
+    // DSH/Git worktree 常位于 `.agents/...` 父目录；send 默认会把任一路径段含点号视为隐藏文件并返回 404。
+    // 这里只发送预先固定的 index.html，不使用请求路径，允许其父目录含点号不会扩大静态文件暴露面。
+    res.sendFile(indexFile, { dotfiles: "allow" });
   };
 
   return [express.static(root, { index: false }), fallback];

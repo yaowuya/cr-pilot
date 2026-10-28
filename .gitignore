@@ -18,8 +18,9 @@ data/
 web/node_modules/
 dist/
 
-# playwright-cli 的临时快照、截图与控制台日志
+# playwright-cli 与 design-taste 的临时快照、截图和度量报告
 .playwright-cli/
+.taste-skill/
 
 # pi 运行期在 PI_CODING_AGENT_DIR 下生成的文件。
 # models.json / settings.json 是数据库厂商配置的导出产物（D-025），
