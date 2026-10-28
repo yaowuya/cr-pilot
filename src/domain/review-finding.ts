@@ -9,13 +9,13 @@
 import { createHash } from "node:crypto";
 
 /**
- * 采纳判定的四态。
+ * 采纳判定状态。
  *
- * - `pending`：尚未追踪（刚写入或等待新提交）。
+ * - `pending`：尚未完成判定（刚写入、等待新提交或等待 MR 进入终态）。
  * - `adopted`：目标行文本已变化或被删除，说明代码确实改动了。
  * - `resolved-without-change`：讨论被标记已解决，但目标行未变，需要人工复核。
  * - `ignored`：讨论未解决且目标行未变。
- * - `unknown`：文件不存在或无法定位，不能猜测，且不计入采纳率分母。
+ * - `unknown`：历史数据或其他无法可靠判定的终态，不计入采纳率分母；明确删除记 adopted。
  */
 export type FindingOutcome = "pending" | "adopted" | "resolved-without-change" | "ignored" | "unknown";
 
@@ -75,15 +75,17 @@ export interface ReviewFinding {
 /** 一组维度的采纳聚合。`rate` 为 0-1，分母为 0 时为 null（不是 0）。 */
 export interface AdoptionDimensionRow {
   name: string;
-  /** 可统计建议数（不含 unknown 与不可追踪项）。 */
+  /** 可统计建议数（不含 pending、unknown 与不可追踪项）。 */
   tracked: number;
   adopted: number;
+  /** 有代码行锚点、正在等待新提交或 MR 终态的建议数；不进入采纳率分母。 */
+  pending: number;
   rate: number | null;
 }
 
 /** 采纳统计结果：可统计部分与不可统计部分必须分开呈现。 */
 export interface AdoptionStats {
-  total: { tracked: number; adopted: number; rate: number | null };
+  total: { tracked: number; adopted: number; pending: number; rate: number | null };
   /** 不可统计条数：`fallback` 为降级并入汇总，`unknown` 为无法定位。 */
   untrackable: { fallback: number; unknown: number };
   byProject: AdoptionDimensionRow[];
@@ -104,7 +106,7 @@ export interface ReviewFindingRepository {
   insert(finding: Omit<ReviewFinding, "id">): void;
   listByRecord(recordId: number): ReviewFinding[];
   listByMr(projectId: number, mrIid: number): ReviewFinding[];
-  /** 取待追踪建议：按创建时间升序，限制条数，避免一轮扫描过多。 */
+  /** 轮转读取追踪候选并限制条数，避免旧终态行永久挡住后排 pending。 */
   listPendingTracking(limit: number): ReviewFinding[];
   /**
    * 统计无法追踪的建议条数。
@@ -120,6 +122,11 @@ export interface ReviewFindingRepository {
    * 「有了新提交需要重判」，要么重复请求，要么永远不再评估。
    */
   updateOutcome(id: number, outcome: FindingOutcome, trackedAt: number, evaluatedHeadSha: string): void;
+  /**
+   * 用同一 MR 的新 webhook 凭据刷新尚未判定且有行锚点的建议；不可追踪项不扩大凭据存储。
+   * 返回实际更新行数，存储异常必须透传给调用方记录。
+   */
+  refreshTrackingCredentials(projectId: number, mrIid: number, gitlabUrl: string, gitlabTokenSealed: string): number;
   getAdoptionStats(query: AdoptionStatsQuery): AdoptionStats;
 }
 

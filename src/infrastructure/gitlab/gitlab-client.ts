@@ -432,6 +432,18 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       return payload.head_commit_sha ?? "";
     },
 
+    async getMergeRequestTrackingState(projectId, iid, gitlabUrl = "", gitlabToken = "") {
+      type RawMergeRequest = { state?: string; sha?: string; diff_refs?: { head_sha?: string } };
+      const payload = await request<RawMergeRequest>(
+        gitlabUrl,
+        gitlabToken,
+        `/api/v4/projects/${projectId}/merge_requests/${iid}`,
+      );
+      // GitLab 还可能返回 locked 等状态；未知状态必须保守按 opened，避免错误终结建议。
+      const state = payload.state === "merged" || payload.state === "closed" ? payload.state : "opened";
+      return { headSha: payload.sha ?? payload.diff_refs?.head_sha ?? "", state };
+    },
+
     async getFileRaw(projectId, iid, path, headSha, gitlabUrl = "", gitlabToken = "") {
       // 用 ref 取该提交下的文件快照：采纳追踪要比较「评审之后这行变成什么样」，
       // 直接读分支当前内容会受未提交到该 MR 的改动干扰。

@@ -111,7 +111,7 @@ export function createReviewsRouter(deps: ReviewsRouterDeps): Router {
     // 未装配建议仓储时给出空结构，让前端显示空态而不是请求失败。
     if (!deps.findings) {
       res.json({
-        total: { tracked: 0, adopted: 0, rate: null },
+        total: { tracked: 0, adopted: 0, pending: 0, rate: null },
         untrackable: { fallback: 0, unknown: 0 },
         byProject: [],
         byCommitter: [],

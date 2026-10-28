@@ -19,9 +19,9 @@ export interface AppDeps {
   /** 只依据 Prompt 显式关联授权新评审；缺少检查器或查询抛错返回 503，绝不默认放行。 */
   isProjectAllowed?: (repositoryFullName: string) => boolean;
   /**
-   * 采纳追踪登记入口：收到「MR 有新提交」的 update 事件时调用。
+   * 采纳追踪入口：收到新提交或 MR 合并/关闭事件时调用。
    *
-   * 与 `enqueue` 分开是刻意的：追踪只重新判定已有建议的采纳状态，不该走完整评审
+   * 与 `enqueue` 分开是刻意的：追踪只重新判定或收口已有建议，不该走完整评审
    * 队列。缺省时退化为 `enqueue`，保证未装配追踪的部署行为不变。
    */
   enqueueTracking?: WebhookEnqueue;
@@ -97,12 +97,12 @@ export function createApp(deps: AppDeps): Express {
       return;
     }
 
-    // 有新提交的 update 事件只登记采纳追踪，不重复跑评审；
+    // 新提交或 MR 终态事件只触发采纳追踪，不重复跑评审；
     // 未装配追踪入口时退化为原评审队列，避免行为静默丢失。
     const isTracking = task.eventKind === "tracking";
     if (isTracking && deps.enqueueTracking) {
       deps.enqueueTracking(task);
-      logger.info("MR 新提交已登记采纳追踪", {
+      logger.info("MR 事件已登记采纳追踪", {
         项目ID: task.projectId,
         MR编号: task.iid,
         项目全名: task.fullName,

@@ -13,19 +13,12 @@ export interface ServerDeps extends Partial<Pick<AppDeps, "apiRoutes" | "publicA
   pipeline: ReviewPipeline;
   logger: Logger;
   /**
-   * 采纳追踪登记入口：MR 有新提交时调用，不走评审队列。
+   * 采纳追踪入口：MR 有新提交或进入合并/关闭终态时调用，不走评审队列。
    *
    * 必须由组合根注入。缺省时 `createApp` 会把追踪事件降级成完整评审，
    * 因此这属于装配必填项，不是可选优化。
    */
   enqueueTracking: AppDeps["enqueueTracking"] & {};
-  /**
-   * 立即执行一轮采纳追踪（可选）。
-   *
-   * 有新提交时先跑一轮，让统计尽量及时；跑不起来也不影响事件登记，
-   * 周期性定时器会兜底。
-   */
-  runAdoptionTracking?: () => void;
 }
 
 /** 监听结果：主端口服务器，以及可选的第二端口服务器。 */

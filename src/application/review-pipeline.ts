@@ -723,7 +723,10 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           logger.error("回写评论失败，任务结束", { 项目ID: task.projectId, MR编号: task.iid, 错误: message });
-          writeRecord({ result: "failed", errorMessage: message, changeCount: changes.length, batchCount: batches.length });
+          const failedRecordId = writeRecord({ result: "failed", errorMessage: message, changeCount: changes.length, batchCount: batches.length });
+          // 行内评论已经发生外部副作用，汇总失败也必须保存其建议证据；否则 GitLab 上
+          // 看得到问题，采纳统计却永远不知道它存在。失败记录仍如实保留整次任务结果。
+          if (failedRecordId !== undefined) writeFindings(failedRecordId, inline.findings);
           return;
         }
 

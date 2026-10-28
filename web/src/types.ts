@@ -203,15 +203,17 @@ export interface WecomContact {
  */
 export interface AdoptionDimensionRow {
   name: string;
-  /** 可统计建议数（不含 unknown 与不可追踪项）。 */
+  /** 已完成判定、进入采纳率分母的建议数。 */
   tracked: number;
   adopted: number;
+  /** 有代码行锚点、等待新提交或 MR 结束判定的建议数。 */
+  pending: number;
   rate: number | null;
 }
 
 /** 采纳统计：可统计部分与不可统计部分分开呈现。 */
 export interface AdoptionStats {
-  total: { tracked: number; adopted: number; rate: number | null };
+  total: { tracked: number; adopted: number; pending: number; rate: number | null };
   /** 不可统计条数：`fallback` 为降级并入汇总，`unknown` 为无法定位。 */
   untrackable: { fallback: number; unknown: number };
   byProject: AdoptionDimensionRow[];

@@ -52,7 +52,7 @@
         </div>
       </template>
 
-      <section class="stat-grid stat-grid--three">
+      <section class="stat-grid stat-grid--four">
         <article v-for="card in adoptionCards" :key="card.label" class="stat-card">
           <div class="stat-card__icon" :style="{ backgroundColor: card.bg, color: card.color }">
             <el-icon><component :is="card.icon" /></el-icon>
@@ -67,22 +67,22 @@
       </section>
 
       <p v-if="adoption" class="adoption-note">
-        其中降级并入汇总 {{ adoption.untrackable.fallback }} 条、无法定位 {{ adoption.untrackable.unknown }} 条，
-        不计入采纳率分母。
+        等待判定 {{ adoption.total.pending }} 条；其中降级并入汇总 {{ adoption.untrackable.fallback }} 条、
+        无法定位 {{ adoption.untrackable.unknown }} 条。等待判定与不可追踪建议均不进入采纳率分母。
       </p>
-      <!-- 分母为 0 时必须说明原因，否则「—」看起来像数据故障。 -->
+      <!-- 分母为 0 时同时说明 pending 与不可追踪，避免把所有零值误归因于无行位置。 -->
       <el-alert
-        v-if="adoption && adoption.total.tracked === 0 && adoption.untrackable.fallback + adoption.untrackable.unknown > 0"
+        v-if="adoption && adoption.total.tracked === 0 && (adoption.total.pending > 0 || adoption.untrackable.fallback + adoption.untrackable.unknown > 0)"
         type="info"
         :closable="false"
         show-icon
         class="adoption-note"
       >
-        <template #title>当前没有可统计的建议</template>
+        <template #title>当前没有已完成判定的建议</template>
         <div>
-          上列不可统计的建议没有代码行位置（降级写进了汇总评论），系统无法判断对应代码是否被改动，
-          因此不计入分母。这类历史建议不会因后续修改变回可统计；
-          本次改动后新产生的、有行位置的建议仍会正常统计。
+          等待判定 {{ adoption.total.pending }} 条，尚需后续提交或 MR 合并/关闭后收口；
+          不可追踪 {{ adoption.untrackable.fallback + adoption.untrackable.unknown }} 条，没有可用代码行锚点或无法可靠定位。
+          两类建议都不会被当作“未采纳”加入分母。
         </div>
       </el-alert>
 
@@ -95,6 +95,7 @@
                 <span class="cell-strong">{{ row.name }}</span>
               </template>
             </el-table-column>
+            <el-table-column prop="pending" label="等待判定" width="100" align="right" sortable />
             <el-table-column prop="tracked" label="可统计" width="90" align="right" sortable />
             <el-table-column prop="adopted" label="已采纳" width="90" align="right" sortable />
             <el-table-column label="采纳率" width="100" align="right" sortable :sort-by="'rate'">
@@ -177,16 +178,15 @@
 /**
  * 统计分析页（独立页面 + 图表）。
  *
- * 数据来自 `GET /api/reviews/stats`：一次请求返回概览、按日趋势、按项目与
- * 按提交人两个维度的聚合。时间筛选同时作用于全部区块，保证下拉选完看到的是
- * 同一口径的数字。
+ * 评分数据来自 `GET /api/reviews/stats`，采纳数据来自 `/api/reviews/adoption`。
+ * 时间筛选同时作用于全部区块，保证概览、维度与采纳状态使用同一口径。
  *
  * 图表与表格并用：图表看分布与趋势，表格看精确值——只看图表读不出具体分数，
  * 只给表格又看不出谁高谁低。
  */
 import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { Checked, Document, QuestionFilled, Refresh, Star, TrendCharts, User, WarnTriangleFilled } from "@element-plus/icons-vue";
+import { Checked, Clock, Document, QuestionFilled, Refresh, Star, TrendCharts, User, WarnTriangleFilled } from "@element-plus/icons-vue";
 import ChartCard from "../components/ChartCard.vue";
 import { api, isApiError } from "../api/client.ts";
 import type { AdoptionDimensionRow, AdoptionStats, DimensionStat, ReviewStats } from "../types.ts";
@@ -267,7 +267,7 @@ function formatRate(rate: number | null): string {
   return rate === null ? "—" : `${(rate * 100).toFixed(1)}%`;
 }
 
-/** 采纳概览的三个指标：可统计、采纳率、不可统计。 */
+/** 采纳概览：把等待判定、已完成判定与永久不可追踪明确分开。 */
 const adoptionCards = computed(() => {
   const data = adoption.value;
   return [
@@ -278,6 +278,14 @@ const adoptionCards = computed(() => {
       icon: Checked,
       color: "#10b981",
       bg: "rgb(16 185 129 / 10%)",
+    },
+    {
+      label: "等待判定",
+      value: data ? String(data.total.pending) : "—",
+      suffix: data ? " 条" : "",
+      icon: Clock,
+      color: "#0ea5e9",
+      bg: "rgb(14 165 233 / 10%)",
     },
     {
       label: "代码变化率",
@@ -310,17 +318,18 @@ const adoptionDimensions = computed(() => {
 /** 严重级采纳分布：按严重级看哪类问题最容易被忽略。 */
 const adoptionSeverity = computed<AdoptionDimensionRow[]>(() => adoption.value?.bySeverity ?? []);
 
-/** 严重级分布图：横向条形对比可统计数与采纳数。 */
+/** 严重级分布图：横向对比等待判定、已完成判定与已采纳数量。 */
 const severityOption = computed(() => {
   const rows = adoptionSeverity.value;
   const names = rows.map((item) => item.name.toUpperCase()).reverse();
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-    legend: { data: ["可统计", "已采纳"], top: 0 },
+    legend: { data: ["等待判定", "可统计", "已采纳"], top: 0 },
     grid: { left: 8, right: 40, bottom: 8, top: 40, containLabel: true },
     xAxis: { type: "value", minInterval: 1 },
     yAxis: { type: "category", data: names },
     series: [
+      { name: "等待判定", type: "bar", data: rows.map((item) => item.pending).reverse(), itemStyle: { color: "#0ea5e9" }, barMaxWidth: 18 },
       { name: "可统计", type: "bar", data: rows.map((item) => item.tracked).reverse(), itemStyle: { color: "#94a3b8" }, barMaxWidth: 18 },
       { name: "已采纳", type: "bar", data: rows.map((item) => item.adopted).reverse(), itemStyle: { color: "#10b981" }, barMaxWidth: 18 },
     ],
@@ -377,7 +386,6 @@ function buildRankingOption(rows: DimensionStat[]): Record<string, unknown> {
         data: counts,
         itemStyle: { color: "#5b5bd6", borderRadius: [0, 4, 4, 0] },
         barMaxWidth: 22,
-        // 数值直接标在条尾，省一次 hover
         // 数值直接标在条尾，省一次 hover。颜色由 ChartCard 按主题统一注入，
         // 这里只声明位置与格式。
         label: { show: true, position: "right", formatter: "{c}", fontWeight: 500 },
@@ -513,8 +521,8 @@ onMounted(() => {
 }
 
 /* ---------- 采纳情况 ---------- */
-.stat-grid--three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.stat-grid--four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 16px;
 }
 

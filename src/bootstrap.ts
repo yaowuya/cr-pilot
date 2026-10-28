@@ -11,7 +11,7 @@ import { createRepositoryProvider } from "./infrastructure/git/repository-contex
 import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
 import { createWecomNotifier } from "./infrastructure/wecom/wecom-notifier.ts";
 import { createReviewPipeline } from "./application/review-pipeline.ts";
-import { createAdoptionTracker } from "./application/adoption-tracker.ts";
+import { createAdoptionTracker, createAdoptionTrackingEventHandler, createAdoptionTrackingTrigger } from "./application/adoption-tracker.ts";
 import { createFeatureVerifier } from "./application/feature-verifier.ts";
 import { startServer } from "./interfaces/http/server.ts";
 import { openDatabase } from "./infrastructure/sqlite/database.ts";
@@ -236,12 +236,18 @@ async function startApplication(input: {
     // 采纳追踪：独立的定时任务，不进评审队列——它只重新判定已有建议，
     // 与真实评审争抢并发槽位会拖慢评审响应。
     const adoptionTracker = createAdoptionTracker({ findings, client, logger, secretKey: config.authSalt });
+    const triggerAdoptionTracking = createAdoptionTrackingTrigger(adoptionTracker, logger);
+    const handleAdoptionTrackingEvent = createAdoptionTrackingEventHandler({
+      findings,
+      secretKey: config.authSalt,
+      enabled: config.adoptionTrackingEnabled,
+      trigger: triggerAdoptionTracking,
+      logger,
+    });
     if (config.adoptionTrackingEnabled) {
       const timer = setInterval(() => {
-        // runOnce 内部已消化所有异常，这里再兜一层防止未处理 rejection 终止进程。
-        void adoptionTracker.runOnce().catch((error: unknown) => {
-          logger.warn("采纳追踪轮次异常", { 错误: error instanceof Error ? error.message : String(error) });
-        });
+        // 与 webhook 共用 single-flight；事件风暴最多只在当前轮后补跑一次。
+        void triggerAdoptionTracking();
       }, config.adoptionSyncIntervalMs);
       // unref：定时器不应阻止进程退出（测试与优雅停机都依赖这一点）。
       timer.unref();
@@ -265,14 +271,9 @@ async function startApplication(input: {
         pipeline,
         logger,
         isProjectAllowed,
-        // 有新提交时只登记追踪，不重复跑完整评审。追踪轮次由定时器驱动，
-        // 这里只记日志；定时器保证最终会被处理。
-        enqueueTracking: (task) => {
-          logger.info("MR 有新提交，等待下一轮采纳追踪", {
-            项目ID: task.projectId,
-            MR编号: task.iid,
-          });
-        },
+        // 新提交或 MR 终态只追踪既有建议；事件处理器刷新 pending 凭据并立即触发，
+        // 定时器仍作兜底，且两条入口共用同一 single-flight。
+        enqueueTracking: handleAdoptionTrackingEvent,
         authMiddleware,
         // 登录免鉴权；me 自带鉴权（否则无法用于校验本地令牌）。
         publicApiRoutes: { "/api/auth": createAuthRouter({ admins, authSalt: config.authSalt, authMiddleware }) },

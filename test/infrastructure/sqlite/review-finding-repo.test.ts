@@ -82,6 +82,27 @@ test("listPendingTracking 排除无指纹项，但保留已判定项以便新提
   assert.equal(rescan[0].headSha, "head-new");
 });
 
+test("listPendingTracking 超过批量上限时轮转候选，后排 pending 不会被旧终态永久饿死", () => {
+  const db = openDatabase(":memory:");
+  seedRecord(db);
+  const repo = createReviewFindingRepository(db);
+  for (let index = 1; index <= 200; index += 1) {
+    repo.insert(makeFinding({
+      marker: `old-${index}`,
+      headSha: `old-head-${index}`,
+      outcome: "ignored",
+      trackedAt: index,
+      createdAt: index,
+    }));
+  }
+  repo.insert(makeFinding({ marker: "new-pending", headSha: "new-pending-head", createdAt: 201 }));
+
+  const first = repo.listPendingTracking(200);
+  const second = repo.listPendingTracking(200);
+  assert.equal(first.length, 200);
+  assert.ok(second.some((finding) => finding.marker === "new-pending"), "后排候选必须在下一轮进入批次");
+});
+
 test("聚合采纳率排除 unknown 与不可追踪项", () => {
   const db = openDatabase(":memory:");
   seedRecord(db);
