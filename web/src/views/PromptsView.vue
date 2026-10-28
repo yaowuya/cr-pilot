@@ -16,68 +16,112 @@
       <template #title>{{ loadError }}</template>
       <el-button link type="primary" :loading="loading" @click="load">重新加载列表</el-button>
     </el-alert>
-    <el-card>
-      <el-table v-loading="loading" :data="prompts">
-        <el-table-column label="名称" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            <div class="repo-cell">
-              <el-icon class="repo-cell__icon"><Folder /></el-icon>
-              <span class="cell-strong">{{ row.repository }}</span>
-              <el-tag v-if="row.repository === 'default'" size="small" type="warning" effect="plain">默认</el-tag>
+    <section class="sheet-panel prompt-ledger" aria-labelledby="prompt-list-title">
+      <div class="sheet-panel__head">
+        <div>
+          <h2 id="prompt-list-title">评审 Prompt</h2>
+          <p>名称用于管理；项目关联决定哪些仓库允许评审。</p>
+        </div>
+        <span class="sheet-panel__meta">{{ prompts.length }} 条</span>
+      </div>
+      <div class="table-shell">
+        <el-table v-loading="loading" :data="prompts" class="prompt-table">
+          <el-table-column label="名称" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div class="repo-cell">
+                <el-icon class="repo-cell__icon"><Folder /></el-icon>
+                <span class="cell-strong">{{ row.repository }}</span>
+                <el-tag v-if="row.repository === 'default'" size="small" type="warning" effect="plain">默认</el-tag>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="关联项目" min-width="220">
+            <template #default="{ row }">
+              <span v-if="row.repository === 'default'" class="cell-muted">全局兜底，不绑定项目</span>
+              <span v-else-if="row.projects.length === 0" class="cell-muted">未关联项目</span>
+              <div v-else class="project-tags">
+                <el-tag v-for="project in row.projects.slice(0, 3)" :key="project" size="small" effect="plain">{{ project }}</el-tag>
+                <el-tooltip v-if="row.projects.length > 3" :content="row.projects.slice(3).join('、')">
+                  <el-tag size="small" type="info" effect="plain">+{{ row.projects.length - 3 }}</el-tag>
+                </el-tooltip>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="仓库上下文" min-width="160">
+            <template #default="{ row }">
+              <div class="repository-state">
+                <el-tag :type="enabledCount(row) ? 'success' : 'info'" size="small" effect="light">
+                  {{ row.repository === 'default' ? '不自动开启' : enabledCount(row) ? `已开启 ${enabledCount(row)} / ${row.projects.length}` : '未开启' }}
+                </el-tag>
+                <span class="cell-muted">{{ row.hasRepositoryStandards ? '已配置仓库规范' : '未填写仓库规范' }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="模型" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="!row.providerId" class="cell-muted">跟随全局默认</span>
+              <span v-else-if="!row.providerLabel" class="cell-muted">厂商已删除</span>
+              <span v-else>{{ row.providerLabel }} / {{ row.model ?? '默认模型' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="企微推送" width="100">
+            <template #default="{ row }"><el-tag :type="row.hasWecomWebhook ? 'success' : 'info'" size="small">{{ row.hasWecomWebhook ? '已配置' : '未配置' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="更新时间" width="170">
+            <template #default="{ row }"><span class="cell-muted">{{ formatTime(row.updatedAt) }}</span></template>
+          </el-table-column>
+          <el-table-column label="操作" width="160" fixed="right">
+            <template #default="{ row }">
+              <!-- 一个入口即可：名称、项目开关、Prompt、规范、模型都在同一个弹窗内分区编辑，
+                   分成「仓库设置」和「编辑」只是重复入口，容易让用户以为保存范围不同。 -->
+              <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-popconfirm :title="`删除 ${row.repository}？关联项目将重新匹配规则，最后解绑的项目将关闭仓库上下文。`" @confirm="onDelete(row)">
+                <template #reference><el-button link type="danger" :loading="deletingId === row.id" :disabled="deletingId !== null">删除</el-button></template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+          <template #empty><el-empty :description="loadError ? '列表未加载成功，请重试' : '暂无 Prompt，可新建或从 yaml 导入'" :image-size="90" /></template>
+        </el-table>
+      </div>
+    </section>
+
+    <div class="prompt-overview-grid">
+      <section class="sheet-panel coverage-panel" aria-labelledby="coverage-title">
+        <div class="sheet-panel__head">
+          <div>
+            <h2 id="coverage-title">配置覆盖</h2>
+            <p>当前 Prompt 关联与执行能力概览。</p>
+          </div>
+        </div>
+        <div class="overview-list">
+          <div v-for="item in coverageStats" :key="item.label" class="overview-item">
+            <div>
+              <strong>{{ item.label }}</strong>
+              <span>{{ item.note }}</span>
             </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="关联项目" min-width="220">
-          <template #default="{ row }">
-            <span v-if="row.repository === 'default'" class="cell-muted">全局兜底，不绑定项目</span>
-            <span v-else-if="row.projects.length === 0" class="cell-muted">未关联项目</span>
-            <div v-else class="project-tags">
-              <el-tag v-for="project in row.projects.slice(0, 3)" :key="project" size="small" effect="plain">{{ project }}</el-tag>
-              <el-tooltip v-if="row.projects.length > 3" :content="row.projects.slice(3).join('、')">
-                <el-tag size="small" type="info" effect="plain">+{{ row.projects.length - 3 }}</el-tag>
-              </el-tooltip>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="仓库上下文" min-width="160">
-          <template #default="{ row }">
-            <div class="repository-state">
-              <el-tag :type="enabledCount(row) ? 'success' : 'info'" size="small" effect="light">
-                {{ row.repository === 'default' ? '不自动开启' : enabledCount(row) ? `已开启 ${enabledCount(row)} / ${row.projects.length}` : '未开启' }}
-              </el-tag>
-              <span class="cell-muted">{{ row.hasRepositoryStandards ? '已配置仓库规范' : '未填写仓库规范' }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="模型" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span v-if="!row.providerId" class="cell-muted">跟随全局默认</span>
-            <span v-else-if="!row.providerLabel" class="cell-muted">厂商已删除</span>
-            <span v-else>{{ row.providerLabel }} / {{ row.model ?? '默认模型' }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="企微推送" width="100">
-          <template #default="{ row }"><el-tag :type="row.hasWecomWebhook ? 'success' : 'info'" size="small">{{ row.hasWecomWebhook ? '已配置' : '未配置' }}</el-tag></template>
-        </el-table-column>
-        <el-table-column label="更新时间" width="170">
-          <template #default="{ row }"><span class="cell-muted">{{ formatTime(row.updatedAt) }}</span></template>
-        </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right">
-          <template #default="{ row }">
-            <!-- 一个入口即可：名称、项目开关、Prompt、规范、模型都在同一个弹窗内分区编辑，
-                 分成「仓库设置」和「编辑」只是重复入口，容易让用户以为保存范围不同。 -->
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-popconfirm :title="`删除 ${row.repository}？关联项目将重新匹配规则，最后解绑的项目将关闭仓库上下文。`" @confirm="onDelete(row)">
-              <template #reference><el-button link type="danger" :loading="deletingId === row.id" :disabled="deletingId !== null">删除</el-button></template>
-            </el-popconfirm>
-          </template>
-        </el-table-column>
-        <template #empty><el-empty :description="loadError ? '列表未加载成功，请重试' : '暂无 Prompt，可新建或从 yaml 导入'" :image-size="90" /></template>
-      </el-table>
-    </el-card>
+            <b>{{ item.value }}</b>
+          </div>
+        </div>
+      </section>
+
+      <section class="sheet-panel workflow-panel" aria-labelledby="workflow-title">
+        <div class="sheet-panel__head">
+          <div>
+            <h2 id="workflow-title">编辑流程</h2>
+            <p>宽编辑器按业务顺序组织，保存时原子提交。</p>
+          </div>
+        </div>
+        <div class="workflow-list">
+          <div v-for="item in workflowItems" :key="item.label" class="workflow-item">
+            <strong>{{ item.label }}</strong>
+            <span>{{ item.note }}</span>
+          </div>
+        </div>
+      </section>
+    </div>
 
     <el-dialog v-model="dialogVisible" :title="editingId === null ? '新建 Prompt' : `编辑 Prompt：${editingName}`"
-      class="repository-prompt-dialog" width="min(900px, calc(100vw - 32px))" top="5vh" destroy-on-close
+      class="repository-prompt-dialog" width="min(1080px, calc(100vw - 32px))" top="4vh" destroy-on-close
       :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" :before-close="beforeClose" @closed="onClosed">
       <el-skeleton v-if="editorLoading" :rows="9" animated />
       <el-alert v-else-if="detailError" type="error" :closable="false" show-icon>
@@ -89,12 +133,12 @@
           <el-button link type="primary" :loading="metaLoading" @click="reloadMeta">重试加载建议</el-button>
         </el-alert>
         <!-- 名称放在标签页之外：编辑时无论当前哪个分组都可见，改名不依赖切换标签。 -->
-        <el-form-item label="名称" prop="repository">
+        <el-form-item label="名称" prop="repository" class="editor-identity">
           <el-input v-model="form.repository" placeholder="例如通用评审规则" :disabled="editingId !== null && editingName === 'default'" class="name-input" />
           <span v-if="editingName === 'default'" class="cell-muted">default 是全局兜底，名称不可修改</span>
           <span v-else class="cell-muted">可修改；保存后列表名称随之更新</span>
         </el-form-item>
-        <el-tabs v-model="activeSection">
+        <el-tabs v-model="activeSection" tab-position="left" class="editor-tabs">
           <el-tab-pane label="项目与执行" name="projects">
             <section class="editor-section">
               <el-row :gutter="16">
@@ -199,6 +243,32 @@ const modelOptions = computed(() => {
   const models = meta.value.providers.find(item => item.id === form.value.providerId)?.models ?? [];
   return form.value.model && !models.includes(form.value.model) ? [form.value.model, ...models] : models;
 });
+
+/** 覆盖概览按项目名去重，避免同一项目被多条规则重复计数。 */
+const coverageStats = computed(() => {
+  const projects = new Set<string>();
+  const repositoryContextProjects = new Set<string>();
+  for (const prompt of prompts.value) {
+    if (prompt.repository === "default") continue;
+    for (const project of prompt.projects) projects.add(project);
+    for (const setting of prompt.projectSettings ?? []) {
+      if (setting.repositoryContextEnabled) repositoryContextProjects.add(setting.project);
+    }
+  }
+  return [
+    { label: "关联项目", value: projects.size, note: "受非 default 规则覆盖" },
+    { label: "仓库上下文", value: repositoryContextProjects.size, note: "已开启拉取仓库" },
+    { label: "模型覆盖", value: prompts.value.filter(item => item.providerId || item.model).length, note: "条规则指定厂商或模型" },
+    { label: "企微通知", value: prompts.value.filter(item => item.hasWecomWebhook).length, note: "条规则配置低分提醒" },
+  ];
+});
+const workflowItems = [
+  { label: "项目与执行", note: "关联项目、评审白名单与仓库上下文" },
+  { label: "评审 Prompt", note: "System Prompt 与 User Prompt" },
+  { label: "仓库规范", note: "共享代码规范，最多 32,000 字符" },
+  { label: "模型与通知", note: "厂商、模型、企微阈值与机器人" },
+] as const;
+
 const requiredText = (_rule: unknown, value: unknown, callback: (error?: Error) => void): void => {
   callback(typeof value === "string" && value.trim() ? undefined : new Error("此项不能为空"));
 };
@@ -317,36 +387,361 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
 </script>
 
 <style scoped>
-.cell-strong { font-weight: 500; color: var(--el-text-color-primary); }
-.cell-muted { color: var(--el-text-color-secondary); }
-.repo-cell, .project-tags { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.repo-cell__icon { flex-shrink: 0; color: var(--el-color-primary); }
-.project-tags { flex-wrap: wrap; gap: 4px; }
-.repository-state { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 13px; }
-.full-width { width: 100%; }
-.name-input { max-width: 420px; }
-.section-notice { margin-bottom: 16px; }
-.editor-section { display: flex; flex-direction: column; gap: 16px; }
-.section-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.section-heading h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); }
-.section-description { margin: 0 0 16px; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; }
-.editor-section .section-description { margin-bottom: 0; }
+.prompts-page {
+  gap: 18px;
+}
+
+.cell-strong {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.cell-muted {
+  color: var(--el-text-color-secondary);
+}
+
+.sheet-panel {
+  overflow: hidden;
+  background-color: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--el-border-radius-base);
+}
+
+.sheet-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px 20px 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.sheet-panel__head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--el-text-color-primary);
+}
+
+.sheet-panel__head p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.sheet-panel__meta {
+  flex: none;
+  font-size: 12px;
+  line-height: 22px;
+  color: var(--el-text-color-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.table-shell {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.prompt-table {
+  width: 100%;
+}
+
+.prompt-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.repo-cell,
+.project-tags {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.repo-cell__icon {
+  flex-shrink: 0;
+  color: var(--el-text-color-secondary);
+}
+
+.project-tags {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.repository-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.prompt-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.overview-list,
+.workflow-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background-color: var(--el-border-color-lighter);
+}
+
+.overview-item,
+.workflow-item {
+  min-width: 0;
+  min-height: 76px;
+  padding: 14px 16px;
+  background-color: var(--el-bg-color);
+}
+
+.overview-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.overview-item div,
+.workflow-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.overview-item strong,
+.workflow-item strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.overview-item span,
+.workflow-item span {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.overview-item b {
+  flex: none;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 28px;
+  color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.full-width {
+  width: 100%;
+}
+
+.name-input {
+  max-width: 480px;
+}
+
+.section-notice {
+  margin-bottom: 16px;
+}
+
+.editor-identity {
+  padding: 16px 18px 10px;
+  margin-bottom: 18px;
+  background-color: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+}
+
+.editor-identity :deep(.el-form-item__content) {
+  gap: 8px 12px;
+}
+
+.editor-tabs {
+  min-height: 430px;
+}
+
+.editor-tabs :deep(.el-tabs__header.is-left) {
+  width: 152px;
+  padding: 8px;
+  margin-right: 24px;
+  background-color: var(--el-fill-color-light);
+  border-radius: var(--el-border-radius-base);
+}
+
+.editor-tabs :deep(.el-tabs__nav-wrap.is-left::after) {
+  display: none;
+}
+
+.editor-tabs :deep(.el-tabs__active-bar.is-left) {
+  display: none;
+}
+
+.editor-tabs :deep(.el-tabs__item.is-left) {
+  justify-content: flex-start;
+  height: 42px;
+  padding: 0 12px;
+  text-align: left;
+  border-radius: var(--el-border-radius-small);
+}
+
+.editor-tabs :deep(.el-tabs__item.is-left.is-active) {
+  color: var(--el-text-color-primary);
+  background-color: var(--el-bg-color);
+}
+
+.editor-tabs :deep(.el-tabs__content) {
+  min-width: 0;
+  overflow: visible;
+}
+
+.editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-heading h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.section-description {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+
+.editor-section .section-description {
+  margin-bottom: 0;
+}
+
 /* Element Plus 的 info 浅色默认值不跟随本项目 dark token；仅在本编辑区复用现有主题填充。 */
-.editor-section :deep(.el-alert--info.is-light) { background-color: var(--el-fill-color-light); color: var(--el-text-color-regular); }
-.project-settings { border: 1px solid var(--el-border-color-light); border-radius: var(--el-border-radius-base); }
-.project-setting { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; }
-.project-setting + .project-setting { border-top: 1px solid var(--el-border-color-light); }
-.project-setting__name { display: flex; flex-direction: column; gap: 8px; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
-.project-setting :deep(.el-switch) { flex-shrink: 0; }
-.standards-textarea :deep(textarea) { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.6; }
-.editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 13px; }
-:global(.repository-prompt-dialog) { display: flex; flex-direction: column; max-height: 90vh; margin-bottom: 0; }
-:global(.repository-prompt-dialog .el-dialog__body) { min-height: 0; overflow-y: auto; }
-:global(.repository-prompt-dialog .el-dialog__footer) { flex-shrink: 0; }
+.editor-section :deep(.el-alert--info.is-light) {
+  color: var(--el-text-color-regular);
+  background-color: var(--el-fill-color-light);
+}
+
+.project-settings {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--el-border-radius-base);
+}
+
+.project-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+}
+
+.project-setting + .project-setting {
+  border-top: 1px solid var(--el-border-color-light);
+}
+
+.project-setting__name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 8px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.project-setting :deep(.el-switch) {
+  flex-shrink: 0;
+}
+
+.standards-textarea :deep(textarea) {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+}
+
+:global(.repository-prompt-dialog.el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 92vh;
+  margin-bottom: 0;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 12px;
+}
+
+:global(.repository-prompt-dialog .el-dialog__header) {
+  padding: 18px 22px;
+  margin-right: 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+:global(.repository-prompt-dialog .el-dialog__body) {
+  min-height: 0;
+  padding: 18px 22px 20px;
+  overflow-y: auto;
+}
+
+:global(.repository-prompt-dialog .el-dialog__footer) {
+  flex-shrink: 0;
+  padding: 14px 22px;
+  background-color: var(--el-fill-color-light);
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+@media (max-width: 900px) {
+  .prompt-overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-tabs :deep(.el-tabs__header.is-left) {
+    width: 132px;
+    margin-right: 16px;
+  }
+}
+
 @media (max-width: 768px) {
-  .prompts-page .page-header { flex-direction: column; }
-  .prompts-page .page-header__actions { flex-wrap: wrap; }
-  .project-setting { flex-wrap: wrap; }
-  .editor-footer { align-items: flex-end; flex-wrap: wrap; }
+  .prompts-page .page-header {
+    flex-direction: column;
+  }
+
+  .prompts-page .page-header__actions {
+    flex-wrap: wrap;
+  }
+
+  .overview-list,
+  .workflow-list {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .project-setting {
+    flex-wrap: wrap;
+  }
+
+  .editor-footer {
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
 }
 </style>

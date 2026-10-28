@@ -1,9 +1,9 @@
 <template>
-  <div class="page-container">
+  <div class="page-container config-page">
     <header class="page-header">
       <div>
         <h1 class="page-header__title">环境变量</h1>
-        <p class="page-header__desc">配置写入数据库并覆盖同名环境变量；标记「需重启」的项在重启后生效</p>
+        <p class="page-header__desc">查看运行配置并安全覆盖允许在线修改的项目；标记「需重启」的项在重启后生效</p>
       </div>
       <div class="page-header__actions">
         <el-button :loading="loading" @click="load">
@@ -12,106 +12,116 @@
         </el-button>
         <el-button type="primary" :loading="saving" @click="onSave">
           <el-icon><Check /></el-icon>
-          保存
+          保存更改
         </el-button>
       </div>
     </header>
 
-    <el-alert type="info" :closable="false" show-icon>
+    <el-alert class="secret-notice" type="info" :closable="false" show-icon>
       <template #title>
         密钥类字段不回传真实值，留空表示不修改；只有实际输入过内容的项才会提交。
       </template>
     </el-alert>
 
+    <el-alert v-if="loadError" type="error" :closable="false" show-icon class="load-alert">
+      <template #title>运行配置加载失败</template>
+      {{ loadError }} <el-button link type="primary" :loading="loading" @click="load">重新加载</el-button>
+    </el-alert>
+
     <!--
-      分类展示：配置项按用途分组，而不是一长串平铺。
-      AI 模型类的 URL/Key/Model 已迁到「AI 厂商」页统一管理（支持多厂商），
-      这里只保留一个指引，避免两处都能改造成事实源分叉。
+      配置项仍按既有业务规则分组；视觉上改为原型的双列 Framed Sheet，
+      让每组成为一张可独立浏览的工作表，而不是把所有字段压进一张宽表格。
     -->
-    <el-card v-for="group in groups" :key="group.name">
-      <template #header>
-        <div class="group-header">
-          <div class="group-header__title">
-            <span class="group-header__icon" :style="{ backgroundColor: group.bg, color: group.color }">
-              <el-icon><component :is="group.icon" /></el-icon>
-            </span>
-            <div>
-              <div class="group-header__name">{{ group.name }}</div>
-              <div class="group-header__desc">{{ group.desc }}</div>
-            </div>
+    <div v-if="loaded" v-loading="loading" class="config-grid">
+      <div v-for="(column, columnIndex) in configColumns" :key="columnIndex" class="config-column">
+        <section v-for="group in column" :key="group.name" class="config-panel">
+        <header class="config-panel__header">
+          <div>
+            <h2 class="config-panel__title">{{ group.name }}</h2>
+            <p class="config-panel__desc">{{ group.desc }}</p>
           </div>
-          <el-tag v-if="group.count > 0" size="small" type="info" effect="plain">{{ group.count }} 项</el-tag>
+          <span class="config-panel__count">{{ group.count > 0 ? `${group.count} 项` : "集中管理" }}</span>
+        </header>
+
+        <!-- AI 模型分组不列出旧单键，继续引导到唯一事实源「AI 厂商」。 -->
+        <div v-if="group.name === 'AI 模型'" class="provider-guide">
+          <div>
+            <h3 class="provider-guide__title">模型连接统一在厂商页维护</h3>
+            <p class="provider-guide__text">
+              API 地址、密钥、协议与模型清单需要成组保存；厂商页还支持全局默认与项目级模型绑定。
+            </p>
+          </div>
+          <el-button type="primary" @click="goProviders">
+            <el-icon><Cpu /></el-icon>
+            前往 AI 厂商配置
+          </el-button>
         </div>
-      </template>
 
-      <!-- AI 模型分组：不列具体键，直接引导去厂商页 -->
-      <div v-if="group.name === 'AI 模型'" class="ai-hint">
-        <p class="ai-hint__text">
-          模型厂商的 API 地址、密钥与模型清单已迁移到独立页面，支持配置多个厂商（OpenAI、DeepSeek、
-          Anthropic、通义千问等），并可指定每个项目使用哪个厂商。
-        </p>
-        <el-button type="primary" @click="goProviders">
-          <el-icon><Cpu /></el-icon>
-          前往 AI 厂商配置
-        </el-button>
-      </div>
-
-      <el-table v-else v-loading="loading" :data="group.rows">
-        <!--
-          配置项列：中文名做标题、英文键名做副标题、用途说明再下一行。
-          只显示英文键名时运维看不出这一项是干什么的，因此说明必须与键名同列展示。
-        -->
-        <el-table-column label="配置项" min-width="360">
-          <template #default="{ row }">
-            <div class="key-cell">
-              <div class="key-cell__head">
-                <span class="key-cell__label">{{ row.label || row.key }}</span>
-                <div class="key-cell__tags">
-                  <el-tag v-if="row.masked" type="warning" size="small" effect="plain">密钥</el-tag>
-                  <el-tag v-if="row.readOnly" type="info" size="small" effect="plain">只读</el-tag>
-                  <el-tag v-if="row.restartRequired" type="danger" size="small" effect="plain">需重启</el-tag>
-                  <el-tag v-if="row.overridden" type="primary" size="small" effect="plain">已覆盖</el-tag>
+        <div v-else class="config-list">
+          <article
+            v-for="row in group.rows"
+            :key="row.key"
+            class="config-item"
+            :class="{ 'is-dirty': row.dirty && row.draft.trim() !== '' }"
+          >
+            <div class="config-item__heading">
+              <div class="config-item__identity">
+                <div class="config-item__title-row">
+                  <span class="config-item__label">{{ row.label || row.key }}</span>
+                  <div class="config-item__tags">
+                    <el-tag v-if="row.masked" type="warning" size="small" effect="plain">密钥</el-tag>
+                    <el-tag v-if="row.readOnly" type="info" size="small" effect="plain">只读</el-tag>
+                    <el-tag v-if="row.restartRequired" type="danger" size="small" effect="plain">需重启</el-tag>
+                    <el-tag v-if="row.overridden" type="primary" size="small" effect="plain">已覆盖</el-tag>
+                  </div>
                 </div>
+                <code v-if="row.label" class="config-item__key">{{ row.key }}</code>
               </div>
-              <!-- 有中文名时键名降为副标题；未登记的键本身就是标题，不重复显示 -->
-              <code v-if="row.label" class="key-cell__name">{{ row.key }}</code>
-              <p v-if="row.description" class="key-cell__desc">{{ row.description }}</p>
-              <p v-if="row.hint" class="key-cell__hint">
-                {{ row.hint }}<template v-if="row.defaultValue">；默认 {{ row.defaultValue }}</template>
-              </p>
+              <span v-if="row.dirty && row.draft.trim() !== ''" class="config-status config-status--dirty">待保存</span>
+              <span v-else-if="row.dirty" class="config-status">留空不提交</span>
+              <span v-else class="config-status">未修改</span>
             </div>
-          </template>
-        </el-table-column>
 
-        <el-table-column label="当前值" min-width="300">
-          <template #default="{ row }">
+            <p v-if="row.description" class="config-item__desc">{{ row.description }}</p>
+            <p v-if="row.hint || row.defaultValue" class="config-item__hint">
+              <template v-if="row.hint">{{ row.hint }}</template>
+              <template v-if="row.hint && row.defaultValue">；</template>
+              <template v-if="row.defaultValue">默认 {{ row.defaultValue }}</template>
+            </p>
+
             <el-input
               v-model="row.draft"
+              class="config-item__input"
               :type="row.masked && !row.revealed && row.draft ? 'password' : 'text'"
               :placeholder="row.masked ? '留空表示不修改' : row.defaultValue ? `未设置（默认 ${row.defaultValue}）` : '未设置'"
               :disabled="row.readOnly"
+              :aria-label="`${row.label || row.key} 当前值`"
               @input="row.dirty = true"
             >
-              <!-- 密钥项：后端不回传真实值，输入框里只有用户自己刚输入的内容。
-                   该图标仅切换本地可见性，不产生网络请求。 -->
+              <!-- 后端不回传真实密钥；此按钮只切换用户本次输入内容的本地可见性。 -->
               <template v-if="row.masked && row.draft" #suffix>
-                <el-icon class="reveal-icon" @click="row.revealed = !row.revealed">
-                  <View v-if="!row.revealed" />
-                  <Hide v-else />
-                </el-icon>
+                <button
+                  type="button"
+                  class="secret-toggle"
+                  :aria-label="row.revealed ? '隐藏本次输入的密钥' : '显示本次输入的密钥'"
+                  :title="row.revealed ? '隐藏密钥' : '显示密钥'"
+                  @mousedown.prevent
+                  @click="row.revealed = !row.revealed"
+                >
+                  <el-icon><Hide v-if="row.revealed" /><View v-else /></el-icon>
+                </button>
               </template>
             </el-input>
-          </template>
-        </el-table-column>
+          </article>
+        </div>
+        </section>
+      </div>
+    </div>
 
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <span v-if="row.dirty && row.draft.trim() !== ''" class="status status--dirty">待保存</span>
-            <span v-else class="status status--idle">未修改</span>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+    <div class="config-footnote">
+      <strong>生效规则</strong>
+      <span>保存时只提交已修改、非空且可编辑的项目；端口、数据库路径、凭据盐等标记项需要重启容器。</span>
+    </div>
   </div>
 </template>
 
@@ -119,100 +129,88 @@
 /**
  * 环境变量管理页。
  *
- * 密钥项默认显示后端返回的掩码（后端不回传真实值），输入框留空表示不修改；
- * 只有用户实际输入了内容才会提交该项，避免把掩码当成新值写回数据库。
- *
- * 分类展示（D-023）：键名按前缀与语义归入固定分组，避免几十项平铺难找。
- * AI 模型相关的键不再在此编辑——多厂商配置需要 URL/Key/Model 成组管理，
- * 单键编辑无法表达，统一收敛到「AI 厂商」页。
+ * 密钥项的草稿始终从空值开始，避免把接口掩码写回数据库；保存只提交用户
+ * 实际改动过的非空可编辑项。分组规则同时承担配置导航与新增键的兜底展示。
  */
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Check, Connection, Cpu, Document, Hide, Refresh, Setting, View } from "@element-plus/icons-vue";
+import { Check, Cpu, Hide, Refresh, View } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
 import type { ConfigItem } from "../types.ts";
 
-/** 表格行：在接口数据上追加编辑态。 */
+/** 接口配置项追加页面内编辑态后的行模型。 */
 interface ConfigRow extends ConfigItem {
-  /** 用户输入的草稿值；初始为空（表示不修改）。 */
+  /** 用户输入的草稿值；密钥项初始为空，表示保留原值。 */
   draft: string;
-  /** 是否被用户修改过。 */
+  /** 用户是否改动过该输入。 */
   dirty: boolean;
-  /** 是否已展开显示（掩码项用，仅本地状态）。 */
+  /** 是否显示用户本次输入的密钥，只影响本地输入框。 */
   revealed: boolean;
 }
 
-/** 一个配置分组。 */
+/** 页面中的一个配置分组。 */
 interface ConfigGroup {
   name: string;
   desc: string;
-  icon: unknown;
-  color: string;
-  bg: string;
   rows: ConfigRow[];
   count: number;
 }
 
+/** 固定分组规则；match 只决定展示位置，不改变配置写入语义。 */
+interface ConfigGroupRule {
+  name: string;
+  desc: string;
+  match: (key: string) => boolean;
+}
+
 const router = useRouter();
 const loading = ref(false);
+const loaded = ref(false);
+const loadError = ref("");
 const saving = ref(false);
 const rows = ref<ConfigRow[]>([]);
 
 /**
- * 键名 → 分组。
+ * 键名到分组的显式映射。
  *
- * 用前缀与显式清单而不是「猜」：分组是给人看的，错归组比不归组更糟。
- * 未命中的键落到「其他」，保证新增配置不会凭空消失。
+ * 用前缀与明确清单而不是模糊猜测；未命中的键进入「其他」，保证新增或
+ * 历史遗留配置不会从页面消失。AI 模型组仅保留厂商页导航，避免双事实源。
  */
-const GROUP_RULES: Array<{ name: string; desc: string; icon: unknown; color: string; bg: string; match: (key: string) => boolean }> = [
+const GROUP_RULES: ConfigGroupRule[] = [
   {
     name: "AI 模型",
-    desc: "多厂商模型配置已迁移到独立页面",
-    icon: Cpu,
-    color: "#8b5cf6",
-    bg: "rgb(139 92 246 / 10%)",
-    // LLMGW_API_KEY 是老的单厂商密钥，也归到这里提示迁移。
+    desc: "API、密钥、协议与模型清单统一在 AI 厂商页维护",
+    // LLMGW_API_KEY 是旧单厂商密钥，也归入此组提示迁移。
     match: (key) => /^(LLMGW_API_KEY|LLM_|AI_)/.test(key),
   },
   {
     name: "GitLab 集成",
-    desc: "GitLab 实例地址、证书与 API 超时",
-    icon: Connection,
-    color: "#0ea5e9",
-    bg: "rgb(14 165 233 / 10%)",
+    desc: "实例地址、证书校验与 API 请求边界",
     match: (key) => key.startsWith("GITLAB_"),
   },
   {
     name: "评审行为",
-    desc: "超时、分批预算、风格与规则目录",
-    icon: Document,
-    color: "#5b5bd6",
-    bg: "rgb(91 91 214 / 10%)",
+    desc: "并发、超时、分批预算、风格与规则目录",
     match: (key) => key.startsWith("REVIEW_") || key === "QUEUE_CONCURRENCY",
   },
   {
     name: "服务与存储",
-    desc: "监听地址、日志与数据库路径",
-    icon: Setting,
-    color: "#10b981",
-    bg: "rgb(16 185 129 / 10%)",
+    desc: "监听端口、日志输出与数据库位置",
     match: (key) => ["PORT", "HOST", "LOG_FILE", "LOG_LEVEL", "DB_PATH"].includes(key),
   },
   {
     name: "账号与安全",
-    desc: "管理员引导账号与令牌盐",
-    icon: Setting,
-    color: "#f59e0b",
-    bg: "rgb(245 158 11 / 10%)",
+    desc: "管理员引导账号与部署凭据盐",
     match: (key) => key.startsWith("ADMIN_") || key === "AUTH_SALT",
   },
 ];
 
-/** 按规则分组；未命中的键进「其他」。 */
+/** 按固定规则分组，未命中的配置统一进入「其他」。 */
 const groups = computed<ConfigGroup[]>(() => {
   const buckets = new Map<string, ConfigRow[]>();
   const others: ConfigRow[] = [];
+
   for (const row of rows.value) {
     const rule = GROUP_RULES.find((item) => item.match(row.key));
     if (!rule) {
@@ -227,42 +225,48 @@ const groups = computed<ConfigGroup[]>(() => {
   const result: ConfigGroup[] = [];
   for (const rule of GROUP_RULES) {
     const list = buckets.get(rule.name) ?? [];
-    // AI 模型分组即使没有键也展示：它是「去别处配置」的指引，不展示就没人知道要迁移。
+    // AI 模型组即使没有遗留键也必须出现，它是唯一事实源的导航入口。
     if (list.length === 0 && rule.name !== "AI 模型") continue;
-    result.push({ ...rule, rows: list, count: list.length });
+    result.push({ name: rule.name, desc: rule.desc, rows: list, count: list.length });
   }
+
   if (others.length > 0) {
-    result.push({
-      name: "其他",
-      desc: "未归类的配置项",
-      icon: Setting,
-      color: "#64748b",
-      bg: "rgb(100 116 139 / 10%)",
-      rows: others,
-      count: others.length,
-    });
+    result.push({ name: "其他", desc: "尚未归入固定用途分组的配置项", rows: others, count: others.length });
   }
   return result;
+});
+
+/**
+ * 将固定顺序的分组交错放入两列，让每列独立向下堆叠。
+ * 这避免短 AI 指引被相邻的长 GitLab 分组撑出整行空洞，同时保持每组稳定 key。
+ */
+const configColumns = computed<[ConfigGroup[], ConfigGroup[]]>(() => {
+  const columns: [ConfigGroup[], ConfigGroup[]] = [[], []];
+  groups.value.forEach((group, index) => columns[index % columns.length].push(group));
+  return columns;
 });
 
 function goProviders(): void {
   void router.push("/providers");
 }
 
+/** 从接口重新建立编辑草稿；任何旧脏值都随显式刷新丢弃。 */
 async function load(): Promise<void> {
   loading.value = true;
+  loadError.value = "";
   try {
     const result = await api.get<{ items: ConfigItem[] }>("/api/config");
     rows.value = result.items.map((item) => ({
       ...item,
-      // 非密钥项直接带出当前值供编辑；密钥项留空，防止把掩码写回库。
-      // 只读项也预填当前值但输入框禁用（见模板）。
+      // 密钥真实值不会从接口返回，必须以空草稿表示“保留原值”。
       draft: item.masked ? "" : item.value,
       dirty: false,
       revealed: false,
     }));
+    loaded.value = true;
   } catch (error) {
-    ElMessage.error(isApiError(error) ? error.message : "加载配置失败");
+    loadError.value = isApiError(error) ? error.message : "加载配置失败";
+    ElMessage.error(loadError.value);
   } finally {
     loading.value = false;
   }
@@ -270,11 +274,13 @@ async function load(): Promise<void> {
 
 /** 只提交用户实际改动过、非只读且非空的项。 */
 async function onSave(): Promise<void> {
+  if (saving.value) return;
   const changed = rows.value.filter((row) => row.dirty && !row.readOnly && row.draft.trim() !== "");
   if (changed.length === 0) {
     ElMessage.warning("没有需要保存的修改");
     return;
   }
+
   saving.value = true;
   try {
     const result = await api.put<{ restartRequired: string[] }>("/api/config", {
@@ -303,143 +309,282 @@ onMounted(() => {
 </script>
 
 <style scoped>
-/* 分组头：图标 + 名称 + 说明，右侧数量 */
-.group-header {
+.config-page {
+  gap: 18px;
+}
+
+.secret-notice {
+  border: 1px solid var(--el-border-color-lighter);
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+
+.config-column {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  min-width: 0;
+}
+
+.config-panel {
+  min-width: 0;
+  overflow: hidden;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+}
+
+.config-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.config-panel__header > div {
+  min-width: 0;
+}
+
+.config-panel__title,
+.provider-guide__title {
+  margin: 0;
+  color: var(--el-text-color-primary);
+}
+
+.config-panel__title {
+  font-size: 16px;
+  line-height: 22px;
+}
+
+.config-panel__desc {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.config-panel__count {
+  flex: none;
+  padding-top: 2px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.provider-guide {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 18px;
+  background: var(--el-fill-color-light);
+}
+
+.provider-guide > div {
+  min-width: 0;
+}
+
+.provider-guide__title {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.provider-guide__text {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--el-text-color-regular);
+}
+
+.provider-guide .el-button {
+  flex: none;
+}
+
+.config-list {
+  display: grid;
+}
+
+.config-item {
+  min-width: 0;
+  padding: 15px 18px 16px 15px;
+  border-left: 3px solid transparent;
+}
+
+.config-item + .config-item {
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.config-item.is-dirty {
+  border-left-color: var(--el-color-warning);
+}
+
+.config-item__heading {
+  display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
 
-.group-header__title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.config-item__identity {
+  min-width: 0;
 }
 
-.group-header__icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  font-size: 16px;
-  border-radius: 9px;
-}
-
-.group-header__name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.group-header__desc {
-  margin-top: 2px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--el-text-color-secondary);
-}
-
-/* AI 模型分组的迁移指引 */
-.ai-hint {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 4px 0;
-}
-
-.ai-hint__text {
-  max-width: 720px;
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--el-text-color-regular);
-}
-
-/*
-  配置项列：中文名 + 标签一行，英文键名一行，用途说明一行。
-  层次靠字号与颜色拉开，避免四行文字看起来一样重。
-*/
-.key-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.key-cell__head {
+.config-item__title-row,
+.config-item__tags {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.config-item__title-row {
   gap: 8px;
 }
 
-.key-cell__label {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-/* 英文键名：等宽小字，作为技术标识而非主标题 */
-.key-cell__name {
-  align-self: flex-start;
-  padding: 1px 6px;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-  background-color: var(--el-fill-color-light);
-  border-radius: 4px;
-  word-break: break-all;
-}
-
-.key-cell__desc {
-  margin: 2px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--el-text-color-regular);
-}
-
-/* 取值提示与默认值：最弱的一级，作为补充信息 */
-.key-cell__hint {
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--el-text-color-placeholder);
-}
-
-.key-cell__tags {
-  display: flex;
-  flex-wrap: wrap;
+.config-item__tags {
   gap: 4px;
 }
 
-.reveal-icon {
-  cursor: pointer;
+.config-item__label {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--el-text-color-primary);
+}
+
+.config-item__key {
+  display: inline-block;
+  max-width: 100%;
+  margin-top: 5px;
+  overflow: hidden;
+  font-family: var(--el-font-family-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--el-text-color-regular);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-status {
+  flex: none;
+  padding-top: 2px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--el-text-color-secondary);
+  white-space: nowrap;
 }
 
-.reveal-icon:hover {
-  color: var(--el-color-primary);
-}
-
-.status {
-  font-size: 13px;
-}
-
-.status--dirty {
+.config-status--dirty {
   color: var(--el-color-warning);
 }
 
-.status--idle {
+.config-item__desc,
+.config-item__hint {
+  margin: 0;
+}
+
+.config-item__desc {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--el-text-color-regular);
+}
+
+.config-item__hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--el-text-color-secondary);
 }
 
-/* 窄屏：指引改为上下排布 */
-@media (max-width: 768px) {
-  .ai-hint {
-    flex-direction: column;
+.config-item__input {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.secret-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--el-text-color-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--el-border-radius-small);
+}
+
+.secret-toggle:hover,
+.secret-toggle:focus-visible {
+  color: var(--el-color-primary);
+  background: var(--el-fill-color-light);
+}
+
+.secret-toggle:focus-visible {
+  outline: 2px solid var(--el-color-primary-light-5);
+  outline-offset: 1px;
+}
+
+.config-footnote {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 13px 16px;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--el-text-color-regular);
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+}
+
+.config-footnote strong {
+  flex: none;
+  color: var(--el-text-color-primary);
+}
+
+@media (max-width: 900px) {
+  .config-panel__header,
+  .config-item {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .provider-guide {
     align-items: flex-start;
+    flex-direction: column;
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+}
+
+@media (max-width: 680px) {
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .page-header,
+  .config-footnote {
+    flex-direction: column;
+  }
+
+  .page-header__actions {
+    width: 100%;
+  }
+
+  .page-header__actions .el-button {
+    flex: 1;
   }
 }
 </style>

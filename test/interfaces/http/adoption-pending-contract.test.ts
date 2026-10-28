@@ -132,7 +132,7 @@ test("GET /api/reviews/adoption 在总计与全部维度返回 pending", async (
 
       assert.deepEqual(body.total, { tracked: 1, adopted: 1, pending: 1, rate: 1 });
       assert.deepEqual(body.untrackable, { fallback: 1, unknown: 1 });
-      assert.deepEqual(rowNamed(body.byProject, "41"), { name: "41", tracked: 1, adopted: 1, pending: 1, rate: 1 });
+      assert.deepEqual(rowNamed(body.byProject, "group/http-contract"), { name: "group/http-contract", projectId: 41, tracked: 1, adopted: 1, pending: 1, rate: 1 });
       assert.deepEqual(rowNamed(body.byCommitter, "契约提交人"), {
         name: "契约提交人",
         tracked: 1,

@@ -32,9 +32,17 @@ let chart: ReturnType<typeof echarts.init> | undefined;
 /** 主题观察器：class 变化时重绘，让坐标轴与文字颜色跟随亮/暗切换。 */
 let themeObserver: MutationObserver | undefined;
 
-/** 当前是否暗色主题。 */
-function isDark(): boolean {
-  return document.documentElement.classList.contains("dark");
+/** 从当前主题根变量解析实际颜色；fallback 只用于变量缺失的独立挂载场景。 */
+function cssToken(name: string, fallback: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
+/** 解析 option 中的 CSS 变量颜色，ECharts 本身不会解释 `var(...)`。 */
+function resolveCssColor(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const match = value.match(/^var\((--[\w-]+)\)$/);
+  return match ? cssToken(match[1]!, value) : value;
 }
 
 /**
@@ -44,15 +52,16 @@ function isDark(): boolean {
  * 配色由这里保证与页面主题一致。这样新增图表不会漏掉暗色适配。
  */
 function withTheme(option: Record<string, unknown>): Record<string, unknown> {
-  const dark = isDark();
-  const textColor = dark ? "#cbd5e1" : "#526077";
-  const lineColor = dark ? "#2d394c" : "#e7eaf0";
+  const textColor = cssToken("--el-text-color-regular", "#526077");
+  const lineColor = cssToken("--el-border-color-light", "#e7eaf0");
 
   return {
     // 透明背景：图表底色由卡片决定，避免暗色下出现一块突兀的白底
     backgroundColor: "transparent",
     textStyle: { color: textColor },
     ...option,
+    // legend 自有默认颜色不会继承顶层 textStyle，必须单独跟随主题。
+    legend: applyLegendStyle(option.legend, textColor),
     // 坐标轴样式统一覆盖，避免每个调用点重复配置
     xAxis: applyAxisStyle(option.xAxis, textColor, lineColor),
     yAxis: applyAxisStyle(option.yAxis, textColor, lineColor),
@@ -60,6 +69,16 @@ function withTheme(option: Record<string, unknown>): Record<string, unknown> {
     // 背景上几乎不可见（柱状图条尾的次数值就是典型例子）
     series: applySeriesStyle(option.series, textColor),
   };
+}
+
+/** 为单个或多个图例补齐主题文字色，同时保留布局与交互配置。 */
+function applyLegendStyle(legend: unknown, textColor: string): unknown {
+  if (!legend) return legend;
+  const entries = Array.isArray(legend) ? legend : [legend];
+  return entries.map((entry) => {
+    const record = entry as Record<string, unknown>;
+    return { ...record, textStyle: { ...(record.textStyle as object ?? {}), color: textColor } };
+  });
 }
 
 /**
@@ -74,8 +93,14 @@ function applySeriesStyle(series: unknown, textColor: string): unknown {
   return items.map((item) => {
     const record = item as Record<string, unknown>;
     const label = record.label as Record<string, unknown> | undefined;
-    if (!label) return record;
-    return { ...record, label: { color: textColor, ...label } };
+    const itemStyle = record.itemStyle as Record<string, unknown> | undefined;
+    const lineStyle = record.lineStyle as Record<string, unknown> | undefined;
+    return {
+      ...record,
+      ...(label ? { label: { color: textColor, ...label } } : {}),
+      ...(itemStyle ? { itemStyle: { ...itemStyle, color: resolveCssColor(itemStyle.color) } } : {}),
+      ...(lineStyle ? { lineStyle: { ...lineStyle, color: resolveCssColor(lineStyle.color) } } : {}),
+    };
   });
 }
 

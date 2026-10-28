@@ -125,6 +125,43 @@ function aggregateBy(
   });
 }
 
+/** 项目名/提交人存于评审记录，通过 record_id 联表聚合；列名仅允许内部固定枚举。 */
+function aggregateByRecordDimension(
+  db: DatabaseSync,
+  column: "project_name" | "committer_name",
+  query: AdoptionStatsQuery,
+): AdoptionDimensionRow[] {
+  const filter = buildFilter(query, "f.");
+  const isProject = column === "project_name";
+  const nameExpression = isProject
+    ? "COALESCE(NULLIF(TRIM(r.project_name), ''), '项目 ' || f.project_id)"
+    : "COALESCE(r.committer_name, '')";
+  const rows = db.prepare(
+    `SELECT ${nameExpression} AS name,
+            ${isProject ? "f.project_id" : "NULL"} AS project_id,
+            SUM(CASE WHEN f.outcome IN ${COUNTABLE_OUTCOMES} THEN 1 ELSE 0 END) AS tracked,
+            SUM(CASE WHEN f.outcome = 'adopted' THEN 1 ELSE 0 END) AS adopted,
+            SUM(CASE WHEN f.outcome = 'pending' AND f.code_fingerprint <> '' THEN 1 ELSE 0 END) AS pending
+     FROM review_findings f
+     LEFT JOIN review_records r ON r.id = f.record_id
+     ${filter.where}
+     GROUP BY ${isProject ? "f.project_id, " : ""}name
+     ORDER BY tracked DESC, name ASC`,
+  ).all(...filter.params) as unknown as Array<{ name: string; project_id: number | null; tracked: number; adopted: number; pending: number }>;
+  return rows.map((row) => {
+    const tracked = Number(row.tracked ?? 0);
+    const adopted = Number(row.adopted ?? 0);
+    return {
+      name: row.name,
+      ...(row.project_id === null ? {} : { projectId: Number(row.project_id) }),
+      tracked,
+      adopted,
+      pending: Number(row.pending ?? 0),
+      rate: rateOf(adopted, tracked),
+    };
+  });
+}
+
 /** 创建评审建议仓储。全部方法为同步调用。 */
 export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRepository {
   const insertStatement = db.prepare(`
@@ -243,35 +280,12 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
       const tracked = Number(totals.tracked ?? 0);
       const adopted = Number(totals.adopted ?? 0);
       const pending = Number(totals.pending ?? 0);
-      // 提交人按评审记录反查：建议表本身不存姓名，避免姓名变更后历史数据不一致。
-      const committerFilter = buildFilter(queryParams, "f.");
-      const byCommitter = db
-        .prepare(
-          `SELECT COALESCE(r.committer_name, '') AS name,
-                  SUM(CASE WHEN f.outcome IN ${COUNTABLE_OUTCOMES} THEN 1 ELSE 0 END) AS tracked,
-                  SUM(CASE WHEN f.outcome = 'adopted' THEN 1 ELSE 0 END) AS adopted,
-                  SUM(CASE WHEN f.outcome = 'pending' AND f.code_fingerprint <> '' THEN 1 ELSE 0 END) AS pending
-           FROM review_findings f
-           LEFT JOIN review_records r ON r.id = f.record_id
-           ${committerFilter.where}
-           GROUP BY name
-           ORDER BY tracked DESC, name ASC`,
-        )
-        .all(...committerFilter.params) as unknown as { name: string; tracked: number; adopted: number; pending: number }[];
-
-      const toRow = (row: { name: string; tracked: number; adopted: number; pending: number }): AdoptionDimensionRow => ({
-        name: row.name,
-        tracked: Number(row.tracked ?? 0),
-        adopted: Number(row.adopted ?? 0),
-        pending: Number(row.pending ?? 0),
-        rate: rateOf(Number(row.adopted ?? 0), Number(row.tracked ?? 0)),
-      });
-
       return {
         total: { tracked, adopted, pending, rate: rateOf(adopted, tracked) },
         untrackable: { fallback: Number(totals.fallback ?? 0), unknown: Number(totals.unknown ?? 0) },
-        byProject: aggregateBy(db, "CAST(project_id AS TEXT)", where, params),
-        byCommitter: byCommitter.map(toRow),
+        // 名称取评审发生时写入 review_records 的历史快照；Prompt 后续改名/解绑不重写历史统计。
+        byProject: aggregateByRecordDimension(db, "project_name", queryParams),
+        byCommitter: aggregateByRecordDimension(db, "committer_name", queryParams),
         bySeverity: aggregateBy(db, "severity", where, params),
       };
     },

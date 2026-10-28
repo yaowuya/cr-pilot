@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
@@ -36,6 +36,8 @@ interface Harness {
   dbDir: string;
   /** 管理员仓储，便于测试里追加普通账号。 */
   admins: ReturnType<typeof createAdminRepository>;
+  /** 评审仓储，便于 HTTP 统计测试写入筛选样例。 */
+  records: ReturnType<typeof createReviewRecordRepository>;
 }
 
 function buildHarness(options: { distDir?: string; rulesDir?: string } = {}): Harness {
@@ -62,7 +64,7 @@ function buildHarness(options: { distDir?: string; rulesDir?: string } = {}): Ha
     staticAssets: options.distDir ? createStaticAssets({ distDir: options.distDir, logger: createSilentLogger() }) : [],
   });
 
-  return { app, token: deriveToken(ADMIN, AUTH_SALT), dbDir: "", admins };
+  return { app, token: deriveToken(ADMIN, AUTH_SALT), dbDir: "", admins, records };
 }
 
 /** 用 fetch 直接打 Express 应用（监听 0 端口取随机端口）。 */
@@ -259,6 +261,26 @@ test("评审统计返回全部字段", async () => {
     }
     assert.equal(body.total, 0);
     assert.equal(body.avgScore, null, "没有分数时不得返回 0");
+  });
+});
+
+test("评审概览与列表共享项目、提交人与时间筛选口径", async () => {
+  const { app, token, records } = buildHarness();
+  const baseRecord = {
+    mrIid: 1, changeCount: 1, batchCount: 1, durationMs: 1000, result: "success" as const,
+    errorMessage: null, commentUrl: null, mrUrl: null, finishedAt: 200,
+  };
+  records.insert({ ...baseRecord, projectId: 11, projectName: "group/a", committerName: "甲", score: 90, startedAt: 100 });
+  records.insert({ ...baseRecord, projectId: 22, projectName: "group/b", committerName: "乙", score: 60, startedAt: 150 });
+  await withServer(app, async (base) => {
+    const res = await authed(base, token, "/api/reviews/stats?project_id=11&committer=%E7%94%B2&from=90&to=110");
+    assert.equal(res.status, 200);
+    const body = await res.json() as { total: number; projectCount: number; committerCount: number; avgScore: number };
+    assert.equal(body.total, 1);
+    assert.equal(body.projectCount, 1);
+    assert.equal(body.committerCount, 1);
+    assert.equal(body.avgScore, 90);
+    assert.equal((await authed(base, token, "/api/reviews/stats?project_id=bad")).status, 400);
   });
 });
 
@@ -624,6 +646,23 @@ test("SPA fallback 排除 /api 与 /review 前缀", async () => {
     });
   } finally {
     rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test("SPA fallback 支持位于 .agents 工作树中的构建产物", async () => {
+  const root = mkdtempSync(join(tmpdir(), "crp-worktree-"));
+  const distDir = join(root, ".agents", "worktrees", "feature", "dist");
+  try {
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, "index.html"), '<!doctype html><html><body><div id="app"></div></body></html>');
+    const { app } = buildHarness({ distDir });
+    await withServer(app, async (base) => {
+      const page = await fetch(`${base}/adoption`);
+      assert.equal(page.status, 200, "固定 index.html 不应因父目录含点号而被 sendFile 拒绝");
+      assert.match(await page.text(), /<div id="app">/);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

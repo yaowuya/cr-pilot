@@ -87,8 +87,8 @@ test("pending 只统计有指纹的待判定建议，并出现在总计及每个
 
     assert.deepEqual(stats.total, { tracked: 3, adopted: 1, pending: 2, rate: 1 / 3 });
     assert.deepEqual(stats.untrackable, { fallback: 1, unknown: 1 });
-    assert.deepEqual(rowNamed(stats.byProject, "101"), { name: "101", tracked: 2, adopted: 1, pending: 1, rate: 0.5 });
-    assert.deepEqual(rowNamed(stats.byProject, "202"), { name: "202", tracked: 1, adopted: 0, pending: 1, rate: 0 });
+    assert.deepEqual(rowNamed(stats.byProject, "group/a"), { name: "group/a", projectId: 101, tracked: 2, adopted: 1, pending: 1, rate: 0.5 });
+    assert.deepEqual(rowNamed(stats.byProject, "group/b"), { name: "group/b", projectId: 202, tracked: 1, adopted: 0, pending: 1, rate: 0 });
     assert.deepEqual(rowNamed(stats.byCommitter, "甲"), { name: "甲", tracked: 2, adopted: 1, pending: 1, rate: 0.5 });
     assert.deepEqual(rowNamed(stats.byCommitter, "乙"), { name: "乙", tracked: 1, adopted: 0, pending: 1, rate: 0 });
     assert.deepEqual(rowNamed(stats.bySeverity, "p1"), { name: "p1", tracked: 2, adopted: 1, pending: 1, rate: 0.5 });
@@ -122,7 +122,7 @@ test("tracked 为零时仍报告 43 条等待判定和 8 条 fallback，rate 保
 
     assert.deepEqual(stats.total, { tracked: 0, adopted: 0, pending: 43, rate: null });
     assert.deepEqual(stats.untrackable, { fallback: 8, unknown: 0 });
-    assert.deepEqual(rowNamed(stats.byProject, "303"), { name: "303", tracked: 0, adopted: 0, pending: 43, rate: null });
+    assert.deepEqual(rowNamed(stats.byProject, "group/pending"), { name: "group/pending", projectId: 303, tracked: 0, adopted: 0, pending: 43, rate: null });
     assert.deepEqual(rowNamed(stats.byCommitter, "等待者"), {
       name: "等待者",
       tracked: 0,

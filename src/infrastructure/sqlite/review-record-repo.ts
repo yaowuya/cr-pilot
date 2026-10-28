@@ -118,7 +118,15 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
 
     getStats(query) {
       const conditions: string[] = [];
-      const params: number[] = [];
+      const params: (string | number)[] = [];
+      if (query.projectId !== undefined) {
+        conditions.push("project_id = ?");
+        params.push(query.projectId);
+      }
+      if (query.committer) {
+        conditions.push("committer_name = ?");
+        params.push(query.committer);
+      }
       if (query.from !== undefined) {
         conditions.push("started_at >= ?");
         params.push(query.from);

@@ -1,5 +1,5 @@
 <template>
-  <div class="page-container">
+  <div class="page-container providers-page">
     <header class="page-header">
       <div>
         <h1 class="page-header__title">AI 厂商</h1>
@@ -17,131 +17,162 @@
       </div>
     </header>
 
-    <el-alert type="info" :closable="false" show-icon>
+    <el-alert type="info" :closable="false" show-icon class="security-note">
       <template #title>
         密钥只以掩码回显，留空表示不修改。未指定厂商的项目使用「全局默认」厂商。
       </template>
     </el-alert>
 
-    <!-- 厂商卡片：一厂商一卡，比表格更适合展示 URL/模型/密钥这类多字段信息 -->
-    <div v-if="providers.length === 0 && !loading" class="empty-wrap">
-      <el-empty description="尚未配置任何厂商，评审将使用 pi-agent/models.json 里的既有配置">
-        <el-button type="primary" @click="openCreate">立即新增</el-button>
-      </el-empty>
-    </div>
+    <el-alert v-if="loadError" type="error" :closable="false" show-icon class="load-alert">
+      <template #title>厂商配置加载失败</template>
+      {{ loadError }} <el-button link type="primary" :loading="loading" @click="load">重新加载</el-button>
+    </el-alert>
 
-    <div v-else class="provider-grid">
-      <article v-for="provider in providers" :key="provider.id" class="provider-card">
-        <header class="provider-card__head">
-          <div class="provider-card__title">
-            <span class="provider-card__avatar" :style="{ backgroundColor: kindColor(provider.kind).bg, color: kindColor(provider.kind).fg }">
-              {{ provider.label.charAt(0).toUpperCase() }}
-            </span>
-            <div class="provider-card__meta">
-              <div class="provider-card__name">
-                {{ provider.label }}
-                <el-tag v-if="provider.isDefault" type="success" size="small" effect="light">全局默认</el-tag>
+    <section class="sheet-panel providers-overview" v-loading="loading" aria-labelledby="providers-overview-title">
+      <div class="sheet-panel__head">
+        <div>
+          <h2 id="providers-overview-title">厂商概览</h2>
+          <p>连接信息、默认模型与项目覆盖保持在同一张配置工作表。</p>
+        </div>
+        <span v-if="loaded" class="sheet-panel__meta">{{ providers.length }} 个厂商</span>
+      </div>
+
+      <div v-if="loaded && providers.length === 0 && !loading" class="empty-wrap">
+        <el-empty description="尚未配置任何厂商，评审将使用 pi-agent/models.json 里的既有配置">
+          <el-button type="primary" @click="openCreate">立即新增</el-button>
+        </el-empty>
+      </div>
+
+      <div v-else-if="providers.length > 0" class="provider-grid">
+        <article v-for="provider in providers" :key="provider.id" class="provider-sheet-card">
+          <header class="provider-card__head">
+            <div class="provider-card__title">
+              <span class="provider-card__mark" aria-hidden="true">{{ provider.label.charAt(0).toUpperCase() }}</span>
+              <div class="provider-card__meta">
+                <div class="provider-card__name">
+                  {{ provider.label }}
+                  <el-tag v-if="provider.isDefault" type="success" size="small" effect="light">全局默认</el-tag>
+                </div>
+                <span class="provider-card__kind">{{ provider.name }} · {{ apiLabel(provider.api) }}</span>
               </div>
-              <span class="provider-card__kind">{{ provider.name }} · {{ apiLabel(provider.api) }}</span>
             </div>
-          </div>
-          <el-dropdown trigger="click" @command="(cmd: string) => onCommand(cmd, provider)">
-            <button class="icon-button" title="更多操作">
-              <el-icon><MoreFilled /></el-icon>
-            </button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item v-if="!provider.isDefault" command="default">
-                  <el-icon><Star /></el-icon>
-                  设为全局默认
-                </el-dropdown-item>
-                <el-dropdown-item command="edit">
-                  <el-icon><Edit /></el-icon>
-                  编辑
-                </el-dropdown-item>
-                <el-dropdown-item command="delete" divided>
-                  <el-icon><Delete /></el-icon>
-                  删除
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </header>
+            <el-dropdown trigger="click" @command="(cmd: string) => onCommand(cmd, provider)">
+              <button class="icon-button" type="button" :aria-label="`${provider.label} 更多操作`" title="更多操作">
+                <el-icon><MoreFilled /></el-icon>
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-if="!provider.isDefault" command="default">
+                    <el-icon><Star /></el-icon>
+                    设为全局默认
+                  </el-dropdown-item>
+                  <el-dropdown-item command="edit">
+                    <el-icon><Edit /></el-icon>
+                    编辑
+                  </el-dropdown-item>
+                  <el-dropdown-item command="delete" divided>
+                    <el-icon><Delete /></el-icon>
+                    删除
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </header>
 
-        <dl class="provider-card__body">
-          <div class="field">
-            <dt>API 地址</dt>
-            <dd class="mono">{{ provider.baseUrl }}</dd>
+          <div class="provider-facts">
+            <div><span>模型</span><strong>{{ provider.models.length }}</strong></div>
+            <div><span>默认模型</span><strong class="mono">{{ provider.defaultModel || provider.models[0] || '—' }}</strong></div>
+            <div><span>项目绑定</span><strong>{{ bindingCount(provider.id) }}</strong></div>
+            <div><span>状态</span><strong>{{ provider.isDefault ? '全局默认' : '可用' }}</strong></div>
           </div>
-          <div class="field">
-            <dt>API Key</dt>
-            <dd>
-              <span v-if="provider.hasApiKey" class="mono">{{ provider.apiKeyMasked }}</span>
-              <span v-else class="cell-muted">未配置</span>
-            </dd>
-          </div>
-          <div class="field">
-            <dt>模型</dt>
-            <dd>
-              <div class="model-tags">
-                <el-tag
-                  v-for="model in provider.models"
-                  :key="model"
-                  size="small"
-                  :type="model === provider.defaultModel ? 'primary' : 'info'"
-                  effect="plain"
-                >
-                  {{ model }}
-                </el-tag>
-              </div>
-            </dd>
-          </div>
-        </dl>
-      </article>
-    </div>
+
+          <dl class="provider-card__body">
+            <div class="field">
+              <dt>API 地址</dt>
+              <dd class="mono">{{ provider.baseUrl }}</dd>
+            </div>
+            <div class="field">
+              <dt>API Key</dt>
+              <dd>
+                <span v-if="provider.hasApiKey" class="mono">{{ provider.apiKeyMasked }}</span>
+                <span v-else class="cell-muted">未配置</span>
+              </dd>
+            </div>
+            <div class="field field--models">
+              <dt>模型清单</dt>
+              <dd>
+                <div class="model-tags">
+                  <el-tag
+                    v-for="model in provider.models"
+                    :key="model"
+                    size="small"
+                    :type="model === provider.defaultModel ? 'primary' : 'info'"
+                    effect="plain"
+                  >
+                    {{ model }}
+                  </el-tag>
+                </div>
+              </dd>
+            </div>
+          </dl>
+        </article>
+      </div>
+    </section>
 
     <!-- 项目绑定：把某个项目钉到指定厂商 -->
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>项目级模型绑定</span>
+    <section v-if="loaded" class="sheet-panel binding-panel" aria-labelledby="binding-title">
+      <div class="sheet-panel__head">
+        <div>
+          <h2 id="binding-title">项目级模型绑定</h2>
+          <p>未绑定项目使用全局默认厂商与模型。</p>
+        </div>
+        <div class="binding-panel__actions">
+          <span class="sheet-panel__meta">{{ bindings.length }} 条绑定</span>
           <el-button size="small" @click="openBinding">新增绑定</el-button>
         </div>
-      </template>
-      <el-table :data="bindings" size="small">
-        <el-table-column prop="project" label="项目全名" min-width="240" />
-        <el-table-column label="使用厂商" min-width="180">
-          <template #default="{ row }">
-            <span v-if="providerLabel(row.providerId)">{{ providerLabel(row.providerId) }}</span>
-            <span v-else class="cell-muted">厂商已删除</span>
+      </div>
+      <div class="table-shell">
+        <el-table :data="bindings" size="small" class="binding-table">
+          <el-table-column prop="project" label="项目全名" min-width="280" />
+          <el-table-column label="使用厂商" min-width="180">
+            <template #default="{ row }">
+              <span v-if="providerLabel(row.providerId)">{{ providerLabel(row.providerId) }}</span>
+              <span v-else class="cell-muted">厂商已删除</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="模型" min-width="200">
+            <template #default="{ row }">
+              <span v-if="row.model" class="mono">{{ row.model }}</span>
+              <span v-else class="cell-muted">跟随厂商默认</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-popconfirm title="解除该项目的厂商绑定？" @confirm="onUnbind(row.project)">
+                <template #reference>
+                  <el-button link type="danger">解除</el-button>
+                </template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="暂无项目绑定，所有项目使用全局默认厂商" :image-size="80" />
           </template>
-        </el-table-column>
-        <el-table-column label="模型" width="180">
-          <template #default="{ row }">
-            <span v-if="row.model" class="mono">{{ row.model }}</span>
-            <span v-else class="cell-muted">跟随厂商默认</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="90">
-          <template #default="{ row }">
-            <el-popconfirm title="解除该项目的厂商绑定？" @confirm="onUnbind(row.project)">
-              <template #reference>
-                <el-button link type="danger">解除</el-button>
-              </template>
-            </el-popconfirm>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无项目绑定，所有项目使用全局默认厂商" :image-size="80" />
-        </template>
-      </el-table>
-    </el-card>
+        </el-table>
+      </div>
+    </section>
 
     <!-- 新增/编辑厂商 -->
-    <el-dialog v-model="dialogVisible" :title="editingId ? '编辑厂商' : '新增厂商'" width="680px" top="6vh" destroy-on-close>
-      <el-form label-position="top">
-        <el-form-item label="厂商模板">
-          <div class="template-row">
+    <el-dialog v-model="dialogVisible" :title="editingId !== null ? '编辑厂商' : '新增厂商'"
+      class="provider-editor-dialog" width="min(960px, calc(100vw - 32px))" top="4vh" destroy-on-close
+      :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving">
+      <el-form label-position="top" :disabled="saving" class="provider-editor-form" @submit.prevent="onSave">
+        <section class="template-strip" aria-labelledby="provider-template-title">
+          <div>
+            <h3 id="provider-template-title">厂商模板</h3>
+            <p>模板只负责预填，加载失败时仍可手动完成全部配置。</p>
+          </div>
+          <div v-if="templates.length" class="template-row">
             <el-button
               v-for="template in templates"
               :key="template.kind"
@@ -152,72 +183,91 @@
               {{ template.label }}
             </el-button>
           </div>
-        </el-form-item>
+          <span v-else class="template-fallback">暂无可用模板，请手动填写</span>
+        </section>
 
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="展示名">
-              <el-input v-model="form.label" placeholder="例如 DeepSeek" />
+        <div class="provider-editor-grid">
+          <section class="editor-block" aria-labelledby="provider-connection-title">
+            <div class="editor-block__head">
+              <h3 id="provider-connection-title">厂商与连接</h3>
+              <p>标识写入 models.json；编辑后保持不变。</p>
+            </div>
+            <el-row :gutter="16">
+              <el-col :xs="24" :sm="12">
+                <el-form-item label="展示名">
+                  <el-input v-model="form.label" placeholder="例如 DeepSeek" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="24" :sm="12">
+                <el-form-item label="标识（provider key）">
+                  <el-input v-model="form.name" placeholder="如 deepseek" :disabled="editingId !== null" />
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-form-item label="API 地址">
+              <el-input v-model="form.baseUrl" placeholder="https://api.deepseek.com/v1" />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="标识（models.json 的 provider key）">
-              <el-input v-model="form.name" placeholder="小写字母/数字/下划线，如 deepseek" :disabled="editingId !== null" />
+
+            <el-form-item label="API Key">
+              <el-input v-model="form.apiKey" type="password" show-password :placeholder="keyPlaceholder" />
+              <span class="field-hint">{{ editingId !== null ? '留空保存会保留现有密钥' : '密钥不会在列表或后续编辑中明文回显' }}</span>
             </el-form-item>
-          </el-col>
-        </el-row>
 
-        <el-form-item label="API 地址">
-          <el-input v-model="form.baseUrl" placeholder="https://api.deepseek.com/v1" />
-        </el-form-item>
+            <el-form-item label="协议类型">
+              <el-select v-model="form.api" class="full-width">
+                <el-option label="OpenAI Responses（/responses）" value="openai-responses" />
+                <el-option label="OpenAI Completions（/chat/completions）" value="openai-completions" />
+                <el-option label="Anthropic Messages" value="anthropic-messages" />
+              </el-select>
+            </el-form-item>
+          </section>
 
-        <el-form-item label="API Key">
-          <el-input v-model="form.apiKey" type="password" show-password :placeholder="keyPlaceholder" />
-        </el-form-item>
+          <section class="editor-block" aria-labelledby="provider-models-title">
+            <div class="editor-block__head">
+              <h3 id="provider-models-title">模型与默认值</h3>
+              <p>至少配置一个模型；项目绑定可在保存后继续覆盖。</p>
+            </div>
+            <el-form-item label="模型清单（输入后回车添加，标签 × 删减）">
+              <el-select
+                v-model="form.models"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                :reserve-keyword="false"
+                placeholder="输入模型 id 后回车，如 deepseek-chat"
+                class="full-width"
+              >
+                <el-option v-for="model in form.models" :key="model" :label="model" :value="model" />
+              </el-select>
+            </el-form-item>
 
-        <el-form-item label="协议类型">
-          <el-select v-model="form.api" class="full-width">
-            <el-option label="OpenAI Responses（/responses）" value="openai-responses" />
-            <el-option label="OpenAI Completions（/chat/completions）" value="openai-completions" />
-            <el-option label="Anthropic Messages" value="anthropic-messages" />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="模型清单（输入后回车添加，标签 × 删减）">
-          <el-select
-            v-model="form.models"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            :reserve-keyword="false"
-            placeholder="输入模型 id 后回车，如 deepseek-chat"
-            class="full-width"
-          >
-            <el-option v-for="model in form.models" :key="model" :label="model" :value="model" />
-          </el-select>
-        </el-form-item>
-
-        <el-row :gutter="16">
-          <el-col :span="12">
             <el-form-item label="默认模型">
               <el-select v-model="form.defaultModel" clearable placeholder="不选则用清单第一个" class="full-width">
                 <el-option v-for="model in form.models" :key="model" :label="model" :value="model" />
               </el-select>
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="设为全局默认">
-              <el-switch v-model="form.isDefault" />
-              <span class="switch-hint">开启后其他厂商的默认标记会被取消</span>
-            </el-form-item>
-          </el-col>
-        </el-row>
+
+            <div class="default-setting">
+              <div>
+                <strong>设为全局默认</strong>
+                <span>开启后其他厂商的默认标记会被取消</span>
+              </div>
+              <el-switch v-model="form.isDefault" aria-label="设为全局默认" />
+            </div>
+          </section>
+        </div>
       </el-form>
 
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
+        <div class="editor-footer">
+          <span class="cell-muted">保存后下一次评审使用新配置</span>
+          <div>
+            <el-button :disabled="saving" @click="dialogVisible = false">取消</el-button>
+            <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -270,6 +320,8 @@ import type {
 } from "../types.ts";
 
 const loading = ref(false);
+const loaded = ref(false);
+const loadError = ref("");
 const saving = ref(false);
 const providers = ref<LlmProviderSummary[]>([]);
 const bindings = ref<LlmProjectBinding[]>([]);
@@ -317,19 +369,6 @@ const bindingModelOptions = computed(() => {
   return provider?.models ?? [];
 });
 
-/** 厂商类型配色：让卡片一眼区分不同厂商，色值集中在此便于统一调整。 */
-function kindColor(kind: string): { bg: string; fg: string } {
-  const palette: Record<string, { bg: string; fg: string }> = {
-    openai: { bg: "rgb(16 185 129 / 12%)", fg: "#10b981" },
-    deepseek: { bg: "rgb(59 130 246 / 12%)", fg: "#3b82f6" },
-    anthropic: { bg: "rgb(245 158 11 / 12%)", fg: "#f59e0b" },
-    qwen: { bg: "rgb(139 92 246 / 12%)", fg: "#8b5cf6" },
-    zhipu: { bg: "rgb(236 72 153 / 12%)", fg: "#ec4899" },
-    moonshot: { bg: "rgb(14 165 233 / 12%)", fg: "#0ea5e9" },
-  };
-  return palette[kind] ?? { bg: "rgb(100 116 139 / 12%)", fg: "#64748b" };
-}
-
 /** 协议类型的展示名。 */
 function apiLabel(api: LlmApiKind): string {
   const labels: Record<LlmApiKind, string> = {
@@ -345,14 +384,22 @@ function providerLabel(providerId: number): string | undefined {
   return providers.value.find((item) => item.id === providerId)?.label;
 }
 
+/** 厂商概览中的绑定数量来自当前绑定列表，不维护第二份统计状态。 */
+function bindingCount(providerId: number): number {
+  return bindings.value.filter((item) => item.providerId === providerId).length;
+}
+
 async function load(): Promise<void> {
   loading.value = true;
+  loadError.value = "";
   try {
     const result = await api.get<LlmProvidersResponse>("/api/providers");
     providers.value = result.items;
     bindings.value = result.bindings;
+    loaded.value = true;
   } catch (error) {
-    ElMessage.error(isApiError(error) ? error.message : "加载厂商列表失败");
+    loadError.value = isApiError(error) ? error.message : "加载厂商列表失败";
+    ElMessage.error(loadError.value);
   } finally {
     loading.value = false;
   }
@@ -543,72 +590,108 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.providers-page {
+  gap: 18px;
+}
+
 .cell-muted {
   color: var(--el-text-color-secondary);
 }
 
-/* 等宽字体：URL、密钥掩码、模型 id 都是标识符，等宽更易比对 */
+/* URL、密钥掩码、模型 id 是技术标识符，统一等宽便于逐字符核对。 */
 .mono {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 12px;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-panel {
+  overflow: hidden;
+  background-color: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--el-border-radius-base);
+}
+
+.sheet-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px 20px 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.sheet-panel__head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--el-text-color-primary);
+}
+
+.sheet-panel__head p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.sheet-panel__meta {
+  flex: none;
+  font-size: 12px;
+  line-height: 22px;
+  color: var(--el-text-color-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .empty-wrap {
-  padding: 24px;
-  background-color: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: var(--el-border-radius-base);
+  padding: 28px 24px;
 }
 
-/* 厂商卡片网格：自适应列宽，窄屏自动减少列数 */
 .provider-grid {
   display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1px;
+  background-color: var(--el-border-color-lighter);
 }
 
-.provider-card {
+.provider-sheet-card {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   padding: 18px;
   background-color: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: var(--el-border-radius-base);
-  transition:
-    box-shadow var(--app-transition) ease,
-    transform var(--app-transition) ease;
-}
-
-.provider-card:hover {
-  box-shadow: var(--app-shadow);
-  transform: translateY(-1px);
 }
 
 .provider-card__head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 16px;
 }
 
 .provider-card__title {
   display: flex;
   align-items: center;
-  gap: 10px;
   min-width: 0;
+  gap: 10px;
 }
 
-.provider-card__avatar {
+.provider-card__mark {
   display: inline-flex;
-  flex-shrink: 0;
+  flex: none;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  font-size: 15px;
-  font-weight: 600;
-  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+  background-color: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--el-border-radius-small);
 }
 
 .provider-card__meta {
@@ -617,6 +700,7 @@ onMounted(() => {
 
 .provider-card__name {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   font-size: 15px;
@@ -625,32 +709,83 @@ onMounted(() => {
 }
 
 .provider-card__kind {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 16px;
+  overflow: hidden;
+  background-color: var(--el-border-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-small);
+}
+
+.provider-facts > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 62px;
+  gap: 5px;
+  padding: 10px 11px;
+  background-color: var(--el-fill-color-light);
+}
+
+.provider-facts span {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.provider-facts strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .provider-card__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   margin: 0;
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-height: 40px;
+  padding: 10px 0;
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .field dt {
   font-size: 12px;
+  line-height: 20px;
   color: var(--el-text-color-secondary);
 }
 
 .field dd {
+  min-width: 0;
   margin: 0;
   font-size: 13px;
+  line-height: 20px;
   color: var(--el-text-color-primary);
+}
+
+.field--models {
+  flex: 1;
 }
 
 .model-tags {
@@ -659,38 +794,141 @@ onMounted(() => {
   gap: 4px;
 }
 
-/* 顶栏图标按钮（与布局页保持一致的观感） */
 .icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   font-size: 15px;
   color: var(--el-text-color-secondary);
   cursor: pointer;
   background: transparent;
-  border: none;
-  border-radius: 7px;
-  transition: background-color var(--app-transition) ease;
+  border: 0;
+  border-radius: var(--el-border-radius-small);
+  transition: background-color var(--app-transition) ease, color var(--app-transition) ease;
 }
 
-.icon-button:hover {
+.icon-button:hover,
+.icon-button:focus-visible {
   color: var(--el-text-color-primary);
   background-color: var(--el-fill-color-light);
 }
 
-.card-header {
+.binding-panel__actions {
   display: flex;
+  flex: none;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
 }
 
-/* 模板按钮横向排布，空间不足自动换行 */
+.table-shell {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.binding-table {
+  width: 100%;
+}
+
+.binding-table :deep(.el-table__inner-wrapper::before) {
+  display: none;
+}
+
+.template-strip {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.65fr) minmax(0, 1.35fr);
+  gap: 18px;
+  align-items: center;
+  padding: 16px 18px;
+  background-color: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: var(--el-border-radius-base);
+}
+
+.template-strip h3,
+.editor-block__head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.template-strip p,
+.editor-block__head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
 .template-row {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.template-fallback {
+  justify-self: end;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.provider-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+  margin-top: 18px;
+}
+
+.editor-block {
+  min-width: 0;
+  padding: 18px 18px 2px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--el-border-radius-base);
+}
+
+.editor-block__head {
+  margin-bottom: 18px;
+}
+
+.field-hint {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
+}
+
+.default-setting {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0 16px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.default-setting > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.default-setting strong {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--el-text-color-primary);
+}
+
+.default-setting span {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--el-text-color-secondary);
 }
 
 .full-width {
@@ -702,9 +940,78 @@ onMounted(() => {
   overflow-y: auto;
 }
 
-.switch-hint {
-  margin-left: 10px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+.editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 13px;
+}
+
+:global(.provider-editor-dialog.el-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 92vh;
+  margin-bottom: 0;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 12px;
+}
+
+:global(.provider-editor-dialog .el-dialog__header) {
+  padding: 18px 22px;
+  margin-right: 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+:global(.provider-editor-dialog .el-dialog__body) {
+  min-height: 0;
+  padding: 18px 22px 20px;
+  overflow-y: auto;
+}
+
+:global(.provider-editor-dialog .el-dialog__footer) {
+  flex-shrink: 0;
+  padding: 14px 22px;
+  background-color: var(--el-fill-color-light);
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+@media (max-width: 768px) {
+  .providers-page .page-header {
+    flex-direction: column;
+  }
+
+  .providers-page .page-header__actions {
+    flex-wrap: wrap;
+  }
+
+  .provider-editor-grid {
+    gap: 14px;
+  }
+
+  .template-strip {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .template-row {
+    justify-content: flex-start;
+  }
+
+  .template-fallback {
+    justify-self: start;
+  }
+}
+
+@media (max-width: 680px) {
+  .provider-grid,
+  .provider-editor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-footer {
+    flex-wrap: wrap;
+  }
 }
 </style>

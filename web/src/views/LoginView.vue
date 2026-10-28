@@ -1,92 +1,49 @@
 <template>
   <div class="login-page">
-    <!-- 左侧品牌区：装饰性光斑 + 产品定位文案。窄屏隐藏，只保留表单 -->
-    <section class="login-brand">
-      <div class="login-brand__glow login-brand__glow--1" />
-      <div class="login-brand__glow login-brand__glow--2" />
-
-      <div class="login-brand__content">
-        <div class="login-brand__mark">CR</div>
-        <h1 class="login-brand__title">cr-pilot</h1>
-        <p class="login-brand__slogan">GitLab 合并请求智能评审</p>
-
-        <ul class="login-brand__features">
-          <li v-for="feature in features" :key="feature.text">
-            <el-icon><component :is="feature.icon" /></el-icon>
-            <span>{{ feature.text }}</span>
-          </li>
+    <button class="theme-toggle" :title="theme === 'dark' ? '切换到亮色' : '切换到暗色'" @click="toggleTheme">
+      <el-icon><Sunny v-if="theme === 'dark'" /><Moon v-else /></el-icon>
+    </button>
+    <main class="login-sheet">
+      <section class="login-context">
+        <div class="brand"><span class="brand__mark">CR</span><strong>cr-pilot</strong></div>
+        <div class="context-copy">
+          <p class="context-title">GitLab 合并请求<br />智能评审控制台</p>
+          <p>集中管理评审记录、建议采纳、Prompt、模型与通知链路。</p>
+        </div>
+        <ul class="feature-ledger">
+          <li v-for="feature in features" :key="feature"><span>{{ feature }}</span></li>
         </ul>
-      </div>
+        <p class="copyright">© {{ year }} cr-pilot</p>
+      </section>
 
-      <p class="login-brand__footer">© {{ year }} cr-pilot</p>
-    </section>
-
-    <!-- 右侧表单区 -->
-    <section class="login-form-area">
-      <button class="login-theme-toggle" :title="theme === 'dark' ? '切换到亮色' : '切换到暗色'" @click="toggleTheme">
-        <el-icon><Sunny v-if="theme === 'dark'" /><Moon v-else /></el-icon>
-      </button>
-
-      <div class="login-form-wrap">
-        <header class="login-form__header">
-          <h2 class="login-form__title">欢迎回来</h2>
-          <p class="login-form__desc">请使用管理员账号登录控制台</p>
-        </header>
-
-        <el-form
-          ref="formRef"
-          :model="form"
-          :rules="rules"
-          label-position="top"
-          size="large"
-          @submit.prevent
-        >
-          <el-form-item label="用户名" prop="username">
-            <el-input v-model="form.username" placeholder="请输入用户名" autocomplete="username">
-              <template #prefix>
-                <el-icon><User /></el-icon>
-              </template>
-            </el-input>
-          </el-form-item>
-
-          <el-form-item label="密码" prop="password">
-            <el-input
-              v-model="form.password"
-              type="password"
-              placeholder="请输入密码"
-              show-password
-              autocomplete="current-password"
-              @keyup.enter="onSubmit"
-            >
-              <template #prefix>
-                <el-icon><Lock /></el-icon>
-              </template>
-            </el-input>
-          </el-form-item>
-
-          <el-form-item>
-            <el-button type="primary" :loading="submitting" class="login-submit" @click="onSubmit">
-              登 录
-            </el-button>
-          </el-form-item>
-        </el-form>
-      </div>
-    </section>
+      <section class="login-form-area">
+        <div class="login-form-wrap">
+          <header>
+            <h1>登录控制台</h1>
+            <p>使用已登记的控制台账号继续</p>
+          </header>
+          <el-form ref="formRef" :model="form" :rules="rules" label-position="top" size="large" @submit.prevent>
+            <el-form-item label="用户名" prop="username">
+              <el-input v-model="form.username" placeholder="请输入用户名" autocomplete="username"><template #prefix><el-icon><User /></el-icon></template></el-input>
+            </el-form-item>
+            <el-form-item label="密码" prop="password">
+              <el-input v-model="form.password" type="password" placeholder="请输入密码" show-password autocomplete="current-password" @keyup.enter="onSubmit"><template #prefix><el-icon><Lock /></el-icon></template></el-input>
+            </el-form-item>
+            <el-form-item><el-button type="primary" :loading="submitting" class="login-submit" @click="onSubmit">登录</el-button></el-form-item>
+          </el-form>
+          <p class="login-help">登录失败不会泄露账号是否存在；连续提交期间按钮保持锁定。</p>
+        </div>
+      </section>
+    </main>
   </div>
 </template>
 
 <script setup lang="ts">
-/**
- * 登录页。
- *
- * 左右分栏：左侧纯装饰的品牌区（窄屏隐藏），右侧表单。
- * 提交前本地校验非空；提交中禁用按钮防重复提交。登录成功后按 `redirect`
- * 查询参数回跳原目标（由路由守卫写入），缺省进入评审记录页。
- */
+/** Framed Sheet 登录页；保留校验、防重复提交、主题切换与 redirect 回跳。 */
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage, type FormInstance, type FormRules } from "element-plus";
-import { Document, Lock, Moon, Setting, Sunny, User } from "@element-plus/icons-vue";
+import { Lock, Moon, Sunny, User } from "@element-plus/icons-vue";
 import { isApiError, resetRedirectFlag } from "../api/client.ts";
 import { login } from "../stores/auth.ts";
 import { theme, toggleTheme } from "../stores/theme.ts";
@@ -96,230 +53,50 @@ const router = useRouter();
 const formRef = ref<FormInstance>();
 const submitting = ref(false);
 const form = reactive({ username: "", password: "" });
-
 const year = computed(() => new Date().getFullYear());
-
-/**
- * 品牌区卖点：与产品实际能力对应，不是营销话术。
- *
- * icon 必须是导入的组件对象而非字符串——本项目按组件逐个 import 图标，
- * 没有全局注册，传字符串会让 `component :is` 渲染出空标签。
- */
-const features = [
-  { icon: Document, text: "自动评审 MR 并输出行内评论" },
-  { icon: Setting, text: "环境变量与 Prompt 在线管理" },
-  { icon: User, text: "评审记录与评分统计留痕" },
-];
-
+const features = ["MR 行内评审与汇总评论", "项目级 Prompt 与模型配置", "评审统计与建议采纳追踪"];
 const rules: FormRules = {
   username: [{ required: true, message: "请输入用户名", trigger: "blur" }],
   password: [{ required: true, message: "请输入密码", trigger: "blur" }],
 };
-
-onMounted(() => {
-  // 进入登录页说明上一轮跳转已结束，重置防重复跳转标志。
-  resetRedirectFlag();
-});
-
+onMounted(() => resetRedirectFlag());
 async function onSubmit(): Promise<void> {
-  const valid = await formRef.value?.validate().catch(() => false);
-  if (!valid) return;
+  if (submitting.value) return;
   submitting.value = true;
   try {
+    const valid = await formRef.value?.validate().catch(() => false);
+    if (!valid) return;
     await login({ username: form.username, password: form.password });
     const redirect = typeof route.query.redirect === "string" ? route.query.redirect : "/reviews";
     await router.push(redirect);
   } catch (error) {
     ElMessage.error(isApiError(error) ? error.message : "登录失败");
-  } finally {
-    submitting.value = false;
-  }
+  } finally { submitting.value = false; }
 }
 </script>
 
 <style scoped>
-.login-page {
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
-  background-color: var(--el-bg-color-page);
-}
-
-/* ---------- 左侧品牌区 ---------- */
-.login-brand {
-  position: relative;
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 56px;
-  overflow: hidden;
-  background: linear-gradient(150deg, #4b4bc4 0%, #5b5bd6 45%, #7c7cdf 100%);
-}
-
-/* 两团模糊光斑：给纯色渐变加一点纵深，避免大面积死板 */
-.login-brand__glow {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(80px);
-  pointer-events: none;
-}
-
-.login-brand__glow--1 {
-  top: -120px;
-  right: -80px;
-  width: 420px;
-  height: 420px;
-  background: rgb(255 255 255 / 22%);
-}
-
-.login-brand__glow--2 {
-  bottom: -140px;
-  left: -60px;
-  width: 380px;
-  height: 380px;
-  background: rgb(129 140 248 / 40%);
-}
-
-.login-brand__content {
-  position: relative;
-  z-index: 1;
-  max-width: 420px;
-}
-
-.login-brand__mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 52px;
-  height: 52px;
-  font-size: 19px;
-  font-weight: 700;
-  color: #4b4bc4;
-  letter-spacing: 1px;
-  background: #fff;
-  border-radius: 14px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
-}
-
-.login-brand__title {
-  margin: 28px 0 8px;
-  font-size: 40px;
-  font-weight: 700;
-  line-height: 1.1;
-  color: #fff;
-  letter-spacing: -0.5px;
-}
-
-.login-brand__slogan {
-  margin: 0 0 40px;
-  font-size: 16px;
-  color: rgb(255 255 255 / 82%);
-}
-
-.login-brand__features {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 0;
-  margin: 0;
-  list-style: none;
-}
-
-.login-brand__features li {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 14px;
-  color: rgb(255 255 255 / 90%);
-}
-
-.login-brand__features .el-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  font-size: 15px;
-  background: rgb(255 255 255 / 16%);
-  border-radius: 8px;
-}
-
-.login-brand__footer {
-  position: relative;
-  z-index: 1;
-  margin: 0;
-  font-size: 12px;
-  color: rgb(255 255 255 / 60%);
-}
-
-/* ---------- 右侧表单区 ---------- */
-.login-form-area {
-  position: relative;
-  display: flex;
-  flex: 1;
-  align-items: center;
-  justify-content: center;
-  padding: 40px;
-  background-color: var(--el-bg-color);
-}
-
-.login-theme-toggle {
-  position: absolute;
-  top: 24px;
-  right: 24px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  font-size: 17px;
-  color: var(--el-text-color-secondary);
-  cursor: pointer;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  transition: background-color var(--app-transition) ease, color var(--app-transition) ease;
-}
-
-.login-theme-toggle:hover {
-  color: var(--el-text-color-primary);
-  background-color: var(--el-fill-color-light);
-}
-
-.login-form-wrap {
-  width: 100%;
-  max-width: 360px;
-}
-
-.login-form__header {
-  margin-bottom: 32px;
-}
-
-.login-form__title {
-  margin: 0 0 8px;
-  font-size: 26px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-}
-
-.login-form__desc {
-  margin: 0;
-  font-size: 14px;
-  color: var(--el-text-color-secondary);
-}
-
-.login-submit {
-  width: 100%;
-  margin-top: 8px;
-  font-weight: 500;
-  letter-spacing: 2px;
-}
-
-/* 窄屏：隐藏品牌区，只留表单 */
-@media (max-width: 900px) {
-  .login-brand {
-    display: none;
-  }
-}
+.login-page { display: grid; min-height: 100vh; place-items: center; padding: 32px; background: var(--app-content-bg); }
+.theme-toggle { position: fixed; top: 20px; right: 22px; display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 7px; background: transparent; color: var(--el-text-color-regular); cursor: pointer; }
+.theme-toggle:hover { background: var(--app-header-hover); color: var(--el-text-color-primary); }
+.login-sheet { display: grid; grid-template-columns: 1.05fr .95fr; width: min(980px, 100%); min-height: 600px; overflow: hidden; background: var(--el-bg-color); border: 1px solid var(--app-border-color); border-radius: 16px; }
+.login-context { display: flex; flex-direction: column; padding: 36px 40px; background: var(--app-sidebar-bg); }
+.brand { display: flex; align-items: center; gap: 10px; font-size: 17px; }
+.brand__mark { display: grid; place-items: center; width: 28px; height: 28px; border: 2px solid var(--el-text-color-primary); border-radius: 7px; font-size: 11px; font-weight: 700; }
+.context-copy { margin-top: 86px; }
+.context-title { margin: 0; font-size: 34px; font-weight: 700; line-height: 1.18; letter-spacing: -.03em; }
+.context-copy > p:not(.context-title) { max-width: 390px; margin: 16px 0 0; color: var(--el-text-color-regular); font-size: 14px; line-height: 1.65; }
+.feature-ledger { padding: 0; margin: 42px 0 0; list-style: none; border-top: 1px solid var(--app-border-color); }
+.feature-ledger li { display: flex; align-items: center; justify-content: space-between; min-height: 50px; border-bottom: 1px solid var(--app-border-color); font-size: 13px; }
+.feature-ledger b { color: #137a54; font-size: 12px; font-weight: 600; }
+.copyright { margin: auto 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
+.login-form-area { display: grid; place-items: center; padding: 38px 50px; }
+.login-form-wrap { width: 100%; max-width: 350px; }
+.login-form-wrap header { margin-bottom: 30px; }
+.login-form-wrap h1 { margin: 0; font-size: 25px; line-height: 1.2; }
+.login-form-wrap header p,.login-help { color: var(--el-text-color-regular); font-size: 13px; }
+.login-form-wrap header p { margin: 8px 0 0; }
+.login-submit { width: 100%; margin-top: 8px; }
+.login-help { margin: 18px 0 0; line-height: 1.55; }
+@media (max-width: 800px) { .login-sheet { grid-template-columns: 1fr; } .login-context { display: none; } .login-form-area { min-height: 560px; } }
 </style>

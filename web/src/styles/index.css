@@ -1,9 +1,9 @@
 /**
  * 全局样式与设计令牌。
  *
- * 视觉基准对齐 vue-element-plus-admin（ElementAdmin v3）的 token 体系：
- * 主色 #5b5bd6（靛蓝），页面底色 #f6f7fb，边框 #dfe3ea，
- * 文本三级灰阶 #273142 / #526077 / #7a879c。
+ * 视觉基准采用 Framed Sheet：主色沿用 #5b5bd6，框架底色 #eef2f7，
+ * 静止表面以 #dfe4eb / #e5e9ef 的轻边界分隔，文本三级灰阶为
+ * #20293a / #56647a / #5f6b7f。
  *
  * 全部通过 CSS 变量暴露，组件内只引用变量而不写字面色值，
  * 这样暗色主题只需覆盖 :root.dark 一处即可整体切换。
@@ -19,57 +19,81 @@ html:root {
   --el-color-primary-light-8: #dadaf7;
   --el-color-primary-light-9: #eeeeff;
   --el-color-primary-dark-2: #4949b8;
+  --el-color-success: #137a54;
+  --el-color-warning: #7a4d00;
+  --el-color-danger: #b72d2d;
+  --el-color-info: #56647a;
+  --el-color-error: #b72d2d;
 
   /* 背景与填充 */
   --el-bg-color: #ffffff;
-  --el-bg-color-page: #f6f7fb;
+  --el-bg-color-page: #eef2f7;
   --el-bg-color-overlay: #ffffff;
   --el-fill-color-blank: #ffffff;
   --el-fill-color-light: #f5f6fa;
 
   /* 边框 */
-  --el-border-color: #dfe3ea;
-  --el-border-color-light: #e7eaf0;
-  --el-border-color-lighter: #edf0f5;
+  --el-border-color: #dfe4eb;
+  --el-border-color-light: #e5e9ef;
+  --el-border-color-lighter: #edf1f5;
 
   /* 文本 */
-  --el-text-color-primary: #273142;
-  --el-text-color-regular: #526077;
-  --el-text-color-secondary: #7a879c;
+  --el-text-color-primary: #20293a;
+  --el-text-color-regular: #56647a;
+  --el-text-color-secondary: #5f6b7f;
 
   /* 圆角：Element Plus 默认 4px 偏硬，管理后台统一到 8px 更柔和 */
   --el-border-radius-base: 8px;
   --el-border-radius-small: 6px;
 
   /* ---- 应用外壳（自定义，不属 Element Plus） ---- */
-  --app-sidebar-width: 224px;
-  --app-sidebar-collapsed-width: 72px;
-  --app-sidebar-bg: #ffffff;
-  --app-sidebar-text: #64748b;
-  --app-sidebar-text-active: #5252c9;
-  --app-sidebar-active-bg: #eeeeff;
-  --app-header-bg: #ffffff;
-  --app-header-text: #526077;
-  --app-header-hover: #f4f5fb;
-  --app-logo-height: 60px;
-  --app-border-color: #e7eaf0;
+  --app-sidebar-width: 228px;
+  --app-sidebar-collapsed-width: 64px;
+  --app-sidebar-bg: #eef2f7;
+  --app-sidebar-text: #526078;
+  --app-sidebar-text-active: #20293a;
+  --app-sidebar-active-bg: #dfe5ee;
+  --app-header-bg: #eef2f7;
+  --app-header-text: #56647a;
+  --app-header-hover: #e3e8ef;
+  --app-logo-height: 48px;
+  --app-border-color: #e3e8ef;
   --app-content-padding: 24px;
-  --app-content-bg: #f6f7fb;
-  /* 双层阴影：1px 贴边 + 24px 弥散，比单层阴影更有层次 */
-  --app-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 8px 24px rgb(15 23 42 / 4%);
-  --app-shadow-hover: 0 1px 2px rgb(15 23 42 / 6%), 0 12px 32px rgb(15 23 42 / 8%);
+  --app-content-bg: #eef2f7;
+  --app-chart-primary: #146f8b;
+  --app-chart-secondary: #5964d8;
+  --app-chart-muted: #788397;
+  --app-chart-success: #137a54;
+  /* 静止表面不使用阴影；只给真正浮动的菜单/对话框保留框架阴影。 */
+  --app-shadow: none;
+  --app-shadow-hover: none;
   --app-transition: 0.2s;
 }
 
 /* ========== 暗色主题 ========== */
 html:root.dark {
-  --el-color-primary: #818cf8;
+  --el-color-primary: #8f96e8;
   --el-color-primary-light-3: #747ee0;
   --el-color-primary-light-5: #5e68bd;
   --el-color-primary-light-7: #454e86;
   --el-color-primary-light-8: #343c67;
   --el-color-primary-light-9: #252c49;
   --el-color-primary-dark-2: #9aa2fa;
+  --el-color-success: #5fd3a4;
+  --el-color-warning: #f6c453;
+  --el-color-danger: #ff8a8f;
+  --el-color-info: #b8c4d6;
+  --el-color-success-light-9: #17372c;
+  --el-color-success-light-8: #1f4a3b;
+  --el-color-warning-light-9: #3a2f18;
+  --el-color-warning-light-8: #4c3c1c;
+  --el-color-danger-light-9: #3d2026;
+  --el-color-danger-light-8: #512a32;
+  --el-color-error: #ff8a8f;
+  --el-color-error-light-9: #3d2026;
+  --el-color-error-light-8: #512a32;
+  --el-color-info-light-9: #1c2638;
+  --el-color-info-light-8: #273244;
 
   --el-bg-color: #151e30;
   --el-bg-color-page: #0b1120;
@@ -96,6 +120,10 @@ html:root.dark {
   --app-header-hover: #1c2638;
   --app-border-color: #273244;
   --app-content-bg: #0b1120;
+  --app-chart-primary: #52b8d0;
+  --app-chart-secondary: #9aa2fa;
+  --app-chart-muted: #a8b3c5;
+  --app-chart-success: #5fd3a4;
   --app-shadow: 0 1px 2px rgb(0 0 0 / 18%), 0 10px 30px rgb(0 0 0 / 18%);
   --app-shadow-hover: 0 1px 2px rgb(0 0 0 / 24%), 0 14px 36px rgb(0 0 0 / 24%);
 }
@@ -162,7 +190,7 @@ body,
 .page-container {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 
 /* 页面标题区：标题 + 描述 + 右侧操作 */
@@ -175,14 +203,15 @@ body,
 
 .page-header__title {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 28px;
+  font-size: 25px;
+  font-weight: 650;
+  line-height: 30px;
+  letter-spacing: -0.02em;
   color: var(--el-text-color-primary);
 }
 
 .page-header__desc {
-  margin: 4px 0 0;
+  margin: 7px 0 0;
   font-size: 13px;
   line-height: 20px;
   color: var(--el-text-color-secondary);
@@ -205,7 +234,8 @@ body,
 }
 
 .el-card:hover {
-  box-shadow: var(--app-shadow);
+  border-color: var(--el-border-color-light);
+  box-shadow: none;
 }
 
 .el-card__header {
@@ -238,9 +268,31 @@ body,
   min-height: 24px;
 }
 
-/* 按钮：默认圆角 8px 已在变量里，这里只补图标间距与字重 */
+/* 主要动作使用近黑色，品牌色留给数据、链接和选中状态。 */
 .el-button {
   font-weight: 500;
+}
+
+.el-button--primary:not(.is-link) {
+  --el-button-bg-color: #252b35;
+  --el-button-border-color: #252b35;
+  --el-button-hover-bg-color: #353d49;
+  --el-button-hover-border-color: #353d49;
+  --el-button-active-bg-color: #171b22;
+  --el-button-active-border-color: #171b22;
+}
+
+/* 暗色下语义文字较亮；实心危险按钮另设深底，避免白字直接落在浅粉色上。 */
+html.dark .el-button--danger:not(.is-link):not(.is-text):not(.is-plain) {
+  --el-button-bg-color: #a72b3c;
+  --el-button-border-color: #a72b3c;
+  --el-button-hover-bg-color: #b93044;
+  --el-button-hover-border-color: #b93044;
+  --el-button-active-bg-color: #8c2433;
+  --el-button-active-border-color: #8c2433;
+  --el-button-disabled-bg-color: #312732;
+  --el-button-disabled-border-color: #49343f;
+  --el-button-disabled-text-color: #b7a4ad;
 }
 
 /* 统计数字：等宽数字让多个卡片的小数点对齐 */

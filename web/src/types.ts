@@ -203,6 +203,8 @@ export interface WecomContact {
  */
 export interface AdoptionDimensionRow {
   name: string;
+  /** 仅项目维度返回，供采纳工作台按项目过滤。 */
+  projectId?: number;
   /** 已完成判定、进入采纳率分母的建议数。 */
   tracked: number;
   adopted: number;
