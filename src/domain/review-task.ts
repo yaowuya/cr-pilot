@@ -78,9 +78,9 @@ export interface MergeRequestTask {
   /**
    * 本次事件的用途：触发完整评审，还是只为采纳追踪登记一次「有新提交」。
    *
-   * `update` 事件且带 `oldrev` 表示 MR 有新提交：此时只需重新判定已有建议的
-   * 采纳状态，不该再跑一次完整评审——重复评审会浪费模型算力，也会重复发评论
-   * （虽然 marker 会去重，但结果与耗时都无意义）。
+   * `update` 且带 `oldrev` 表示新提交，`merge` / `close` 表示需要最终收口：这些
+   * 事件只重新判定已有建议，不该再跑完整评审——重复评审会浪费模型算力，也会
+   * 重复发评论（虽然 marker 会去重，但结果与耗时都无意义）。
    *
    * 缺省视为 `review`，保证既有调用方与测试行为不变。
    */
@@ -167,11 +167,23 @@ export interface GitlabClient {
    */
   getLatestHeadSha(projectId: number, iid: number, gitlabUrl?: string, gitlabToken?: string): Promise<string>;
   /**
+   * 一次取得采纳追踪所需的当前版本与 MR 生命周期。
+   *
+   * 可选是为了兼容既有离线适配器；追踪器在缺少该能力时沿用
+   * `getLatestHeadSha` 并保守视为 opened，不会擅自收口历史建议。
+   */
+  getMergeRequestTrackingState?(
+    projectId: number,
+    iid: number,
+    gitlabUrl?: string,
+    gitlabToken?: string,
+  ): Promise<{ headSha: string; state: "opened" | "closed" | "merged" }>;
+  /**
    * 读取某文件在指定 head 下的原始内容。
    *
    * 追踪判定需要「评审后这一行现在长什么样」，diff 无法还原完整文件上下文，
-   * 因此取 raw 文件。文件在该版本不存在时应抛出异常，由调用方记为 unknown，
-   * 不要返回空串——空串会被误判为「整行被删除」。
+   * 因此取 raw 文件。文件在该版本不存在时应抛出带 404 状态的异常，由调用方
+   * 判定为代码删除；限流、权限、超时与 5xx 必须保留原错误以便下一轮重试。
    */
   getFileRaw(
     projectId: number,

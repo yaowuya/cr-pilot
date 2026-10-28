@@ -3,36 +3,34 @@
  *
  * 判定主线（design/backend.md#状态并发与执行流程）：
  * 1. 取待追踪建议，按 MR 分组；
- * 2. 若 MR 最新 head 与该建议的 head 相同，说明还没有新提交，跳过；
+ * 2. 读取 MR 最新 head 与生命周期；opened 且版本未变继续等待，merged/closed 收口 pending；
  * 3. 拉取讨论，建立 marker → 是否已解决 的映射；
- * 4. 对每个「MR + 文件」只取一次文件内容，按指纹在原行附近重新定位；
- * 5. 按「是否变化 + 是否已解决」写入四态。
+ * 4. 按固定 head 读取文件内容，并在原行附近重新定位指纹；
+ * 5. 按「是否变化 + 是否已解决」写入判定态，同时记录本轮跳过原因。
  *
  * 失败一律降级：任何单条异常只记日志并保留原状态，下一轮重试；
  * 追踪属于从属能力，不能影响评审主流程。
  */
-import type { Discussion, GitlabClient } from "../domain/review-task.ts";
+import type { Discussion, GitlabClient, MergeRequestTask } from "../domain/review-task.ts";
 import { fingerprintLine, locateFingerprintLine, type FindingOutcome, type ReviewFinding } from "../domain/review-finding.ts";
 import type { ReviewFindingRepository } from "../domain/review-finding.ts";
 import type { Logger } from "../shared/logger.ts";
-import { openSecret } from "../shared/secret-box.ts";
+import { openSecret, sealSecret } from "../shared/secret-box.ts";
 
 /** 单轮最多处理的建议数：避免一轮扫描过久，剩余的下一轮继续。 */
 const DEFAULT_BATCH_SIZE = 200;
 
-/**
- * 文件行数允许的收缩容差（行）。
- *
- * 目标行号远大于当前文件行数时（差额超过该容差），说明文件被整体重写或截断，
- * 已无法把「指纹消失」归因为这一行被改，只能记 unknown。容差取 3 与定位窗口
- * 一致：窗口内的正常增删不会触发降级。
- */
-const LINE_SHRINK_TOLERANCE = 3;
+/** 只读取公开状态码元数据；错误正文可能含敏感信息，不能用于分支或日志补充。 */
+function errorStatus(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("status" in error)) return undefined;
+  const status = Number((error as { status?: unknown }).status);
+  return Number.isInteger(status) ? status : undefined;
+}
 
 /** 追踪用例依赖。 */
 export interface AdoptionTrackerDeps {
   findings: ReviewFindingRepository;
-  client: Pick<GitlabClient, "getLatestHeadSha" | "getFileRaw" | "getDiscussions">;
+  client: Pick<GitlabClient, "getLatestHeadSha" | "getMergeRequestTrackingState" | "getFileRaw" | "getDiscussions">;
   logger: Logger;
   /** 单轮处理上限，缺省 200。 */
   batchSize?: number;
@@ -74,6 +72,88 @@ export function decideOutcome(changed: boolean, resolved: boolean): FindingOutco
   return resolved ? "resolved-without-change" : "ignored";
 }
 
+/**
+ * 把定时器与 webhook 触发合并成 single-flight：一个繁忙周期最多当前轮加一次补跑。
+ * 这样既能尽快响应新提交，也不会因事件风暴与定时器重叠并发请求同一批 MR。
+ */
+export function createAdoptionTrackingTrigger(tracker: AdoptionTracker, logger: Logger): () => Promise<void> {
+  let active: Promise<void> | undefined;
+  let rerunRequested = false;
+  let rerunStarted = false;
+
+  const runSafely = async (): Promise<void> => {
+    try {
+      await tracker.runOnce();
+    } catch (error) {
+      logger.warn("采纳追踪轮次异常", {
+        错误类型: error instanceof Error ? error.name : typeof error,
+        状态码: errorStatus(error),
+      });
+    }
+  };
+
+  return (): Promise<void> => {
+    if (active) {
+      if (!rerunStarted) rerunRequested = true;
+      return active;
+    }
+    rerunRequested = false;
+    rerunStarted = false;
+    active = (async () => {
+      await runSafely();
+      if (rerunRequested) {
+        rerunRequested = false;
+        rerunStarted = true;
+        await runSafely();
+      }
+    })().finally(() => {
+      active = undefined;
+      rerunRequested = false;
+      rerunStarted = false;
+    });
+    return active;
+  };
+}
+
+/**
+ * 处理一条采纳追踪 webhook：先刷新该 MR 的 pending 凭据，再触发 single-flight。
+ * 凭据刷新失败不应阻塞追踪；日志只保留任务标识与数量，不记录令牌或原始异常。
+ */
+export function createAdoptionTrackingEventHandler(deps: {
+  findings: Pick<ReviewFindingRepository, "refreshTrackingCredentials">;
+  secretKey: string;
+  enabled: boolean;
+  trigger: () => Promise<void>;
+  logger: Logger;
+}): (task: MergeRequestTask) => void {
+  return (task): void => {
+    if (!deps.enabled) {
+      deps.logger.info("MR 事件未触发采纳追踪：功能已关闭", { 项目ID: task.projectId, MR编号: task.iid });
+      return;
+    }
+    let refreshed = 0;
+    try {
+      if (task.gitlabToken) {
+        refreshed = deps.findings.refreshTrackingCredentials(
+          task.projectId,
+          task.iid,
+          task.gitlabUrl ?? "",
+          sealSecret(task.gitlabToken, deps.secretKey),
+        );
+      }
+    } catch {
+      deps.logger.warn("刷新采纳追踪凭据失败，保留原凭据", { 项目ID: task.projectId, MR编号: task.iid });
+    }
+    void deps.trigger();
+    deps.logger.info("MR 事件已触发采纳追踪", {
+      项目ID: task.projectId,
+      MR编号: task.iid,
+      已刷新建议凭据数: refreshed,
+      已启用: true,
+    });
+  };
+}
+
 /** 创建追踪用例。 */
 export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracker {
   const { findings, client, logger } = deps;
@@ -88,6 +168,7 @@ export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracke
   async function trackOne(
     finding: ReviewFinding,
     headSha: string,
+    gitlabUrl: string,
     token: string,
     resolution: Map<string, boolean>,
   ): Promise<FindingOutcome> {
@@ -95,16 +176,12 @@ export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracke
     try {
       // 必须读**最新** head 的文件：用评审时的旧 head 会读到旧内容，
       // 每次都判成「未变化」，采纳率永远是 0。
-      content = await client.getFileRaw(finding.projectId, finding.mrIid, finding.path, headSha, finding.gitlabUrl, token);
+      content = await client.getFileRaw(finding.projectId, finding.mrIid, finding.path, headSha, gitlabUrl, token);
     } catch (error) {
-      // 文件在该版本不存在（被删或路径变化）时无法判定，如实记 unknown。
-      logger.debug("追踪：读取文件失败，记为 unknown", {
-        项目ID: finding.projectId,
-        MR编号: finding.mrIid,
-        文件: finding.path,
-        错误: error instanceof Error ? error.message : String(error),
-      });
-      return "unknown";
+      // MR 状态已用同一凭据读取成功，因此这里的明确 404 可解释为原路径在新版本消失；
+      // 限流、超时和 5xx 只是暂时不可读，继续抛出以保留原状态并在下一轮重试。
+      if (errorStatus(error) === 404) return "adopted";
+      throw error;
     }
 
     // 文件读到了但窗口内找不到原指纹，说明目标行已被改写或删除——这本身就是
@@ -113,105 +190,157 @@ export function createAdoptionTracker(deps: AdoptionTrackerDeps): AdoptionTracke
     const resolved = resolution.get(finding.marker) === true;
     if (located) return decideOutcome(false, resolved);
 
-    // 文件行数远少于原行号，说明文件被整体重写或截断，属于无法可靠定位，
-    // 如实记 unknown 而不是猜成「已采纳」。
-    const lineCount = content.split(/\r?\n/).length;
-    if (finding.line > lineCount + LINE_SHRINK_TOLERANCE) return "unknown";
+    // 文件已成功读取但原指纹消失，说明目标代码被改写或删除；整体重写/截断同样
+    // 属于代码发生变化，按已确认口径记为 adopted，而不是永久降级为 unknown。
     return decideOutcome(true, resolved);
+  }
+
+  /**
+   * 选择能读取该 MR 的任务级凭据：优先 pending 的新凭据，再回退历史判定行。
+   * 认证失败时尝试下一份去重凭据；服务端/网络错误不轮换，避免掩盖真实故障。
+   */
+  async function readTrackingState(list: ReviewFinding[]): Promise<{
+    headSha: string;
+    state: "opened" | "closed" | "merged";
+    gitlabUrl: string;
+    token: string;
+  } | undefined> {
+    const ordered = [...list].sort((left, right) => {
+      const pendingOrder = Number(right.outcome === "pending") - Number(left.outcome === "pending");
+      return pendingOrder || right.createdAt - left.createdAt;
+    });
+    const seen = new Set<string>();
+    let lastAuthError: unknown;
+    for (const finding of ordered) {
+      const token = deps.secretKey ? openSecret(finding.gitlabTokenSealed, deps.secretKey) : "";
+      if (!token) continue;
+      const key = `${finding.gitlabUrl}\u0000${token}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        const state = client.getMergeRequestTrackingState
+          ? await client.getMergeRequestTrackingState(finding.projectId, finding.mrIid, finding.gitlabUrl, token)
+          : {
+              headSha: await client.getLatestHeadSha(finding.projectId, finding.mrIid, finding.gitlabUrl, token),
+              state: "opened" as const,
+            };
+        return { ...state, gitlabUrl: finding.gitlabUrl, token };
+      } catch (error) {
+        if ([401, 403, 404].includes(errorStatus(error) ?? 0)) {
+          lastAuthError = error;
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (lastAuthError) throw lastAuthError;
+    return undefined;
   }
 
   return {
     async runOnce() {
-      const pending = findings.listPendingTracking(batchSize);
-      if (pending.length === 0) {
-        // 没有可追踪项时也要说明原因：分母为 0 会让页面采纳率显示「—」，
-        // 若不留痕，运维无法判断是「还没到追踪时机」还是「全部建议不可追踪」。
-        const untrackable = findings.countUntrackable();
-        logger.info("采纳追踪无可追踪建议", {
-          可追踪建议数: pending.length,
-          不可追踪建议数: untrackable.total,
-          其中降级并入汇总: untrackable.fallback,
-          其中有行锚点但无法定位: untrackable.unknown,
-        });
-        return;
-      }
-
-      // 按 MR 分组：同一 MR 只需查一次最新 head 与一次讨论列表。
+      const candidates = findings.listPendingTracking(batchSize);
+      // 按 MR 分组：同一 MR 只需读取一次生命周期、最新 head 与讨论列表。
       const byMr = new Map<string, ReviewFinding[]>();
-      for (const finding of pending) {
-        const key = `${finding.projectId}:${finding.mrIid}`;
+      for (const finding of candidates) {
+        // projectId/MR iid 只在单个 GitLab 实例内唯一；实例地址必须参与隔离键。
+        const key = `${finding.gitlabUrl}\u0000${finding.projectId}:${finding.mrIid}`;
         const list = byMr.get(key);
         if (list) list.push(finding);
         else byMr.set(key, [finding]);
       }
 
-      let tracked = 0;
+      let evaluated = 0;
+      let terminalFinalized = 0;
+      let waitingSameHead = 0;
+      let alreadyCurrent = 0;
+      let missingCredentials = 0;
+      let unavailableHead = 0;
+      let failedSuggestions = 0;
+      let failedMrs = 0;
+
       for (const list of byMr.values()) {
         const first = list[0];
+        // 状态读取失败影响整组；讨论读取失败只影响真正需要判定的子集。
+        let affectedByMrFailure = list.length;
         try {
-          // 没有任务级凭据时跳过：宁可记不上数据，也不用未鉴权身份打 GitLab。
-          const token = deps.secretKey ? openSecret(first.gitlabTokenSealed, deps.secretKey) : "";
-          if (!token) {
-            logger.debug("追踪：缺少任务级凭据，跳过该 MR", {
-              项目ID: first.projectId,
-              MR编号: first.mrIid,
-            });
+          const credential = await readTrackingState(list);
+          if (!credential) {
+            missingCredentials += list.length;
+            logger.debug("追踪：缺少任务级凭据，跳过该 MR", { 项目ID: first.projectId, MR编号: first.mrIid });
             continue;
           }
-
-          const latestHead = await client.getLatestHeadSha(first.projectId, first.mrIid, first.gitlabUrl, token);
-          if (!latestHead) continue;
-
-          // 同一 MR 内不同建议可能已按不同版本判定过：逐条比较，已是最新版本的不再重判，
-          // 也避免为它们重复读取文件。
-          const needsTrack = list.filter((finding) => finding.headSha !== latestHead);
+          const { gitlabUrl: mrGitlabUrl, token: mrToken, ...trackingState } = credential;
+          if (!trackingState.headSha) {
+            unavailableHead += list.length;
+            continue;
+          }
+          const terminal = trackingState.state === "merged" || trackingState.state === "closed";
+          const terminalPending = new Set<number>();
+          const needsTrack: ReviewFinding[] = [];
+          for (const finding of list) {
+            if (terminal && finding.outcome === "pending") terminalPending.add(finding.id);
+            if (finding.headSha !== trackingState.headSha) {
+              needsTrack.push(finding);
+            } else if (terminal && finding.outcome === "pending") {
+              needsTrack.push(finding);
+            } else if (finding.outcome === "pending") {
+              waitingSameHead += 1;
+            } else {
+              alreadyCurrent += 1;
+            }
+          }
           if (needsTrack.length === 0) continue;
+          affectedByMrFailure = needsTrack.length;
 
-          const discussions = await client.getDiscussions(first.projectId, first.mrIid, first.gitlabUrl, token);
+          const discussions = await client.getDiscussions(first.projectId, first.mrIid, mrGitlabUrl, mrToken);
           const resolution = buildResolutionMap(discussions);
-
           for (const finding of needsTrack) {
             try {
-              const findingToken = deps.secretKey ? openSecret(finding.gitlabTokenSealed, deps.secretKey) : "";
-              if (!findingToken) {
-                logger.debug("追踪：该建议缺少凭据，跳过", { 建议: finding.findingId });
-                continue;
-              }
-              const outcome = await trackOne(finding, latestHead, findingToken, resolution);
-              // 一并记录本次评估的 head：下一轮据此判断是否又有新提交，
-              // 避免对同一版本反复请求 GitLab。
-              findings.updateOutcome(finding.id, outcome, Date.now(), latestHead);
-              tracked += 1;
+              // 状态、讨论和文件必须使用同一份已验证凭据；否则历史 token 的权限型 404
+              // 可能被误判为文件删除并错误计为 adopted。
+              const outcome = await trackOne(finding, trackingState.headSha, mrGitlabUrl, mrToken, resolution);
+              findings.updateOutcome(finding.id, outcome, Date.now(), trackingState.headSha);
+              evaluated += 1;
+              if (terminalPending.has(finding.id)) terminalFinalized += 1;
             } catch (error) {
+              failedSuggestions += 1;
               logger.warn("追踪单条建议失败，保留原状态", {
                 项目ID: finding.projectId,
                 MR编号: finding.mrIid,
                 建议: finding.findingId,
-                错误: error instanceof Error ? error.message : String(error),
+                错误类型: error instanceof Error ? error.name : typeof error,
+                状态码: errorStatus(error),
               });
             }
           }
         } catch (error) {
-          // 单 MR 失败不影响其他 MR；下一轮定时器会重试。
+          failedMrs += 1;
+          failedSuggestions += affectedByMrFailure;
           logger.warn("追踪 MR 失败，跳过本轮", {
             项目ID: first.projectId,
             MR编号: first.mrIid,
-            错误: error instanceof Error ? error.message : String(error),
+            错误类型: error instanceof Error ? error.name : typeof error,
+            状态码: errorStatus(error),
           });
         }
       }
 
-      if (tracked > 0 || pending.length > 0) {
-        // 同时输出不可追踪条数：否则「已判定 0 条」看不出是全部降级还是缺少凭据。
-        const untrackable = findings.countUntrackable();
-        logger.info("采纳追踪完成一轮", {
-          已判定建议数: tracked,
-          待处理建议数: pending.length,
-          不可追踪建议数: untrackable.total,
-          其中降级并入汇总: untrackable.fallback,
-          其中有行锚点但无法定位: untrackable.unknown,
-        });
-      }
+      const untrackable = findings.countUntrackable();
+      logger.info(candidates.length === 0 ? "采纳追踪无扫描候选" : "采纳追踪完成一轮", {
+        扫描候选建议数: candidates.length,
+        已判定建议数: evaluated,
+        其中终态收口: terminalFinalized,
+        等待新提交建议数: waitingSameHead,
+        已是最新判定建议数: alreadyCurrent,
+        缺少凭据建议数: missingCredentials,
+        最新版本不可用建议数: unavailableHead,
+        失败MR数: failedMrs,
+        失败建议数: failedSuggestions,
+        不可追踪建议数: untrackable.total,
+        其中降级并入汇总: untrackable.fallback,
+        其中有行锚点但无法定位: untrackable.unknown,
+      });
     },
   };
 }

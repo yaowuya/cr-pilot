@@ -97,7 +97,8 @@ paths["/review/webhook"] = {
       "",
       "**项目白名单**：仅允许 Prompt 管理中非 default 记录的显式关联项目。未关联返回 403，配置读取异常返回 503，均不入评审队列。",
       "沿用完整路径和短项目名匹配；default、YAML 或 Markdown 兜底不能授予项目评审资格。队列任务开始时会再次复核。",
-      "已装配的历史采纳追踪分支不受该限制；若追踪事件回退到完整评审，则同样检查项目白名单。",
+      "带 oldrev 的 update、merge 与 close 事件只触发已有建议的采纳追踪/终态收口，不重复运行完整评审；追踪分支不受项目白名单限制。",
+      "若追踪入口未装配而回退到完整评审，则仍检查项目白名单。",
       "",
       "**来源校验**：不校验 `X-Gitlab-Token` 的 secret 语义。一个 GitLab 实例有多个项目、",
       "每个项目 secret 各不相同，单实例无法用一份全局 secret 校验所有来源，",
@@ -878,9 +879,10 @@ paths["/api/reviews/adoption"] = {
     description: [
       "统计 AI 评审建议在后续提交中是否真的改了代码。",
       "",
-      "**口径**：采纳率 = 代码已变化的建议数 ÷ 可统计建议数。指纹只能证明目标行变了，不能证明改得对，因此该指标是「代码变化率」。",
+      "**口径**：采纳率 = 代码已变化的建议数 ÷ 已完成判定的可统计建议数。指纹只能证明目标行变了，不能证明改得对，因此该指标是「代码变化率」。",
+      "`pending` 表示有行锚点但仍等待新提交或 MR 合并/关闭收口，不按未采纳计入分母。",
       "",
-      "**不可统计部分单列**：`fallback` 为降级并入汇总评论的建议（无行锚点），`unknown` 为文件被删除或大重构导致无法定位的建议，二者均不计入分母。",
+      "**不可统计部分单列**：`fallback` 为降级并入汇总评论的建议（无行锚点），`unknown` 为历史数据或其他无法可靠判定的建议，二者均不计入分母；明确删除或指纹消失记为已采纳。",
       "",
       "**历史数据**：功能上线前的评审没有建议明细，统计只覆盖上线后的数据。",
     ].join("\n"),
@@ -1424,11 +1426,12 @@ const schemas: Record<string, JsonObject> = {
 
   AdoptionDimensionRow: {
     type: "object",
-    required: ["name", "tracked", "adopted", "rate"],
+    required: ["name", "tracked", "adopted", "pending", "rate"],
     properties: {
       name: { type: "string", example: "group/app" },
-      tracked: { type: "integer", description: "可统计建议数（不含 unknown 与不可追踪项）", example: 12 },
+      tracked: { type: "integer", description: "已完成判定、进入采纳率分母的建议数", example: 12 },
       adopted: { type: "integer", description: "代码已变化的建议数", example: 7 },
+      pending: { type: "integer", description: "有行锚点、等待新提交或 MR 结束判定的建议数", example: 5 },
       rate: { type: "number", nullable: true, description: "采纳率 0-1；分母为 0 时为 null", example: 0.583 },
     },
   },
@@ -1439,10 +1442,11 @@ const schemas: Record<string, JsonObject> = {
     properties: {
       total: {
         type: "object",
-        required: ["tracked", "adopted", "rate"],
+        required: ["tracked", "adopted", "pending", "rate"],
         properties: {
           tracked: { type: "integer", example: 30 },
           adopted: { type: "integer", example: 18 },
+          pending: { type: "integer", description: "有行锚点、等待判定的建议数", example: 43 },
           rate: { type: "number", nullable: true, example: 0.6 },
         },
       },
@@ -1451,7 +1455,7 @@ const schemas: Record<string, JsonObject> = {
         required: ["fallback", "unknown"],
         properties: {
           fallback: { type: "integer", description: "降级并入汇总评论、无行锚点的建议数", example: 4 },
-          unknown: { type: "integer", description: "文件被删除或无法定位的建议数", example: 2 },
+          unknown: { type: "integer", description: "历史数据或其他无法可靠判定的建议数；明确删除记为已采纳", example: 2 },
         },
       },
       byProject: { type: "array", items: { $ref: "#/components/schemas/AdoptionDimensionRow" } },

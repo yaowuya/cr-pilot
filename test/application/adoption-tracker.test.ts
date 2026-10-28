@@ -51,6 +51,7 @@ function repoWith(items: ReviewFinding[]): ReviewFindingRepository & { rows: Rev
       const unknown = rows.filter((row) => row.outcome === "unknown").length;
       return { total: fallback + unknown, fallback, unknown };
     },
+    refreshTrackingCredentials: () => 0,
     updateOutcome(id, outcome, trackedAt, evaluatedHeadSha) {
       const row = rows.find((item) => item.id === id);
       if (row) {
@@ -60,7 +61,7 @@ function repoWith(items: ReviewFinding[]): ReviewFindingRepository & { rows: Rev
       }
     },
     getAdoptionStats: () => ({
-      total: { tracked: 0, adopted: 0, rate: null },
+      total: { tracked: 0, adopted: 0, pending: 0, rate: null },
       untrackable: { fallback: 0, unknown: 0 },
       byProject: [],
       byCommitter: [],
@@ -117,16 +118,32 @@ test("已解决但代码未变记 resolved-without-change", async () => {
   assert.equal(repo.rows[0].outcome, "resolved-without-change");
 });
 
-test("文件读取失败记 unknown，不猜测", async () => {
+test("文件明确 404 表示原路径已删除，记为 adopted", async () => {
   const repo = repoWith([makeFinding()]);
   const tracker = createAdoptionTracker({
     findings: repo,
-    client: clientStub({ file: async () => { throw new Error("404"); } }),
+    client: clientStub({ file: async () => { throw Object.assign(new Error("not found"), { status: 404 }); } }),
     logger: createSilentLogger(),
     secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
-  assert.equal(repo.rows[0].outcome, "unknown");
+  assert.equal(repo.rows[0].outcome, "adopted");
+});
+
+test("文件读取瞬时失败保留 pending，下一轮继续重试", async () => {
+  const repo = repoWith([makeFinding()]);
+  let calls = 0;
+  const tracker = createAdoptionTracker({
+    findings: repo,
+    client: clientStub({ file: async () => { calls += 1; throw Object.assign(new Error("temporary"), { status: 503 }); } }),
+    logger: createSilentLogger(),
+    secretKey: TRACKING_SALT,
+  });
+  await tracker.runOnce();
+  await tracker.runOnce();
+  assert.equal(calls, 2);
+  assert.equal(repo.rows[0].outcome, "pending");
+  assert.equal(repo.rows[0].trackedAt, null);
 });
 
 test("文件保留但指纹消失，说明该行已被改写，记 adopted", async () => {
@@ -142,7 +159,7 @@ test("文件保留但指纹消失，说明该行已被改写，记 adopted", asy
   assert.equal(repo.rows[0].outcome, "adopted");
 });
 
-test("文件被大幅截断、原行号远超现有行数时记 unknown", async () => {
+test("文件大幅截断导致目标行删除时记 adopted", async () => {
   const repo = repoWith([makeFinding({ line: 100 })]);
   const tracker = createAdoptionTracker({
     findings: repo,
@@ -151,7 +168,7 @@ test("文件被大幅截断、原行号远超现有行数时记 unknown", async 
     secretKey: TRACKING_SALT,
   });
   await tracker.runOnce();
-  assert.equal(repo.rows[0].outcome, "unknown", "整体重写时无法归因到单行，不能猜");
+  assert.equal(repo.rows[0].outcome, "adopted", "文件可读且原指纹消失，说明目标代码已变化或删除");
 });
 
 test("head 未变时跳过，不改状态", async () => {
@@ -201,7 +218,7 @@ test("单条 MR 失败不影响其他 MR", async () => {
   assert.notEqual(rows[1].outcome, "pending", "另一个 MR 不受影响");
 });
 
-test("decideOutcome 四态组合正确", () => {
+test("decideOutcome 变化与解决状态组合正确", () => {
   assert.equal(decideOutcome(true, false), "adopted");
   assert.equal(decideOutcome(true, true), "adopted", "改动即采纳，解决状态不影响结论");
   assert.equal(decideOutcome(false, true), "resolved-without-change");
