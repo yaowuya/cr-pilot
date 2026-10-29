@@ -53,13 +53,17 @@ export interface ReviewStats {
 
 /** GitLab 合并接口支持的策略；不提供 rebase 等隐式降级方式。 */
 export type AutoMergeMethod = "merge" | "squash";
+/** 自动合并允许的 MR 目标分支范围。 */
+export type AutoMergeTargetMode = "default" | "specified" | "any";
 
 /** 项目级自动合并策略。默认关闭，启用后仍受服务端固定安全门约束。 */
 export interface ProjectAutoMergePolicy {
   enabled: boolean;
   /** 评审最低分，闭区间 1..100。 */
   minimumScore: number;
-  /** 只做精确分支名匹配，不是 glob 或正则。 */
+  /** 旧响应可缺省；前端按分支列表推导 specified/default。 */
+  targetMode?: AutoMergeTargetMode;
+  /** specified 模式下精确匹配，不是 glob 或正则。 */
   targetBranches: string[];
   method: AutoMergeMethod;
   removeSourceBranch: boolean;

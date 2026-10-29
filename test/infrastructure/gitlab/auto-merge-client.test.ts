@@ -31,6 +31,19 @@ function clientWith(respond: (call: FetchCall) => Response) {
   return { client, calls };
 }
 
+test("项目默认分支读取使用任务级实例与 token，不缓存或猜测缺失字段", async () => {
+  const { client, calls } = clientWith(() => response(200, { default_branch: "main" }));
+  assert.ok(client.getProjectDefaultBranch);
+  assert.equal(await client.getProjectDefaultBranch(42, "https://gitlab.task.example", "TASK-TOKEN"), "main");
+  assert.equal(calls[0].url, "https://gitlab.task.example/api/v4/projects/42");
+  assert.equal((calls[0].init.headers as Record<string, string>)["PRIVATE-TOKEN"], "TASK-TOKEN");
+
+  const missing = clientWith(() => response(200, {}));
+  assert.ok(missing.client.getProjectDefaultBranch);
+  await assert.rejects(missing.client.getProjectDefaultBranch(42), /默认分支/);
+  assert.equal(missing.calls.length, 1);
+});
+
 test("合并请求使用 PUT、expected sha 与明确的 squash/删源分支字段", async () => {
   const { client, calls } = clientWith(() => response(200, { state: "merged", sha: "a".repeat(40), merge_commit_sha: "b".repeat(40) }));
   assert.ok(client.mergeMergeRequest);

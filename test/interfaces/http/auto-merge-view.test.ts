@@ -60,18 +60,31 @@ test("非管理员仍可查看受保护 Prompt，但删除入口会在请求前�
   assert.match(view, /@click="openEdit\(row\)">编辑/);
 });
 
-test("首次启用或新开启删除源分支时，保存前汇总二次确认", () => {
+test("目标分支限制用 default / specified / any 三种明确模式，且不暗示系统改写 MR", () => {
+  assert.match(view, /仅项目默认分支（推荐）/);
+  assert.match(view, /指定目标分支/);
+  assert.match(view, /任意目标分支（危险）/);
+  assert.match(view, /系统始终合并到 MR 当前目标分支，不会修改目标；合并身份由本次 Webhook 的 X-Gitlab-Token 所属 GitLab 账号决定。/);
+  assert.match(view, /form\.autoMergePolicies\[projectKey\(project\)\]\.targetMode === 'specified'/);
+  assert.match(view, /form\.autoMergePolicies\[projectKey\(project\)\]\.targetMode === 'any'[\s\S]{0,300}(危险|所有目标分支)/);
+  assert.match(view, /@change="onAutoMergeTargetModeChange\(project, \$event\)"/);
+});
+
+test("首次启用、删除源分支或切换任意目标时，保存前汇总二次确认", () => {
   assert.match(view, /summarizeAutoMergeConfirmation/);
   assert.match(view, /enabledProjects/);
   assert.match(view, /removeSourceBranchProjects/);
+  assert.match(view, /anyTargetProjects/);
   assert.match(view, /ElMessageBox\.confirm/);
   assert.match(view, /启用自动合并/);
   assert.match(view, /删除源分支/);
+  assert.match(view, /允许任意目标分支/);
   assert.match(view, /critical\/high/);
 });
 
 test("前端类型声明 camelCase 自动合并响应契约", () => {
   assert.match(types, /export type AutoMergeMethod = "merge" \| "squash"/);
-  assert.match(types, /export interface ProjectAutoMergePolicy[\s\S]*enabled:\s*boolean[\s\S]*minimumScore:\s*number[\s\S]*targetBranches:\s*string\[\][\s\S]*method:\s*AutoMergeMethod[\s\S]*removeSourceBranch:\s*boolean/);
+  assert.match(types, /export type AutoMergeTargetMode = "default" \| "specified" \| "any"/);
+  assert.match(types, /export interface ProjectAutoMergePolicy[\s\S]*enabled:\s*boolean[\s\S]*minimumScore:\s*number[\s\S]*targetMode\?:\s*AutoMergeTargetMode[\s\S]*targetBranches:\s*string\[\][\s\S]*method:\s*AutoMergeMethod[\s\S]*removeSourceBranch:\s*boolean/);
   assert.match(types, /export interface ProjectReviewSetting[\s\S]*autoMergePolicy\?:\s*ProjectAutoMergePolicy/);
 });

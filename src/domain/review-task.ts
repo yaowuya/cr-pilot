@@ -161,6 +161,8 @@ export interface AutoMergeDecisionInput {
   currentState: "opened" | "closed" | "merged" | "other";
   reviewedTargetBranch?: string;
   currentTargetBranch?: string;
+  reviewedDefaultBranch?: string;
+  currentDefaultBranch?: string;
 }
 
 export type AutoMergeBlockReason =
@@ -184,6 +186,9 @@ export type AutoMergeBlockReason =
   | "diff-refs-changed"
   | "target-branch-missing"
   | "target-branch-changed"
+  | "default-branch-missing"
+  | "default-branch-changed"
+  | "target-branch-not-default"
   | "target-branch-not-allowed";
 
 export type AutoMergeDecision =
@@ -246,7 +251,11 @@ export function decideAutoMerge(input: AutoMergeDecisionInput): AutoMergeDecisio
   }
   if (!input.reviewedTargetBranch || !input.currentTargetBranch) return { allowed: false, reason: "target-branch-missing" };
   if (input.currentTargetBranch !== input.reviewedTargetBranch) return { allowed: false, reason: "target-branch-changed" };
-  if (!currentPolicy.targetBranches.includes(input.currentTargetBranch)) {
+  if (currentPolicy.targetMode === "default") {
+    if (!input.reviewedDefaultBranch || !input.currentDefaultBranch) return { allowed: false, reason: "default-branch-missing" };
+    if (input.reviewedDefaultBranch !== input.currentDefaultBranch) return { allowed: false, reason: "default-branch-changed" };
+    if (input.currentTargetBranch !== input.currentDefaultBranch) return { allowed: false, reason: "target-branch-not-default" };
+  } else if (currentPolicy.targetMode === "specified" && !currentPolicy.targetBranches.includes(input.currentTargetBranch)) {
     return { allowed: false, reason: "target-branch-not-allowed" };
   }
   return {
@@ -264,15 +273,17 @@ function validDiffRefs(refs: DiffRefs | undefined): refs is DiffRefs {
 }
 
 function validAutoMergePolicy(policy: AutoMergePolicy): boolean {
-  return Number.isInteger(policy.minimumScore) && policy.minimumScore >= 1 && policy.minimumScore <= 100 &&
-    (policy.method === "merge" || policy.method === "squash") && policy.targetBranches.length > 0 &&
-    new Set(policy.targetBranches).size === policy.targetBranches.length &&
+  const branchesValid = new Set(policy.targetBranches).size === policy.targetBranches.length &&
     policy.targetBranches.every((branch) => branch.length > 0 && branch === branch.trim());
+  const targetScopeValid = policy.targetMode === "specified" ? policy.targetBranches.length > 0 :
+    (policy.targetMode === "default" || policy.targetMode === "any") && policy.targetBranches.length === 0;
+  return Number.isInteger(policy.minimumScore) && policy.minimumScore >= 1 && policy.minimumScore <= 100 &&
+    (policy.method === "merge" || policy.method === "squash") && branchesValid && targetScopeValid;
 }
 
 function sameAutoMergePolicy(left: AutoMergePolicy, right: AutoMergePolicy): boolean {
   if (left.enabled !== right.enabled || left.minimumScore !== right.minimumScore || left.method !== right.method ||
-    left.removeSourceBranch !== right.removeSourceBranch) return false;
+    left.removeSourceBranch !== right.removeSourceBranch || left.targetMode !== right.targetMode) return false;
   const leftTargets = [...new Set(left.targetBranches)].sort();
   const rightTargets = [...new Set(right.targetBranches)].sort();
   return leftTargets.length === rightTargets.length && leftTargets.every((branch, index) => branch === rightTargets[index]);
@@ -345,6 +356,8 @@ export interface GitlabClient {
     gitlabUrl?: string,
     gitlabToken?: string,
   ): Promise<{ headSha: string; state: "opened" | "closed" | "merged" | "other"; targetBranch?: string; refs?: DiffRefs }>;
+  /** default 模式专用：按任务级实例与 token 读取目标项目当前默认分支。 */
+  getProjectDefaultBranch?(projectId: number, gitlabUrl?: string, gitlabToken?: string): Promise<string>;
   /**
    * 按预期 head 合并 MR。该写请求不可自动重试；调用方必须先完成只读状态复核。
    * 可选以兼容既有离线适配器，生产 GitLab 客户端必须实现。

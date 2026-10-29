@@ -10,6 +10,7 @@ import {
 const enabledPolicy = {
   enabled: true,
   minimumScore: 92,
+  targetMode: "specified" as const,
   targetBranches: ["main", "release/2026-Q4"],
   method: "squash" as const,
   removeSourceBranch: true,
@@ -21,6 +22,7 @@ test("项目自动合并默认值安全关闭", () => {
   assert.deepEqual(first, {
     enabled: false,
     minimumScore: 100,
+    targetMode: "default",
     targetBranches: [],
     method: "merge",
     removeSourceBranch: false,
@@ -37,7 +39,7 @@ test("项目设置支持仓库上下文和自动合并独立部分更新", () =>
   assert.deepEqual(validateProjectSettings(patches, ["group/app", "legacy-short"], "rules"), patches);
 });
 
-test("自动合并只允许完整项目路径，启用时目标分支至少一项且分支精确去重", () => {
+test("自动合并只允许完整项目路径，specified 模式要求分支至少一项且精确去重", () => {
   const invalid: Array<[ProjectReviewSettingPatch, RegExp]> = [
     [{ project: "app", autoMergePolicy: enabledPolicy }, /完整.*namespace\/project|完整项目/],
     [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, targetBranches: [] } }, /目标分支/],
@@ -46,6 +48,9 @@ test("自动合并只允许完整项目路径，启用时目标分支至少一�
     ...["feature bad", "topic..bad", "@{bad", "/main", "main/", "a//b", "main.", "-main", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", ".hidden/main", "main.lock"].map(
       (branch) => [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, targetBranches: [branch] } }, /格式非法/] as [ProjectReviewSettingPatch, RegExp],
     ),
+    [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, targetMode: "default", targetBranches: ["main"] } }, /default.*目标分支|目标分支.*default/],
+    [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, targetMode: "any", targetBranches: ["main"] } }, /any.*目标分支|目标分支.*any/],
+    [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, targetMode: "glob" as "specified" } }, /default.*specified.*any/],
     [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, minimumScore: 0 } }, /1.*100/],
     [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, minimumScore: 50.5 } }, /整数/],
     [{ project: "group/app", autoMergePolicy: { ...enabledPolicy, method: "rebase" as "merge" } }, /merge.*squash/],
@@ -58,6 +63,16 @@ test("自动合并只允许完整项目路径，启用时目标分支至少一�
       (error) => error instanceof PromptValidationError && expected.test(error.message),
       JSON.stringify(patch),
     );
+  }
+});
+
+test("default 与 any 模式启用时不携带分支列表", () => {
+  for (const targetMode of ["default", "any"] as const) {
+    const patch: ProjectReviewSettingPatch = {
+      project: "group/app",
+      autoMergePolicy: { ...enabledPolicy, targetMode, targetBranches: [] },
+    };
+    assert.deepEqual(validateProjectSettings([patch], ["group/app"], "rules"), [patch]);
   }
 });
 

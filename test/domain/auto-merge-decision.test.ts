@@ -7,6 +7,7 @@ const REFS = { baseSha: "b".repeat(40), startSha: "c".repeat(40), headSha: SHA }
 const policy: AutoMergePolicy = {
   enabled: true,
   minimumScore: 90,
+  targetMode: "specified",
   targetBranches: ["main", "release"],
   method: "squash",
   removeSourceBranch: true,
@@ -106,10 +107,35 @@ test("refs、当前 opened 状态、head 与精确目标分支均须在合并前
   }
 });
 
+test("targetMode=default 要求两次默认分支一致且等于快照/当前目标", () => {
+  const defaultPolicy: AutoMergePolicy = { ...policy, targetMode: "default", targetBranches: [] };
+  const defaultInput = { policy: defaultPolicy, currentPolicy: defaultPolicy, reviewedDefaultBranch: "main", currentDefaultBranch: "main" };
+  assert.equal(decideAutoMerge(eligible(defaultInput)).allowed, true);
+  assert.deepEqual(decideAutoMerge(eligible({ ...defaultInput, reviewedDefaultBranch: undefined })), { allowed: false, reason: "default-branch-missing" });
+  assert.deepEqual(decideAutoMerge(eligible({ ...defaultInput, currentDefaultBranch: "release" })), { allowed: false, reason: "default-branch-changed" });
+  assert.deepEqual(decideAutoMerge(eligible({ ...defaultInput, reviewedDefaultBranch: "release", currentDefaultBranch: "release" })), { allowed: false, reason: "target-branch-not-default" });
+});
+
+test("targetMode=specified 精确允许列表，any 只保留快照目标一致门禁", () => {
+  assert.equal(decideAutoMerge(eligible()).allowed, true);
+  assert.deepEqual(
+    decideAutoMerge(eligible({ reviewedTargetBranch: "develop", currentTargetBranch: "develop" })),
+    { allowed: false, reason: "target-branch-not-allowed" },
+  );
+  const anyPolicy: AutoMergePolicy = { ...policy, targetMode: "any", targetBranches: [] };
+  assert.equal(decideAutoMerge(eligible({
+    policy: anyPolicy,
+    currentPolicy: anyPolicy,
+    reviewedTargetBranch: "develop",
+    currentTargetBranch: "develop",
+  })).allowed, true);
+});
+
 test("关闭、撤销、变更或非法策略安全阻断，不猜测合并方式", () => {
   assert.deepEqual(decideAutoMerge(eligible({ policy: { ...policy, enabled: false } })), { allowed: false, reason: "disabled" });
   assert.deepEqual(decideAutoMerge(eligible({ currentPolicy: { ...policy, enabled: false } })), { allowed: false, reason: "policy-revoked" });
   assert.deepEqual(decideAutoMerge(eligible({ currentPolicy: { ...policy, minimumScore: 96 } })), { allowed: false, reason: "policy-changed" });
+  assert.deepEqual(decideAutoMerge(eligible({ currentPolicy: { ...policy, targetMode: "any", targetBranches: [] } })), { allowed: false, reason: "policy-changed" });
   assert.deepEqual(decideAutoMerge(eligible({ currentPolicy: { ...policy, targetBranches: ["release", "main"] } })).allowed, true, "仅重排分支不算策略变化");
   assert.deepEqual(decideAutoMerge(eligible({ policy: { ...policy, minimumScore: 0 } })), { allowed: false, reason: "invalid-policy" });
   assert.deepEqual(decideAutoMerge(eligible({ policy: { ...policy, minimumScore: 101 } })), { allowed: false, reason: "invalid-policy" });

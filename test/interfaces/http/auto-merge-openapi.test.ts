@@ -23,21 +23,29 @@ const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf
 test("Webhook 契约声明自动合并副作用与任务令牌权限", () => {
   const webhook = openapi.paths["/review/webhook"]?.post;
   assert.match(webhook?.description ?? "", /安全门[\s\S]*GitLab 合并|自动合并[\s\S]*合并 API/);
-  const token = webhook?.parameters?.find((parameter) => parameter.name === "X-Gitlab-Token");
-  assert.match(token?.description ?? "", /自动合并|合并 MR/);
-  assert.match(token?.description ?? "", /api.*scope|合并权限/i);
+  const tokens = webhook?.parameters?.filter((parameter) => parameter.name === "X-Gitlab-Token") ?? [];
+  assert.equal(tokens.length, 1, "目标分支模式不能引入第二套 GitLab token");
+  assert.match(tokens[0]?.description ?? "", /自动合并|合并 MR/);
+  assert.match(tokens[0]?.description ?? "", /api.*scope|合并权限/i);
+  assert.match(tokens[0]?.description ?? "", /仅 target_mode=default.*默认分支/);
+  assert.match(tokens[0]?.description ?? "", /令牌所属 GitLab 账号.*合并身份/);
   assert.match(generator, /显式启用自动合并[\s\S]*合并 API/);
 });
 
 test("OpenAPI 以 camelCase 响应项目自动合并策略，并声明安全默认值", () => {
   const policy = openapi.components.schemas.ProjectAutoMergePolicy;
   assert.ok(policy, "缺少 ProjectAutoMergePolicy schema");
-  assert.deepEqual(policy.required, ["enabled", "minimumScore", "targetBranches", "method", "removeSourceBranch"]);
+  assert.deepEqual(policy.required, ["enabled", "minimumScore", "targetMode", "targetBranches", "method", "removeSourceBranch"]);
   assert.equal(policy.properties?.enabled?.default, false);
   assert.equal(policy.properties?.minimumScore?.minimum, 1);
   assert.equal(policy.properties?.minimumScore?.maximum, 100);
   assert.equal(policy.properties?.minimumScore?.default, 100);
+  assert.deepEqual(policy.properties?.targetMode?.enum, ["default", "specified", "any"]);
+  assert.equal(policy.properties?.targetMode?.default, "default");
+  assert.match(String(policy.properties?.targetMode?.description ?? ""), /默认分支/);
+  assert.match(String(policy.properties?.targetMode?.description ?? ""), /any.*危险|危险.*any/i);
   assert.deepEqual(policy.properties?.targetBranches?.default, []);
+  assert.match(String(policy.properties?.targetBranches?.description ?? ""), /specified/);
   assert.deepEqual(policy.properties?.method?.enum, ["merge", "squash"]);
   assert.equal(policy.properties?.method?.default, "merge");
   assert.equal(policy.properties?.removeSourceBranch?.default, false);
@@ -62,7 +70,10 @@ test("OpenAPI 以 snake_case partial patch 接收自动合并策略并记录管�
   const input = openapi.components.schemas.ProjectAutoMergePolicyInput;
   assert.ok(input, "缺少 ProjectAutoMergePolicyInput schema");
   assert.deepEqual(input.required, ["enabled", "minimum_score", "target_branches", "method", "remove_source_branch"]);
+  assert.match(input.description ?? "", /省略 target_mode.*兼容|兼容旧客户端.*省略 target_mode/);
   assert.equal(input.properties?.minimum_score?.minimum, 1);
+  assert.deepEqual(input.properties?.target_mode?.enum, ["default", "specified", "any"]);
+  assert.equal(input.properties?.target_mode?.default, "default");
   assert.equal(input.properties?.minimum_score?.maximum, 100);
   assert.equal(input.properties?.target_branches?.uniqueItems, true);
   assert.deepEqual(input.properties?.method?.enum, ["merge", "squash"]);
@@ -107,6 +118,8 @@ test("OpenAPI 生成器拥有自动合并 schema 与安全语义，不能只手�
     "autoMergePolicy",
     "auto_merge_policy",
     "minimum_score",
+    "targetMode",
+    "target_mode",
     "target_branches",
     "remove_source_branch",
   ]) {
@@ -129,4 +142,14 @@ test("README 说明自动合并的权限、GitLab 前提、失败语义与名称
   assert.match(readme, /不同 GitLab 实例的同名完整路径仍共享/);
   assert.match(readme, /AI 厂商[^\n]*写操作[^\n]*管理员/);
   assert.match(readme, /PUT `?\/api\/config|`PUT \/api\/config`/);
+});
+
+test("README 说明三种目标范围、旧策略迁移和不变的 Webhook token 模型", () => {
+  assert.match(readme, /实际合并[^\r\n]*MR 当前目标分支|MR 当前目标分支[^\r\n]*实际合并/);
+  assert.match(readme, /`default`[\s\S]*GitLab API[\s\S]*默认分支/);
+  assert.match(readme, /`specified`[\s\S]*精确/);
+  assert.match(readme, /`any`[\s\S]*危险/);
+  assert.match(readme, /旧[^\r\n]*策略[^\r\n]*`specified`/);
+  assert.match(readme, /X-Gitlab-Token[\s\S]*凭据模型不变/);
+  assert.match(readme, /不新增[^\r\n]*页面[^\r\n]*(?:Token|token)/);
 });

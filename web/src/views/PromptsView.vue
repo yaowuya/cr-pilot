@@ -203,13 +203,31 @@
                           <el-input-number v-model="form.autoMergePolicies[projectKey(project)].minimumScore" :min="1" :max="100" :step="1"
                             :disabled="!isAdmin" controls-position="right" />
                         </el-form-item>
-                        <el-form-item label="目标分支（精确匹配）" class="auto-merge-fields__branches">
+                        <el-alert class="auto-merge-identity" type="info" :closable="false" show-icon
+                          title="系统始终合并到 MR 当前目标分支，不会修改目标；合并身份由本次 Webhook 的 X-Gitlab-Token 所属 GitLab 账号决定。" />
+                        <el-form-item label="允许的 MR 目标分支" class="auto-merge-fields__mode">
+                          <el-radio-group v-model="form.autoMergePolicies[projectKey(project)].targetMode" class="target-mode-grid" :disabled="!isAdmin"
+                            @change="onAutoMergeTargetModeChange(project, $event)">
+                            <el-radio value="default" border class="target-mode-card">
+                              <span class="target-mode-card__copy"><strong>仅项目默认分支（推荐）</strong><small>运行时读取 GitLab 项目的默认分支，仅该目标允许</small></span>
+                            </el-radio>
+                            <el-radio value="specified" border class="target-mode-card">
+                              <span class="target-mode-card__copy"><strong>指定目标分支</strong><small>只允许下方列出的精确分支名</small></span>
+                            </el-radio>
+                            <el-radio value="any" border class="target-mode-card target-mode-card--danger">
+                              <span class="target-mode-card__copy"><strong>任意目标分支（危险）</strong><small>不限制 MR 当前目标分支</small></span>
+                            </el-radio>
+                          </el-radio-group>
+                        </el-form-item>
+                        <el-form-item v-if="form.autoMergePolicies[projectKey(project)].targetMode === 'specified'" label="指定目标分支（精确匹配）" class="auto-merge-fields__branches">
                           <el-select v-model="form.autoMergePolicies[projectKey(project)].targetBranches" multiple filterable allow-create default-first-option
                             :reserve-keyword="false" :disabled="!isAdmin" placeholder="输入 main、release 等分支后回车"
                             @change="normalizeAutoMergeBranches(project)">
                             <el-option v-for="branch in form.autoMergePolicies[projectKey(project)].targetBranches" :key="branch" :label="branch" :value="branch" />
                           </el-select>
                         </el-form-item>
+                        <el-alert v-else-if="form.autoMergePolicies[projectKey(project)].targetMode === 'any'" class="auto-merge-any-warning" type="error" :closable="false" show-icon
+                          title="危险：所有目标分支的 MR 都可能在通过固定安全门后自动合并。请仅在明确接受该范围时使用。" />
                         <el-form-item label="请求合并方式">
                           <el-radio-group v-model="form.autoMergePolicies[projectKey(project)].method" :disabled="!isAdmin">
                             <el-radio-button value="merge">Merge commit</el-radio-button>
@@ -422,15 +440,22 @@ function normalizeAutoMergeBranches(project: string): void {
   const policy = form.value.autoMergePolicies[projectKey(project)];
   policy.targetBranches = normalizeTargetBranches(policy.targetBranches);
 }
+function onAutoMergeTargetModeChange(project: string, value: string | number | boolean): void {
+  if (!isAdmin.value || (value !== "default" && value !== "specified" && value !== "any")) return;
+  const policy = form.value.autoMergePolicies[projectKey(project)];
+  policy.targetMode = value;
+  if (value !== "specified") policy.targetBranches = [];
+}
 function onProviderChange(): void { form.value.model = ""; }
 
-/** 高影响能力只在从关到开时确认，普通门槛调整沿用已有保存确认。 */
+/** 高影响能力只在扩大权限时确认，普通门槛调整沿用已有保存确认。 */
 async function confirmAutoMergeChanges(): Promise<boolean> {
   const summary = summarizeAutoMergeConfirmation(form.value);
-  if (summary.enabledProjects.length === 0 && summary.removeSourceBranchProjects.length === 0) return true;
+  if (summary.enabledProjects.length === 0 && summary.removeSourceBranchProjects.length === 0 && summary.anyTargetProjects.length === 0) return true;
   const lines: string[] = [];
   if (summary.enabledProjects.length) lines.push(`启用自动合并：${summary.enabledProjects.join("、")}`);
   if (summary.removeSourceBranchProjects.length) lines.push(`请求合并后删除源分支：${summary.removeSourceBranchProjects.join("、")}`);
+  if (summary.anyTargetProjects.length) lines.push(`允许任意目标分支（危险）：${summary.anyTargetProjects.join("、")}`);
   lines.push("critical/high 问题仍固定阻断；GitLab 审批、CI、冲突与保护分支规则仍照常生效。");
   try {
     await ElMessageBox.confirm(lines.join("\n"), "确认自动合并策略", {
@@ -831,9 +856,53 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
   width: 100%;
 }
 
+.auto-merge-identity,
+.auto-merge-fields__mode,
 .auto-merge-fields__branches,
+.auto-merge-any-warning,
 .auto-merge-safety {
   grid-column: 1 / -1;
+}
+
+.target-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.target-mode-card {
+  width: 100%;
+  height: auto;
+  min-height: 68px;
+  padding: 12px;
+  margin: 0;
+  align-items: flex-start;
+}
+
+.target-mode-card :deep(.el-radio__label) {
+  min-width: 0;
+  padding-left: 8px;
+  white-space: normal;
+}
+
+.target-mode-card__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.35;
+}
+
+.target-mode-card__copy strong {
+  color: var(--el-text-color-primary);
+}
+
+.target-mode-card__copy small {
+  color: var(--el-text-color-secondary);
+}
+
+.target-mode-card--danger :deep(.el-radio__label strong) {
+  color: var(--el-color-danger);
 }
 
 .auto-merge-count--enabled {
@@ -897,7 +966,14 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
     grid-template-columns: 1fr;
   }
 
+  .target-mode-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .auto-merge-identity,
+  .auto-merge-fields__mode,
   .auto-merge-fields__branches,
+  .auto-merge-any-warning,
   .auto-merge-safety {
     grid-column: auto;
   }

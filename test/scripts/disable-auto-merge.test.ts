@@ -43,6 +43,7 @@ test("回退 CLI 批量关闭策略、保留参数并可安全重复执行", () 
         autoMergePolicy: {
           enabled: true,
           minimumScore: 97,
+          targetMode: "specified",
           targetBranches: ["main"],
           method: "squash",
           removeSourceBranch: true,
@@ -61,6 +62,7 @@ test("回退 CLI 批量关闭策略、保留参数并可安全重复执行", () 
     assert.deepEqual(policy, {
       enabled: false,
       minimumScore: 97,
+      targetMode: "specified",
       targetBranches: ["main"],
       method: "squash",
       removeSourceBranch: true,
@@ -97,6 +99,35 @@ test("回退 CLI 拒绝已存在的空文件且不写入 SQLite schema", () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /数据库不是|file is not a database|database disk image is malformed/i);
     assert.equal(statSync(path).size, 0, "只读身份验证不能把空文件初始化成应用数据库");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("回退 CLI 拒绝缺少 target mode 身份列的旧自动合并 schema", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crp-disable-auto-merge-old-schema-"));
+  const path = join(dir, "old.db");
+  try {
+    const old = new DatabaseSync(path);
+    old.exec(`
+      CREATE TABLE review_prompts (id INTEGER PRIMARY KEY);
+      CREATE TABLE config_overrides (key TEXT PRIMARY KEY);
+      CREATE TABLE review_records (id INTEGER PRIMARY KEY);
+      CREATE TABLE project_review_settings (
+        project TEXT PRIMARY KEY,
+        repository_context_enabled INTEGER,
+        auto_merge_enabled INTEGER,
+        auto_merge_minimum_score INTEGER,
+        auto_merge_target_branches TEXT,
+        auto_merge_method TEXT,
+        auto_merge_remove_source_branch INTEGER,
+        updated_at INTEGER
+      );
+    `);
+    old.close();
+    const result = runCli(path);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /缺少列 auto_merge_target_mode/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

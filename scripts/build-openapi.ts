@@ -104,7 +104,7 @@ paths["/review/webhook"] = {
       "每个项目 secret 各不相同，单实例无法用一份全局 secret 校验所有来源，",
       "来源保护由部署层（内网隔离、网关白名单）负责。",
       "",
-      "**访问令牌**：请求头 `X-Gitlab-Token` 会被当作任务级 GitLab API 访问令牌，用于拉取变更、回写评论；若项目启用自动合并，还会用它读取合并状态并调用合并 API，因此需要 `api` scope 和目标分支的合并权限。",
+      "**访问令牌**：请求头 `X-Gitlab-Token` 会被当作任务级 GitLab API 访问令牌，用于拉取变更、回写评论；若项目启用自动合并，还会用同一个令牌读取 MR 状态并调用合并 API，仅 target_mode=default 额外读取项目默认分支。令牌所属 GitLab 账号就是评论与合并身份，因此需要 `api` scope 和目标分支的合并权限。目标分支模式不新增第二套凭据，也没有页面 Token 配置。",
     ].join("\n"),
     operationId: "postReviewWebhook",
     security: [],
@@ -113,7 +113,7 @@ paths["/review/webhook"] = {
         name: "X-Gitlab-Token",
         in: "header",
         required: true,
-        description: "任务级 GitLab 访问令牌，用于拉取、评论，并在显式启用且安全门通过时合并 MR；自动合并需 `api` scope 与目标分支合并权限。缺失时返回 400。",
+        description: "任务级 GitLab 访问令牌，用于拉取、评论和合并 MR；仅 target_mode=default 额外读取项目默认分支。令牌所属 GitLab 账号就是评论与合并身份；不新增页面 Token 配置。自动合并需 `api` scope 与目标分支合并权限。缺失时返回 400。",
         schema: { type: "string" },
       },
       {
@@ -333,7 +333,8 @@ paths["/api/prompts"] = {
               auto_merge_policy: {
                 enabled: true,
                 minimum_score: 100,
-                target_branches: ["main"],
+                target_mode: "default",
+                target_branches: [],
                 method: "squash",
                 remove_source_branch: false,
               },
@@ -1244,17 +1245,23 @@ const schemas: Record<string, JsonObject> = {
 
   ProjectAutoMergePolicy: {
     type: "object",
-    required: ["enabled", "minimumScore", "targetBranches", "method", "removeSourceBranch"],
-    description: "项目级自动合并策略，安全默认关闭。启用后仍须同时满足：变更、提交、目标分支与 base/start/head 三 SHA 来自同一 diff version 且合并前未变化；去重前最低分达到门槛；全部批次有完整 merge_gate 且无跳过；User Prompt 含 `{diffs_text}`，并且每批与汇总实际 evaluator 的 provider/model/base URL/协议均和配置快照一致；汇总非空、行内评论无发布失败、无 critical/high；MR 仍 opened；PUT 前策略未撤销或变化。GitLab 的 CI、审批、受保护分支、权限、冲突与强制 Squash/删分支规则继续生效，失败不会回滚已完成评审。",
+    required: ["enabled", "minimumScore", "targetMode", "targetBranches", "method", "removeSourceBranch"],
+    description: "项目级自动合并策略，安全默认关闭。目标范围只判断当前 MR 的目标分支是否允许，系统绝不改写目标分支，实际合并始终使用 MR 当前目标。启用后仍须同时满足：变更、提交、目标分支与 base/start/head 三 SHA 来自同一 diff version 且合并前未变化；去重前最低分达到门槛；全部批次有完整 merge_gate 且无跳过；User Prompt 含 `{diffs_text}`，并且每批与汇总实际 evaluator 的 provider/model/base URL/协议均和配置快照一致；汇总非空、行内评论无发布失败、无 critical/high；MR 仍 opened；PUT 前策略未撤销或变化。GitLab 的 CI、审批、受保护分支、权限、冲突与强制 Squash/删分支规则继续生效，失败不会回滚已完成评审。",
     properties: {
       enabled: { type: "boolean", default: false, description: "默认关闭。开启只允许完整 namespace/project 项目，不接受短名或 default 兜底授权。" },
       minimumScore: { type: "integer", minimum: 1, maximum: 100, default: 100, description: "自动合并最低评审分数；必须为 1..100 的整数。" },
+      targetMode: {
+        type: "string",
+        enum: ["default", "specified", "any"],
+        default: "default",
+        description: "目标范围。default（默认、推荐）只允许 GitLab API 返回的项目默认分支，默认分支缺失、读取失败或评审期间变化均安全跳过；specified 只允许 targetBranches 精确列表；any 允许任意 MR 当前目标分支，是危险选项。所有模式都不会修改 MR 目标分支。",
+      },
       targetBranches: {
         type: "array",
         uniqueItems: true,
         default: [],
         items: { type: "string", minLength: 1 },
-        description: "GitLab 目标分支的大小写敏感精确列表，不是 glob/正则；enabled=true 时至少一项。",
+        description: "仅 targetMode=specified 使用的大小写敏感精确列表，不是 glob/正则；specified 启用时至少一项，default/any 必须为空。",
       },
       method: { type: "string", enum: ["merge", "squash"], default: "merge", description: "请求 GitLab 使用的合并方式；GitLab 项目强制 Squash 设置拥有最终决定权。" },
       removeSourceBranch: { type: "boolean", default: false, description: "合并成功后是否请求 GitLab 删除源分支；默认保留。" },
@@ -1263,16 +1270,22 @@ const schemas: Record<string, JsonObject> = {
   ProjectAutoMergePolicyInput: {
     type: "object",
     required: ["enabled", "minimum_score", "target_branches", "method", "remove_source_branch"],
-    description: "HTTP snake_case 自动合并策略。该对象必须完整提交，但其所在 project_settings 条目仍是 partial patch。",
+    description: "HTTP snake_case 自动合并策略。除兼容旧客户端时可省略 target_mode 外，其余字段必须完整提交；所在 project_settings 条目仍是 partial patch。省略 target_mode 时按非空 target_branches=>specified、空列表=>default 兼容读取，新客户端应显式提交。",
     properties: {
       enabled: { type: "boolean", default: false },
       minimum_score: { type: "integer", minimum: 1, maximum: 100, default: 100 },
+      target_mode: {
+        type: "string",
+        enum: ["default", "specified", "any"],
+        default: "default",
+        description: "default 只允许项目默认分支；specified 使用精确列表；any 允许任意 MR 当前目标分支，是危险选项。该字段只限制范围，不改写 MR 目标。",
+      },
       target_branches: {
         type: "array",
         uniqueItems: true,
         default: [],
         items: { type: "string", minLength: 1 },
-        description: "精确目标分支列表；enabled=true 时至少一项，重复、空白或非法 Git 分支名返回 400。",
+        description: "仅 specified 使用；启用 specified 时至少一项，default/any 必须为空。重复、空白或非法 Git 分支名返回 400。",
       },
       method: { type: "string", enum: ["merge", "squash"], default: "merge", description: "请求方式；GitLab 项目强制 Squash 设置拥有最终决定权。" },
       remove_source_branch: { type: "boolean", default: false, description: "是否请求合并后删除源分支；GitLab 强制设置拥有最终决定权。" },

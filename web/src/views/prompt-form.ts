@@ -1,8 +1,10 @@
 /** Prompt 草稿与请求转换：纯逻辑不持有 Vue 状态、网络或凭据。 */
-import type { AutoMergeMethod, ProjectAutoMergePolicy, ProjectReviewSetting, StoredPrompt } from "../types.ts";
+import type { AutoMergeMethod, AutoMergeTargetMode, ProjectAutoMergePolicy, ProjectReviewSetting, StoredPrompt } from "../types.ts";
 
 export const REPOSITORY_STANDARDS_MAX_LENGTH = 32_000;
 export type PromptSection = "projects" | "prompt" | "standards" | "delivery";
+/** 编辑态总有明确模式；API 类型保留 optional 仅为兼容旧响应。 */
+export type PromptAutoMergePolicy = Omit<ProjectAutoMergePolicy, "targetMode"> & { targetMode: AutoMergeTargetMode };
 
 export interface PromptDraft {
   repository: string;
@@ -18,26 +20,34 @@ export interface PromptDraft {
   projectStates: Record<string, boolean | undefined>;
   originalProjectStates: Record<string, boolean | undefined>;
   /** 策略对象始终存在供表单绑定；known=false 时只读且绝不进入 payload。 */
-  autoMergePolicies: Record<string, ProjectAutoMergePolicy>;
+  autoMergePolicies: Record<string, PromptAutoMergePolicy>;
   autoMergeKnown: Record<string, boolean>;
   /** undefined 表示尚未取得服务端基线，不得推断为默认关闭。 */
-  originalAutoMergePolicies: Record<string, ProjectAutoMergePolicy | undefined>;
+  originalAutoMergePolicies: Record<string, PromptAutoMergePolicy | undefined>;
 }
 
 /** 与后端名称级配置使用相同键：小写归一化，兼容存量短项目名。 */
 export function projectKey(project: string): string { return project.trim().toLowerCase(); }
 
-/** 未配置项目的安全默认值；目标分支留空使策略无法在误开启后直接保存。 */
-export function createDefaultAutoMergePolicy(): ProjectAutoMergePolicy {
-  return { enabled: false, minimumScore: 100, targetBranches: [], method: "merge", removeSourceBranch: false };
+/** 未配置项目的安全默认值：仅允许 GitLab 项目默认分支，无需手工填写分支。 */
+export function createDefaultAutoMergePolicy(): PromptAutoMergePolicy {
+  return { enabled: false, minimumScore: 100, targetMode: "default", targetBranches: [], method: "merge", removeSourceBranch: false };
 }
 
-function cloneAutoMergePolicy(policy?: ProjectAutoMergePolicy): ProjectAutoMergePolicy {
+/** 旧响应无 mode 时：有分支保留为 specified，无分支安全归为 default。 */
+function normalizeTargetMode(policy: ProjectAutoMergePolicy): AutoMergeTargetMode {
+  if (policy.targetMode === "default" || policy.targetMode === "specified" || policy.targetMode === "any") return policy.targetMode;
+  return policy.targetBranches.length > 0 ? "specified" : "default";
+}
+
+function cloneAutoMergePolicy(policy?: ProjectAutoMergePolicy): PromptAutoMergePolicy {
   const source = policy ?? createDefaultAutoMergePolicy();
+  const targetMode = normalizeTargetMode(source);
   return {
     enabled: source.enabled === true,
     minimumScore: source.minimumScore,
-    targetBranches: [...source.targetBranches],
+    targetMode,
+    targetBranches: targetMode === "specified" ? [...source.targetBranches] : [],
     method: source.method,
     removeSourceBranch: source.removeSourceBranch === true,
   };
@@ -59,13 +69,18 @@ export function canUseAutoMergeTargetBranch(value: string): boolean {
     parts.some(part => part.startsWith(".") || part.endsWith(".lock")));
 }
 
-function sameAutoMergePolicy(left: ProjectAutoMergePolicy | undefined, right: ProjectAutoMergePolicy): boolean {
+function policyBranches(policy: ProjectAutoMergePolicy): string[] {
+  return normalizeTargetMode(policy) === "specified" ? normalizeTargetBranches(policy.targetBranches) : [];
+}
+
+function sameAutoMergePolicy(left: PromptAutoMergePolicy | undefined, right: PromptAutoMergePolicy): boolean {
   if (!left) return false;
   return left.enabled === right.enabled
     && left.minimumScore === right.minimumScore
+    && left.targetMode === right.targetMode
     && left.method === right.method
     && left.removeSourceBranch === right.removeSourceBranch
-    && JSON.stringify(normalizeTargetBranches(left.targetBranches)) === JSON.stringify(normalizeTargetBranches(right.targetBranches));
+    && JSON.stringify(policyBranches(left)) === JSON.stringify(policyBranches(right));
 }
 
 /** 自动合并必须精确绑定完整 GitLab 路径，短名/后缀匹配只保留给仓库上下文。 */
@@ -158,6 +173,7 @@ interface ProjectSettingPayload {
   auto_merge_policy?: {
     enabled: boolean;
     minimum_score: number;
+    target_mode: AutoMergeTargetMode;
     target_branches: string[];
     method: AutoMergeMethod;
     remove_source_branch: boolean;
@@ -179,7 +195,8 @@ export function buildPromptPayload(draft: PromptDraft) {
       patch.auto_merge_policy = {
         enabled: policy.enabled,
         minimum_score: policy.minimumScore,
-        target_branches: normalizeTargetBranches(policy.targetBranches),
+        target_mode: policy.targetMode,
+        target_branches: policyBranches(policy),
         method: policy.method,
         remove_source_branch: policy.removeSourceBranch,
       };
@@ -232,10 +249,15 @@ export function validatePromptDraft(draft: PromptDraft): { field: string; group:
     if (!Number.isInteger(policy.minimumScore) || policy.minimumScore < 1 || policy.minimumScore > 100) {
       errors.push({field:"projects",group:"projects",message:`${project} 的最低评分必须是 1 到 100 的整数`});
     }
-    if (policy.targetBranches.some(branch => !branch.trim()) || normalizeTargetBranches(policy.targetBranches).length === 0) {
-      errors.push({field:"projects",group:"projects",message:`${project} 开启自动合并时至少填写一个非空目标分支`});
-    } else if (policy.targetBranches.some(branch => !canUseAutoMergeTargetBranch(branch))) {
-      errors.push({field:"projects",group:"projects",message:`${project} 包含 GitLab 不接受的目标分支名`});
+    if (policy.targetMode !== "default" && policy.targetMode !== "specified" && policy.targetMode !== "any") {
+      errors.push({field:"projects",group:"projects",message:`${project} 的目标分支限制无效`});
+    }
+    if (policy.targetMode === "specified") {
+      if (policy.targetBranches.some(branch => !branch.trim()) || normalizeTargetBranches(policy.targetBranches).length === 0) {
+        errors.push({field:"projects",group:"projects",message:`${project} 选择指定目标分支时至少填写一个非空分支`});
+      } else if (policy.targetBranches.some(branch => !canUseAutoMergeTargetBranch(branch))) {
+        errors.push({field:"projects",group:"projects",message:`${project} 包含 GitLab 不接受的目标分支名`});
+      }
     }
     if (policy.method !== "merge" && policy.method !== "squash") {
       errors.push({field:"projects",group:"projects",message:`${project} 的合并方式无效`});
@@ -248,10 +270,12 @@ export function validatePromptDraft(draft: PromptDraft): { field: string; group:
 export function summarizeAutoMergeConfirmation(draft: PromptDraft): {
   enabledProjects: string[];
   removeSourceBranchProjects: string[];
+  anyTargetProjects: string[];
 } {
   const enabledProjects: string[] = [];
   const removeSourceBranchProjects: string[] = [];
-  if (draft.repository === "default") return { enabledProjects, removeSourceBranchProjects };
+  const anyTargetProjects: string[] = [];
+  if (draft.repository === "default") return { enabledProjects, removeSourceBranchProjects, anyTargetProjects };
   for (const project of draft.projects) {
     const key = projectKey(project);
     if (draft.autoMergeKnown[key] !== true) continue;
@@ -261,8 +285,11 @@ export function summarizeAutoMergeConfirmation(draft: PromptDraft): {
     if (policy.enabled && policy.removeSourceBranch && original?.removeSourceBranch !== true) {
       removeSourceBranchProjects.push(project);
     }
+    if (policy.enabled && policy.targetMode === "any" && original?.targetMode !== "any") {
+      anyTargetProjects.push(project);
+    }
   }
-  return { enabledProjects, removeSourceBranchProjects };
+  return { enabledProjects, removeSourceBranchProjects, anyTargetProjects };
 }
 
 /** 异步结果归属，不取消公共 client 请求；过期/关闭/卸载后的响应一律丢弃。 */

@@ -11,6 +11,7 @@ const TASK = { projectId: 1, iid: 2, fullName: "group/app", sourceBranch: "feat"
 const POLICY: AutoMergePolicy = {
   enabled: true,
   minimumScore: 90,
+  targetMode: "specified",
   targetBranches: ["main"],
   method: "merge",
   removeSourceBranch: false,

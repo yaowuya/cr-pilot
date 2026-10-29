@@ -10,6 +10,7 @@ import { createPromptRepository } from "../../../src/infrastructure/sqlite/promp
 const policy = {
   enabled: true,
   minimumScore: 88,
+  targetMode: "specified" as const,
   targetBranches: ["main", "release/stable"],
   method: "squash" as const,
   removeSourceBranch: true,
@@ -28,6 +29,7 @@ test("project_review_settings 新库默认关闭并约束自动合并字段", ()
       repository_context_enabled: 0,
       auto_merge_enabled: 0,
       auto_merge_minimum_score: 100,
+      auto_merge_target_mode: "default",
       auto_merge_target_branches: "[]",
       auto_merge_method: "merge",
       auto_merge_remove_source_branch: 0,
@@ -35,10 +37,11 @@ test("project_review_settings 新库默认关闭并约束自动合并字段", ()
     });
     assert.throws(() => db.prepare("UPDATE project_review_settings SET auto_merge_minimum_score = 101").run(), /CHECK/);
     assert.throws(() => db.prepare("UPDATE project_review_settings SET auto_merge_method = 'rebase'").run(), /CHECK/);
+    assert.throws(() => db.prepare("UPDATE project_review_settings SET auto_merge_target_mode = 'glob'").run(), /CHECK/);
   } finally { db.close(); }
 });
 
-test("旧库幂等迁移补齐五列并保留已有仓库上下文设置", () => {
+test("旧库幂等迁移补齐自动合并列并保留已有仓库上下文设置", () => {
   const dir = mkdtempSync(join(tmpdir(), "crp-auto-merge-migrate-"));
   const path = join(dir, "old.db");
   try {
@@ -54,17 +57,59 @@ test("旧库幂等迁移补齐五列并保留已有仓库上下文设置", () =>
     const first = openDatabase(path);
     try {
       assert.deepEqual({ ...first.prepare(`SELECT repository_context_enabled, auto_merge_enabled,
-        auto_merge_minimum_score, auto_merge_target_branches, auto_merge_method,
+        auto_merge_minimum_score, auto_merge_target_mode, auto_merge_target_branches, auto_merge_method,
         auto_merge_remove_source_branch FROM project_review_settings`).get() }, {
         repository_context_enabled: 1,
         auto_merge_enabled: 0,
         auto_merge_minimum_score: 100,
+        auto_merge_target_mode: "default",
         auto_merge_target_branches: "[]",
         auto_merge_method: "merge",
         auto_merge_remove_source_branch: 0,
       });
     } finally { first.close(); }
     openDatabase(path).close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("从旧自动合并 schema 迁移时保留 allowlist 语义，且重复启动不改写用户模式", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crp-target-mode-migrate-"));
+  const path = join(dir, "old-auto.db");
+  try {
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE project_review_settings (
+      project TEXT PRIMARY KEY NOT NULL,
+      repository_context_enabled INTEGER NOT NULL DEFAULT 0,
+      auto_merge_enabled INTEGER NOT NULL DEFAULT 0,
+      auto_merge_minimum_score INTEGER NOT NULL DEFAULT 100,
+      auto_merge_target_branches TEXT NOT NULL DEFAULT '[]',
+      auto_merge_method TEXT NOT NULL DEFAULT 'merge',
+      auto_merge_remove_source_branch INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+    INSERT INTO project_review_settings VALUES ('group/enabled', 0, 1, 90, '["main"]', 'merge', 0, 1);
+    INSERT INTO project_review_settings VALUES ('group/disabled-empty', 0, 0, 100, '[]', 'merge', 0, 1);
+    INSERT INTO project_review_settings VALUES ('group/disabled-list', 0, 0, 100, '["release"]', 'merge', 0, 1);`);
+    old.close();
+
+    const first = openDatabase(path);
+    try {
+      const modes = Object.fromEntries((first.prepare(
+        "SELECT project, auto_merge_target_mode AS mode FROM project_review_settings ORDER BY project",
+      ).all() as unknown as Array<{ project: string; mode: string }>).map((row) => [row.project, row.mode]));
+      assert.deepEqual(modes, {
+        "group/disabled-empty": "default",
+        "group/disabled-list": "specified",
+        "group/enabled": "specified",
+      });
+      first.prepare("UPDATE project_review_settings SET auto_merge_target_mode = 'specified' WHERE project = 'group/disabled-empty'").run();
+    } finally { first.close(); }
+
+    const second = openDatabase(path);
+    try {
+      assert.equal(second.prepare("SELECT auto_merge_target_mode AS mode FROM project_review_settings WHERE project = 'group/disabled-empty'").get()?.mode, "specified");
+      assert.equal(second.prepare("SELECT auto_merge_target_mode AS mode FROM project_review_settings WHERE project = 'group/enabled'").get()?.mode, "specified");
+    } finally { second.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -81,12 +126,12 @@ test("仓储按项目部分更新并在详情、列表、精确解析中返回�
       {
         project: "Group/App",
         repositoryContextEnabled: true,
-        autoMergePolicy: { enabled: false, minimumScore: 100, targetBranches: [], method: "merge", removeSourceBranch: false },
+        autoMergePolicy: { enabled: false, minimumScore: 100, targetMode: "default", targetBranches: [], method: "merge", removeSourceBranch: false },
       },
       {
         project: "legacy-app",
         repositoryContextEnabled: false,
-        autoMergePolicy: { enabled: false, minimumScore: 100, targetBranches: [], method: "merge", removeSourceBranch: false },
+        autoMergePolicy: { enabled: false, minimumScore: 100, targetMode: "default", targetBranches: [], method: "merge", removeSourceBranch: false },
       },
     ]);
 
@@ -109,6 +154,26 @@ test("仓储按项目部分更新并在详情、列表、精确解析中返回�
     assert.deepEqual(repo.resolveProjectSetting?.("group/app")?.autoMergePolicy, policy, "上下文 patch 不重置自动合并");
     assert.deepEqual(repo.listProjectSettings?.().find((item) => item.project === "group/app")?.autoMergePolicy, policy);
     assert.deepEqual(repo.list().find((item) => item.repository === "rules")?.projectSettings?.find((item) => item.project === "Group/App")?.autoMergePolicy, policy);
+  } finally { db.close(); }
+});
+
+test("仓储持久化 default、specified 与 any 三种目标模式", () => {
+  const db = openDatabase(":memory:");
+  try {
+    const repo = createPromptRepository(db);
+    for (const targetMode of ["default", "any"] as const) {
+      const project = `group/${targetMode}`;
+      repo.create({
+        ...input(`rules-${targetMode}`), projects: [project],
+        projectSettings: [{
+          project,
+          autoMergePolicy: { ...policy, targetMode, targetBranches: [] },
+        }],
+      });
+      assert.equal(repo.resolveProjectSetting?.(project)?.autoMergePolicy.targetMode, targetMode);
+      assert.deepEqual(repo.resolveProjectSetting?.(project)?.autoMergePolicy.targetBranches, []);
+      assert.equal(repo.resolveProjectSetting?.(project)?.autoMergePolicy.enabled, true);
+    }
   } finally { db.close(); }
 });
 
@@ -222,6 +287,19 @@ test("损坏的目标分支 JSON 按安全关闭读取", () => {
     db.prepare("UPDATE project_review_settings SET auto_merge_target_branches = 'not-json' WHERE project = 'group/app'").run();
     assert.equal(repo.resolveProjectSetting?.("group/app")?.autoMergePolicy.enabled, false);
     assert.deepEqual(repo.resolveProjectSetting?.("group/app")?.autoMergePolicy.targetBranches, []);
+    assert.equal(repo.resolveProjectSetting?.("group/app")?.autoMergePolicy.targetMode, "specified");
+
+    db.exec("PRAGMA ignore_check_constraints = ON");
+    db.prepare("UPDATE project_review_settings SET auto_merge_target_mode = 'glob', auto_merge_target_branches = '[\"main\"]' WHERE project = 'group/app'").run();
+    db.exec("PRAGMA ignore_check_constraints = OFF");
+    assert.deepEqual(repo.resolveProjectSetting?.("group/app")?.autoMergePolicy, {
+      enabled: false,
+      minimumScore: 88,
+      targetMode: "default",
+      targetBranches: [],
+      method: "squash",
+      removeSourceBranch: true,
+    });
   } finally { db.close(); }
 });
 

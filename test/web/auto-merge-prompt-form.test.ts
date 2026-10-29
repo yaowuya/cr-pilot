@@ -42,6 +42,7 @@ test("自动合并默认关闭，dirty-only 与仓库上下文合并为同一项
   const expectedDefault: ProjectAutoMergePolicy = {
     enabled: false,
     minimumScore: 100,
+    targetMode: "default",
     targetBranches: [],
     method: "merge",
     removeSourceBranch: false,
@@ -51,6 +52,7 @@ test("自动合并默认关闭，dirty-only 与仓库上下文合并为同一项
 
   draft.projectStates[appKey] = true;
   draft.autoMergePolicies[appKey].enabled = true;
+  draft.autoMergePolicies[appKey].targetMode = "specified";
   draft.autoMergePolicies[appKey].targetBranches = [" main ", "release", "main"];
   assert.deepEqual(buildPromptPayload(draft).project_settings, [{
     project: "group/app",
@@ -58,6 +60,7 @@ test("自动合并默认关闭，dirty-only 与仓库上下文合并为同一项
     auto_merge_policy: {
       enabled: true,
       minimum_score: 100,
+      target_mode: "specified",
       target_branches: ["main", "release"],
       method: "merge",
       remove_source_branch: false,
@@ -68,6 +71,7 @@ test("自动合并默认关闭，dirty-only 与仓库上下文合并为同一项
 test("只改自动合并策略时不携带仓库上下文；default 永远不提交项目策略", () => {
   const draft = createPromptDraft(detail);
   const key = projectKey("group/api");
+  assert.equal(draft.autoMergePolicies[key].targetMode, "specified", "旧响应有分支时按 specified 兼容");
   draft.autoMergePolicies[key].minimumScore = 95;
   const [patch] = buildPromptPayload(draft).project_settings;
   assert.deepEqual(patch, {
@@ -75,6 +79,7 @@ test("只改自动合并策略时不携带仓库上下文；default 永远不提
     auto_merge_policy: {
       enabled: true,
       minimum_score: 95,
+      target_mode: "specified",
       target_branches: ["main"],
       method: "squash",
       remove_source_branch: false,
@@ -100,6 +105,7 @@ test("meta 失败时新项目保持未知且不提交；重试只初始化未知
     auto_merge_policy: {
       enabled: false,
       minimum_score: 80,
+      target_mode: "default",
       target_branches: [],
       method: "merge",
       remove_source_branch: false,
@@ -119,6 +125,7 @@ test("meta 失败时新项目保持未知且不提交；重试只初始化未知
   }];
   synchronizeProjectSettings(draft, metadata);
   assert.equal(draft.autoMergeKnown[newKey], true);
+  assert.equal(draft.autoMergePolicies[newKey].targetMode, "specified");
   assert.equal(draft.autoMergePolicies[newKey].minimumScore, 92);
   assert.equal(draft.autoMergePolicies[appKey].minimumScore, 80, "meta 刷新不能覆盖用户已修改策略");
 });
@@ -138,13 +145,14 @@ test("自动合并仅允许完整项目路径，且启用策略需合法门槛�
   synchronizeProjectSettings(draft, []);
   const shortKey = projectKey("auto-ops");
   draft.autoMergePolicies[shortKey].enabled = true;
+  draft.autoMergePolicies[shortKey].targetMode = "specified";
   draft.autoMergePolicies[shortKey].targetBranches = ["main"];
   assert.match(validatePromptDraft(draft).map(item => item.message).join("\n"), /完整的 namespace\/project/);
 
   draft.projects = ["group/app"];
   synchronizeProjectSettings(draft, []);
   const key = projectKey("group/app");
-  draft.autoMergePolicies[key] = { enabled: true, minimumScore: 0, targetBranches: [], method: "merge", removeSourceBranch: false };
+  draft.autoMergePolicies[key] = { enabled: true, minimumScore: 0, targetMode: "specified", targetBranches: [], method: "merge", removeSourceBranch: false };
   let messages = validatePromptDraft(draft).map(item => item.message).join("\n");
   assert.match(messages, /1 到 100/);
   assert.match(messages, /目标分支/);
@@ -156,6 +164,13 @@ test("自动合并仅允许完整项目路径，且启用策略需合法门槛�
   draft.autoMergePolicies[key].targetBranches = ["feature/*"];
   messages = validatePromptDraft(draft).map(item => item.message).join("\n");
   assert.match(messages, /GitLab 不接受/);
+
+  for (const targetMode of ["default", "any"] as const) {
+    draft.autoMergePolicies[key].targetMode = targetMode;
+    draft.autoMergePolicies[key].targetBranches = [];
+    messages = validatePromptDraft(draft).map(item => item.message).join("\n");
+    assert.doesNotMatch(messages, /目标分支|GitLab 不接受/, `${targetMode} 不要求填写分支`);
+  }
 });
 
 test("任一最终启用项目都要求 User Prompt 含 diffs_text，关闭后允许普通模板", () => {
@@ -178,7 +193,7 @@ test("任一最终启用项目都要求 User Prompt 含 diffs_text，关闭后�
   assert.deepEqual(placeholderErrors, [], "最终全部关闭时可移除占位符");
 });
 
-test("确认摘要只包含首次启用与新开启删除源分支的项目", () => {
+test("确认摘要只包含首次启用、删除源分支与新切换任意目标的项目", () => {
   const draft = createPromptDraft(detail);
   const appKey = projectKey("group/app");
   const apiKey = projectKey("group/api");
@@ -188,8 +203,17 @@ test("确认摘要只包含首次启用与新开启删除源分支的项目", ()
   assert.deepEqual(summarizeAutoMergeConfirmation(draft), {
     enabledProjects: ["group/app"],
     removeSourceBranchProjects: ["group/api"],
+    anyTargetProjects: [],
   });
   draft.originalAutoMergePolicies[appKey] = structuredClone(draft.autoMergePolicies[appKey]);
   draft.originalAutoMergePolicies[apiKey] = structuredClone(draft.autoMergePolicies[apiKey]);
-  assert.deepEqual(summarizeAutoMergeConfirmation(draft), { enabledProjects: [], removeSourceBranchProjects: [] });
+  assert.deepEqual(summarizeAutoMergeConfirmation(draft), { enabledProjects: [], removeSourceBranchProjects: [], anyTargetProjects: [] });
+
+  draft.autoMergePolicies[apiKey].targetMode = "any";
+  draft.autoMergePolicies[apiKey].targetBranches = [];
+  assert.deepEqual(summarizeAutoMergeConfirmation(draft), {
+    enabledProjects: [],
+    removeSourceBranchProjects: [],
+    anyTargetProjects: ["group/api"],
+  });
 });

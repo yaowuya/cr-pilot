@@ -11,6 +11,7 @@ const REFS = { baseSha: "b".repeat(40), startSha: "c".repeat(40), headSha: HEAD 
 const policy: AutoMergePolicy = {
   enabled: true,
   minimumScore: 90,
+  targetMode: "specified",
   targetBranches: ["main", "release"],
   method: "squash",
   removeSourceBranch: true,
@@ -56,7 +57,12 @@ const structured = JSON.stringify({
 
 function harness(options: {
   batchText?: string;
+  initialPolicy?: AutoMergePolicy;
   currentPolicy?: AutoMergePolicy;
+  reviewedDefaultBranch?: string;
+  currentDefaultBranch?: string;
+  defaultBranchError?: Error;
+  omitDefaultBranch?: boolean;
   mergeError?: Error;
   summaryText?: string;
   changes?: Change[];
@@ -73,6 +79,7 @@ function harness(options: {
   const records: ReviewRecord[] = [];
   let reviewCalls = 0;
   let policyCalls = 0;
+  let defaultBranchCalls = 0;
   const systemPrompts: string[] = [];
   const changes = options.changes ?? [{ newPath: "a.ts", oldPath: "a.ts", diff: "@@ -0,0 +1 @@\n+const x = 1;" }];
   const commits = [{ id: "c1", message: "feat" }];
@@ -108,6 +115,12 @@ function harness(options: {
       events.push("state");
       return { headSha: HEAD, state: "opened", targetBranch: options.currentTargetBranch ?? "main", refs: options.currentRefs ?? REFS };
     },
+    getProjectDefaultBranch: async () => {
+      defaultBranchCalls += 1;
+      events.push(`defaultBranch:${defaultBranchCalls}`);
+      if (options.defaultBranchError) throw options.defaultBranchError;
+      return defaultBranchCalls === 1 ? (options.reviewedDefaultBranch ?? "main") : (options.currentDefaultBranch ?? "main");
+    },
     mergeMergeRequest: async (_project, _iid, command) => {
       events.push(`merge:${command.sha}:${command.method}:${command.removeSourceBranch}`);
       if (options.mergeError) throw options.mergeError;
@@ -116,6 +129,7 @@ function harness(options: {
     getUser: async (id) => ({ id, name: "作者", username: "author" }),
   };
   if (options.omitSnapshot) delete client.getRepositoryReviewSnapshot;
+  if (options.omitDefaultBranch) delete client.getProjectDefaultBranch;
   const reviewer: Reviewer = {
     review: async ({ systemPrompt, code }) => {
       reviewCalls += 1;
@@ -148,7 +162,8 @@ function harness(options: {
     resolveAutoMergePolicy: () => {
       policyCalls += 1;
       events.push(`policy:${policyCalls}`);
-      return policyCalls === 1 ? policy : (options.currentPolicy ?? policy);
+      const initialPolicy = options.initialPolicy ?? policy;
+      return policyCalls === 1 ? initialPolicy : (options.currentPolicy ?? initialPolicy);
     },
   });
   return { pipeline, events, records, systemPrompts, getReviewCalls: () => reviewCalls, getPolicyCalls: () => policyCalls };
@@ -164,9 +179,41 @@ test("记录与 findings 落库后复核 state/policy，再用 expected sha 合�
   assert.match(run.systemPrompts[0] ?? "", /blocking_findings/);
   assert.equal(run.getPolicyCalls(), 2, "任务开始与 PUT 前各解析一次策略");
   assert.equal(run.events.includes("snapshot"), true);
+  assert.equal(run.events.some((event) => event.startsWith("defaultBranch:")), false, "specified 模式不应发默认分支请求");
   assert.equal(run.events.includes("legacyChanges") || run.events.includes("versions"), false, "自动合并必须只使用同一 version 快照");
   assert.deepEqual(run.events.slice(-5), ["record", "finding", "state", "policy:2", `merge:${HEAD}:squash:true`]);
   assert.equal(run.records[0]?.result, "success");
+});
+
+test("default 模式在任务开始与 PUT 前各读取一次默认分支，完全一致才合并", async () => {
+  const defaultPolicy: AutoMergePolicy = { ...policy, targetMode: "default", targetBranches: [] };
+  const run = harness({ initialPolicy: defaultPolicy });
+  await run.pipeline.run(task);
+  assert.equal(run.events.filter((event) => event.startsWith("defaultBranch:")).length, 2);
+  assert.equal(run.events.some((event) => event.startsWith("merge:")), true);
+});
+
+test("default 模式默认分支变化、缺 seam 或读取失败均 fail closed，但评审保持成功", async () => {
+  const defaultPolicy: AutoMergePolicy = { ...policy, targetMode: "default", targetBranches: [] };
+  for (const patch of [
+    { currentDefaultBranch: "release" },
+    { reviewedDefaultBranch: "release", currentDefaultBranch: "release" },
+    { omitDefaultBranch: true },
+    { defaultBranchError: new Error("project unavailable") },
+  ]) {
+    const run = harness({ initialPolicy: defaultPolicy, ...patch });
+    await run.pipeline.run(task);
+    assert.equal(run.events.some((event) => event.startsWith("merge:")), false);
+    assert.equal(run.records[0]?.result, "success");
+  }
+});
+
+test("any 模式不读取默认分支且允许任意未变化的目标分支", async () => {
+  const anyPolicy: AutoMergePolicy = { ...policy, targetMode: "any", targetBranches: [] };
+  const run = harness({ initialPolicy: anyPolicy, defaultBranchError: new Error("should not call") });
+  await run.pipeline.run(task);
+  assert.equal(run.events.some((event) => event.startsWith("defaultBranch:")), false);
+  assert.equal(run.events.some((event) => event.startsWith("merge:")), true);
 });
 
 test("目标分支在评审后从 main 改为同样允许的 release 仍阻断合并", async () => {
