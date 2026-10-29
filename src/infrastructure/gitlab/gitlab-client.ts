@@ -477,6 +477,18 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
       return readAutoMergeState(projectId, iid, gitlabUrl, gitlabToken);
     },
 
+    async getProjectDefaultBranch(projectId, gitlabUrl = "", gitlabToken = "") {
+      const payload = await request<{ default_branch?: unknown }>(
+        gitlabUrl,
+        gitlabToken,
+        `/api/v4/projects/${projectId}`,
+      );
+      if (typeof payload.default_branch !== "string" || !payload.default_branch || payload.default_branch !== payload.default_branch.trim()) {
+        throw new Error("GitLab 项目默认分支缺失或非法");
+      }
+      return payload.default_branch;
+    },
+
     async mergeMergeRequest(projectId, iid, command, gitlabUrl = "", gitlabToken = "") {
       const path = `/api/v4/projects/${projectId}/merge_requests/${iid}/merge`;
       try {

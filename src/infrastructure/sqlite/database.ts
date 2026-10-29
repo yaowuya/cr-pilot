@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS project_review_settings (
   repository_context_enabled INTEGER NOT NULL DEFAULT 0 CHECK (repository_context_enabled IN (0, 1)),
   auto_merge_enabled INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_enabled IN (0, 1)),
   auto_merge_minimum_score INTEGER NOT NULL DEFAULT 100 CHECK (auto_merge_minimum_score BETWEEN 1 AND 100),
+  auto_merge_target_mode TEXT NOT NULL DEFAULT 'default' CHECK (auto_merge_target_mode IN ('default', 'specified', 'any')),
   auto_merge_target_branches TEXT NOT NULL DEFAULT '[]',
   auto_merge_method TEXT NOT NULL DEFAULT 'merge' CHECK (auto_merge_method IN ('merge', 'squash')),
   auto_merge_remove_source_branch INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_remove_source_branch IN (0, 1)),
@@ -204,6 +205,18 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "project_review_settings", "auto_merge_enabled", "INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_enabled IN (0, 1))");
   addColumnIfMissing(db, "project_review_settings", "auto_merge_minimum_score", "INTEGER NOT NULL DEFAULT 100 CHECK (auto_merge_minimum_score BETWEEN 1 AND 100)");
   addColumnIfMissing(db, "project_review_settings", "auto_merge_target_branches", "TEXT NOT NULL DEFAULT '[]'");
+  // 旧版本只支持 allowlist，ALTER 默认 specified 才不会把已启用策略扩大为 default/any。
+  // 仅本次补列时把“关闭且空列表”归为新安全默认；重复启动不得改写用户显式选择。
+  const targetModeAdded = addColumnIfMissing(
+    db,
+    "project_review_settings",
+    "auto_merge_target_mode",
+    "TEXT NOT NULL DEFAULT 'specified' CHECK (auto_merge_target_mode IN ('default', 'specified', 'any'))",
+  );
+  if (targetModeAdded) {
+    db.prepare(`UPDATE project_review_settings SET auto_merge_target_mode = 'default'
+      WHERE auto_merge_enabled = 0 AND auto_merge_target_branches = '[]'`).run();
+  }
   addColumnIfMissing(db, "project_review_settings", "auto_merge_method", "TEXT NOT NULL DEFAULT 'merge' CHECK (auto_merge_method IN ('merge', 'squash'))");
   addColumnIfMissing(db, "project_review_settings", "auto_merge_remove_source_branch", "INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_remove_source_branch IN (0, 1))");
   // 采纳追踪需要任务级实例与凭据；老库补列后历史建议为空，追踪会按「无凭据」
@@ -212,10 +225,11 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "review_findings", "gitlab_token_sealed", "TEXT NOT NULL DEFAULT ''");
 }
 
-/** 给表补一列；表不存在或列已存在时静默跳过。 */
-function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): void {
+/** 给表补一列；仅实际执行 ALTER 时返回 true，供一次性数据归一化使用。 */
+function addColumnIfMissing(db: DatabaseSync, table: string, column: string, definition: string): boolean {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
-  if (columns.length === 0) return; // 表还不存在，SCHEMA 建表时已带该列
-  if (columns.some((item) => item.name === column)) return;
+  if (columns.length === 0) return false; // 表还不存在，SCHEMA 建表时已带该列
+  if (columns.some((item) => item.name === column)) return false;
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  return true;
 }

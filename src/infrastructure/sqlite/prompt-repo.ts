@@ -19,6 +19,7 @@ import {
   validateProjectSettings,
   PromptValidationError,
   DEFAULT_PROMPT_REPOSITORY,
+  type AutoMergeTargetMode,
   type ProjectReviewSetting,
   type ProjectReviewSettingPatch,
   type PromptInput,
@@ -35,6 +36,7 @@ interface ProjectSettingRow {
   repository_context_enabled: number;
   auto_merge_enabled: number;
   auto_merge_minimum_score: number;
+  auto_merge_target_mode: string;
   auto_merge_target_branches: string;
   auto_merge_method: string;
   auto_merge_remove_source_branch: number;
@@ -115,14 +117,17 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     return new Set(rows.map((row) => normalizeRepositoryKey(String(row.project))).filter(isRepositoryProjectKey));
   };
 
-  /** 损坏的历史 JSON 以安全关闭处理；写入口始终只产生字符串数组。 */
-  const parseTargetBranches = (value: string): string[] => {
+  /** 损坏的历史 JSON 以安全关闭处理；valid 区分真实空数组与解析失败。 */
+  const parseTargetBranches = (value: string): { branches: string[]; valid: boolean } => {
     try {
       const parsed = JSON.parse(value) as unknown;
-      return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : [];
+      if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+        return { branches: parsed, valid: true };
+      }
     } catch {
-      return [];
+      // 统一在下方按无效配置关闭，不把底层 JSON 错误暴露到 API。
     }
+    return { branches: [], valid: false };
   };
 
   /** 读取完整项目设置；未落库时返回安全默认，不把缺失配置解释为启用。 */
@@ -134,14 +139,21 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     if (!row) {
       return { project: key, repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy() };
     }
-    const targetBranches = parseTargetBranches(row.auto_merge_target_branches);
+    const parsedBranches = parseTargetBranches(row.auto_merge_target_branches);
+    const modeValid = row.auto_merge_target_mode === "default" ||
+      row.auto_merge_target_mode === "specified" || row.auto_merge_target_mode === "any";
+    const targetMode: AutoMergeTargetMode = modeValid ? row.auto_merge_target_mode as AutoMergeTargetMode : "default";
+    const combinationValid = parsedBranches.valid &&
+      (targetMode === "specified" ? parsedBranches.branches.length > 0 : parsedBranches.branches.length === 0);
+    const targetBranches = targetMode === "specified" ? parsedBranches.branches : [];
     return {
       project: key,
       repositoryContextEnabled: row.repository_context_enabled === 1,
       autoMergePolicy: {
-        // 已启用但目标分支损坏/为空时按关闭返回，避免高风险动作读取半份配置。
-        enabled: row.auto_merge_enabled === 1 && targetBranches.length > 0,
+        // mode/JSON/组合任一损坏都按关闭返回，避免高风险动作读取半份配置。
+        enabled: row.auto_merge_enabled === 1 && modeValid && combinationValid,
         minimumScore: row.auto_merge_minimum_score,
+        targetMode,
         targetBranches,
         method: row.auto_merge_method === "squash" ? "squash" : "merge",
         removeSourceBranch: row.auto_merge_remove_source_branch === 1,
@@ -212,11 +224,13 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
   const writeSettings = (settings: readonly ProjectReviewSettingPatch[]): void => {
     const upsert = db.prepare(`INSERT INTO project_review_settings (
         project, repository_context_enabled, auto_merge_enabled, auto_merge_minimum_score,
-        auto_merge_target_branches, auto_merge_method, auto_merge_remove_source_branch, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project) DO UPDATE SET
+        auto_merge_target_mode, auto_merge_target_branches, auto_merge_method,
+        auto_merge_remove_source_branch, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project) DO UPDATE SET
         repository_context_enabled = excluded.repository_context_enabled,
         auto_merge_enabled = excluded.auto_merge_enabled,
         auto_merge_minimum_score = excluded.auto_merge_minimum_score,
+        auto_merge_target_mode = excluded.auto_merge_target_mode,
         auto_merge_target_branches = excluded.auto_merge_target_branches,
         auto_merge_method = excluded.auto_merge_method,
         auto_merge_remove_source_branch = excluded.auto_merge_remove_source_branch,
@@ -230,6 +244,7 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
         (patch.repositoryContextEnabled ?? current.repositoryContextEnabled) ? 1 : 0,
         policy.enabled ? 1 : 0,
         policy.minimumScore,
+        policy.targetMode,
         JSON.stringify(policy.targetBranches),
         policy.method,
         policy.removeSourceBranch ? 1 : 0,

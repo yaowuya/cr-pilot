@@ -91,9 +91,14 @@ function readAutoMergePolicy(value: unknown): ProjectAutoMergePolicy {
     throw new PromptValidationError("auto_merge_policy 必须是对象");
   }
   const policy = value as Record<string, unknown>;
+  // 旧客户端没有 target_mode：非空列表沿用 specified，空列表收敛到安全默认 default。
+  const targetMode = policy.target_mode === undefined
+    ? Array.isArray(policy.target_branches) && policy.target_branches.length > 0 ? "specified" : "default"
+    : policy.target_mode;
   return {
     enabled: policy.enabled as boolean,
     minimumScore: policy.minimum_score as number,
+    targetMode: targetMode as ProjectAutoMergePolicy["targetMode"],
     targetBranches: policy.target_branches as string[],
     method: policy.method as ProjectAutoMergePolicy["method"],
     removeSourceBranch: policy.remove_source_branch as boolean,

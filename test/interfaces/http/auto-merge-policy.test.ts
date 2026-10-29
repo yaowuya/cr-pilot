@@ -19,6 +19,7 @@ const EDITOR_PASSWORD = "editor-password";
 const requestPolicy = {
   enabled: true,
   minimum_score: 95,
+  target_mode: "specified",
   target_branches: ["main"],
   method: "squash",
   remove_source_branch: true,
@@ -87,6 +88,7 @@ test("管理员以 snake_case 保存自动合并，详情、列表和 meta 返�
         autoMergePolicy: {
           enabled: true,
           minimumScore: 95,
+          targetMode: "specified",
           targetBranches: ["main"],
           method: "squash",
           removeSourceBranch: true,
@@ -96,6 +98,35 @@ test("管理员以 snake_case 保存自动合并，详情、列表和 meta 返�
       const meta = await (await authed(base, harness.adminToken, "/api/prompts/meta")).json() as { projectSettings: unknown[] };
       assert.deepEqual(list[0]?.projectSettings, detail.projectSettings);
       assert.deepEqual(meta.projectSettings, detail.projectSettings);
+    });
+  } finally { harness.close(); }
+});
+
+test("HTTP target_mode 支持三种模式并兼容旧 payload 推断", async () => {
+  const harness = buildHarness();
+  try {
+    await withServer(harness.app, async (base) => {
+      const { target_mode: _ignored, ...legacySpecified } = requestPolicy;
+      const cases = [
+        { repository: "legacy-specified", project: "group/legacy", request: legacySpecified, expected: "specified" },
+        { repository: "legacy-default", project: "group/legacy-default", request: { ...legacySpecified, enabled: false, target_branches: [] }, expected: "default" },
+        { repository: "explicit-default", project: "group/default", request: { ...requestPolicy, target_mode: "default", target_branches: [] }, expected: "default" },
+        { repository: "explicit-any", project: "group/any", request: { ...requestPolicy, target_mode: "any", target_branches: [] }, expected: "any" },
+      ];
+      for (const item of cases) {
+        const response = await authed(base, harness.adminToken, "/api/prompts", {
+          method: "POST",
+          body: JSON.stringify(promptBody({
+            repository: item.repository,
+            projects: [item.project],
+            project_settings: [{ project: item.project, auto_merge_policy: item.request }],
+          })),
+        });
+        assert.equal(response.status, 200, item.repository);
+        const detail = await response.json() as { projectSettings: Array<{ autoMergePolicy: { targetMode: string; targetBranches: string[] } }> };
+        assert.equal(detail.projectSettings[0]?.autoMergePolicy.targetMode, item.expected);
+        assert.deepEqual(detail.projectSettings[0]?.autoMergePolicy.targetBranches, item.request.target_branches);
+      }
     });
   } finally { harness.close(); }
 });
@@ -274,6 +305,9 @@ test("管理员请求拒绝非法自动合并结构且不改变已保存策略",
         { ...requestPolicy, minimum_score: 0 },
         { ...requestPolicy, target_branches: [] },
         { ...requestPolicy, target_branches: ["main", " main "] },
+        { ...requestPolicy, target_mode: "default", target_branches: ["main"] },
+        { ...requestPolicy, target_mode: "any", target_branches: ["main"] },
+        { ...requestPolicy, target_mode: "glob" },
         { ...requestPolicy, method: "rebase" },
       ];
       for (const auto_merge_policy of invalidPolicies) {
@@ -289,6 +323,7 @@ test("管理员请求拒绝非法自动合并结构且不改变已保存策略",
       assert.deepEqual(detail.projectSettings[0]?.autoMergePolicy, {
         enabled: false,
         minimumScore: 100,
+        targetMode: "default",
         targetBranches: [],
         method: "merge",
         removeSourceBranch: false,

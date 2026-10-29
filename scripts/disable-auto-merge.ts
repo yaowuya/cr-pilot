@@ -35,7 +35,8 @@ function assertTargetDatabase(path: string): void {
     );
     for (const column of [
       "project", "repository_context_enabled", "auto_merge_enabled", "auto_merge_minimum_score",
-      "auto_merge_target_branches", "auto_merge_method", "auto_merge_remove_source_branch", "updated_at",
+      "auto_merge_target_mode", "auto_merge_target_branches", "auto_merge_method",
+      "auto_merge_remove_source_branch", "updated_at",
     ]) {
       if (!columns.has(column)) throw new Error(`数据库不支持自动合并回退门禁：缺少列 ${column}`);
     }

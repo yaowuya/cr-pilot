@@ -17,11 +17,16 @@ export const REPOSITORY_STANDARDS_MAX_LENGTH = 32_000;
 /** GitLab 合并方式；不支持 rebase 等隐式降级。 */
 export type AutoMergeMethod = "merge" | "squash";
 
-/** 项目级自动合并策略；评分达到门槛且目标分支精确命中时才允许进入执行决策。 */
+/** 自动合并的目标分支范围：默认分支、精确列表或任意目标分支。 */
+export type AutoMergeTargetMode = "default" | "specified" | "any";
+
+/** 项目级自动合并策略；评分达到门槛且目标分支范围命中时才允许进入执行决策。 */
 export interface ProjectAutoMergePolicy {
   enabled: boolean;
   /** 1..100 的整数；默认 100，避免启用后意外放宽质量门槛。 */
   minimumScore: number;
+  /** 目标分支匹配方式；`specified` 才读取精确列表。 */
+  targetMode: AutoMergeTargetMode;
   /** GitLab 目标分支的大小写敏感精确列表，不做通配或后缀匹配。 */
   targetBranches: string[];
   method: AutoMergeMethod;
@@ -33,6 +38,7 @@ export function defaultProjectAutoMergePolicy(): ProjectAutoMergePolicy {
   return {
     enabled: false,
     minimumScore: 100,
+    targetMode: "default",
     targetBranches: [],
     method: "merge",
     removeSourceBranch: false,
@@ -108,10 +114,18 @@ function normalizeAutoMergePolicy(value: unknown, project: string): ProjectAutoM
   if (!Number.isInteger(policy.minimumScore)) throw new PromptValidationError("自动合并最低分必须是整数");
   const minimumScore = Number(policy.minimumScore);
   if (minimumScore < 1 || minimumScore > 100) throw new PromptValidationError("自动合并最低分必须在 1..100 之间");
+  if (policy.targetMode !== "default" && policy.targetMode !== "specified" && policy.targetMode !== "any") {
+    throw new PromptValidationError("自动合并 target_mode 只能是 default、specified 或 any");
+  }
   if (!Array.isArray(policy.targetBranches)) throw new PromptValidationError("自动合并目标分支必须是数组");
   const targetBranches = policy.targetBranches.map(normalizeTargetBranch);
   if (new Set(targetBranches).size !== targetBranches.length) throw new PromptValidationError("自动合并目标分支存在重复项");
-  if (policy.enabled && targetBranches.length === 0) throw new PromptValidationError("启用自动合并时目标分支至少一项");
+  if (policy.targetMode !== "specified" && targetBranches.length > 0) {
+    throw new PromptValidationError(`自动合并 target_mode=${policy.targetMode} 时目标分支列表必须为空`);
+  }
+  if (policy.enabled && policy.targetMode === "specified" && targetBranches.length === 0) {
+    throw new PromptValidationError("启用 specified 自动合并时目标分支至少一项");
+  }
   if (policy.enabled && !isFullRepositoryProjectKey(project)) {
     throw new PromptValidationError("启用自动合并需要完整 namespace/project 项目路径");
   }
@@ -124,6 +138,7 @@ function normalizeAutoMergePolicy(value: unknown, project: string): ProjectAutoM
   return {
     enabled: policy.enabled,
     minimumScore,
+    targetMode: policy.targetMode,
     targetBranches,
     method: policy.method,
     removeSourceBranch: policy.removeSourceBranch,
