@@ -3,11 +3,15 @@
     <header class="page-header">
       <div>
         <h1 class="page-header__title">Prompt 管理</h1>
-        <p class="page-header__desc">共享评审规则，按项目选择是否读取仓库上下文。未配置项目沿用 default。</p>
+        <p class="page-header__desc">共享评审规则，按项目配置仓库上下文与安全自动合并；未配置项目沿用 default。</p>
       </div>
       <div class="page-header__actions">
         <el-button :loading="loading" @click="load"><el-icon><Refresh /></el-icon>刷新</el-button>
-        <el-button :loading="importing" @click="onImport"><el-icon><Download /></el-icon>从 yaml 导入</el-button>
+        <el-tooltip :disabled="!yamlImportBlocked" :content="yamlImportBlockReason" placement="bottom">
+          <span class="action-tooltip">
+            <el-button :loading="importing" :disabled="yamlImportBlocked" @click="onImport"><el-icon><Download /></el-icon>从 yaml 导入</el-button>
+          </span>
+        </el-tooltip>
         <el-button type="primary" @click="openCreate"><el-icon><Plus /></el-icon>新建</el-button>
       </div>
     </header>
@@ -47,13 +51,17 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="仓库上下文" min-width="160">
+          <el-table-column label="项目执行" min-width="190">
             <template #default="{ row }">
               <div class="repository-state">
-                <el-tag :type="enabledCount(row) ? 'success' : 'info'" size="small" effect="light">
-                  {{ row.repository === 'default' ? '不自动开启' : enabledCount(row) ? `已开启 ${enabledCount(row)} / ${row.projects.length}` : '未开启' }}
-                </el-tag>
-                <span class="cell-muted">{{ row.hasRepositoryStandards ? '已配置仓库规范' : '未填写仓库规范' }}</span>
+                <span v-if="row.repository === 'default'" class="cell-muted">全局兜底，不配置项目执行</span>
+                <template v-else>
+                  <span>仓库上下文 {{ enabledCount(row) }} / {{ row.projects.length }}</span>
+                  <span :class="autoMergeEnabledCount(row) ? 'auto-merge-count--enabled' : 'cell-muted'">
+                    自动合并 {{ autoMergeEnabledCount(row) }} / {{ row.projects.length }}
+                  </span>
+                  <span class="cell-muted">{{ row.hasRepositoryStandards ? '已配置仓库规范' : '未填写仓库规范' }}</span>
+                </template>
               </div>
             </template>
           </el-table-column>
@@ -75,7 +83,10 @@
               <!-- 一个入口即可：名称、项目开关、Prompt、规范、模型都在同一个弹窗内分区编辑，
                    分成「仓库设置」和「编辑」只是重复入口，容易让用户以为保存范围不同。 -->
               <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
-              <el-popconfirm :title="`删除 ${row.repository}？关联项目将重新匹配规则，最后解绑的项目将关闭仓库上下文。`" @confirm="onDelete(row)">
+              <el-tooltip v-if="rowAutoMergeProtected(row)" content="该 Prompt 关联项目已启用自动合并，仅管理员可以删除" placement="top">
+                <span><el-button link type="danger" disabled>删除</el-button></span>
+              </el-tooltip>
+              <el-popconfirm v-else :title="`删除 ${row.repository}？关联项目将重新匹配规则，最后解绑的项目将关闭仓库上下文。`" @confirm="onDelete(row)">
                 <template #reference><el-button link type="danger" :loading="deletingId === row.id" :disabled="deletingId !== null">删除</el-button></template>
               </el-popconfirm>
             </template>
@@ -127,11 +138,15 @@
       <el-alert v-else-if="detailError" type="error" :closable="false" show-icon>
         <template #title>{{ detailError }}</template><el-button link type="primary" @click="retryEditor">重新加载详情</el-button>
       </el-alert>
-      <el-form v-else ref="formRef" :model="form" :rules="formRules" :disabled="saving" label-position="top" @submit.prevent="onSave">
+      <el-form v-else ref="formRef" :model="form" :rules="formRules" :disabled="saving || autoMergeProtected || autoMergeStateUnknown" label-position="top" @submit.prevent="onSave">
         <el-alert v-if="metaError" type="warning" :closable="false" show-icon class="section-notice">
-          <template #title>下拉建议加载失败，已有配置不会清空；新关联的仓库开关需加载状态后才能修改。</template>
+          <template #title>下拉建议加载失败，已有配置不会清空；新关联项目的仓库上下文与自动合并状态需加载后才能修改。</template>
           <el-button link type="primary" :loading="metaLoading" @click="reloadMeta">重试加载建议</el-button>
         </el-alert>
+        <el-alert v-if="autoMergeProtected" type="warning" :closable="false" show-icon class="write-protection-notice"
+          title="此 Prompt 关联了已启用自动合并的项目，仅管理员可以修改或删除；当前表单只读，可查看后取消关闭。" />
+        <el-alert v-else-if="autoMergeStateUnknown" type="warning" :closable="false" show-icon class="write-protection-notice"
+          title="项目自动合并状态尚未加载，普通账号暂时只读；请重试加载建议或取消关闭。" />
         <!-- 名称放在标签页之外：编辑时无论当前哪个分组都可见，改名不依赖切换标签。 -->
         <el-form-item label="名称" prop="repository" class="editor-identity">
           <el-input v-model="form.repository" placeholder="例如通用评审规则" :disabled="editingId !== null && editingName === 'default'" class="name-input" />
@@ -149,23 +164,68 @@
                   </el-select>
                 </el-form-item></el-col>
               </el-row>
-              <el-alert v-if="form.repository === 'default'" type="info" :closable="false" show-icon title="default 是全局兜底，不绑定项目，也不会自动为未配置项目开启仓库拉取。" />
+              <el-alert v-if="form.repository === 'default'" type="info" :closable="false" show-icon title="default 是全局兜底，不绑定项目，不配置仓库上下文或自动合并。" />
               <template v-else>
-                <div class="section-heading"><h2>拉取仓库进行 Review</h2><el-tag size="small" type="info" effect="plain">按项目配置</el-tag></div>
+                <el-alert v-if="!isAdmin" type="info" :closable="false" show-icon class="section-notice"
+                  title="只有管理员可以修改自动合并策略；若关联项目已启用，整份 Prompt 将切换为只读。" />
+                <div class="section-heading"><h2>项目执行配置</h2><el-tag size="small" type="info" effect="plain">按项目配置</el-tag></div>
                 <p class="section-description">开关保存后对后续评审生效；同一项目在其他 Prompt 中也共享此状态。</p>
                 <div v-if="form.projects.length" class="project-settings">
-                  <div v-for="project in form.projects" :key="projectKey(project)" class="project-setting">
-                    <div class="project-setting__name"><strong>{{ project }}</strong>
-                      <span v-if="!canEnableRepositoryContext(project)" class="cell-muted">项目名包含不允许的字符，无法开启</span>
-                      <span v-else-if="form.projectStates[projectKey(project)] === undefined" class="cell-muted">状态待加载</span>
-                      <span v-else class="cell-muted">{{ form.projectStates[projectKey(project)] ? '读取相关仓库文件辅助评审' : '仅使用本次 diff 评审' }}</span>
+                  <article v-for="project in form.projects" :key="projectKey(project)" class="project-setting">
+                    <header class="project-setting__header">
+                      <strong>{{ project }}</strong>
+                      <el-tag v-if="!canEnableAutoMerge(project)" size="small" type="info" effect="plain">短项目名</el-tag>
+                    </header>
+                    <div class="project-execution-row">
+                      <div class="project-setting__name"><strong>拉取仓库上下文</strong>
+                        <span v-if="!canEnableRepositoryContext(project)" class="cell-muted">项目名包含不允许的字符，无法开启</span>
+                        <span v-else-if="form.projectStates[projectKey(project)] === undefined" class="cell-muted">状态待加载</span>
+                        <span v-else class="cell-muted">{{ form.projectStates[projectKey(project)] ? '读取相关仓库文件辅助评审' : '仅使用本次 diff 评审' }}</span>
+                      </div>
+                      <el-switch :model-value="form.projectStates[projectKey(project)] === true" :aria-label="`${project} 拉取仓库进行 Review`"
+                        :disabled="!canEnableRepositoryContext(project) || form.projectStates[projectKey(project)] === undefined"
+                        active-text="开启" inactive-text="关闭" @change="onProjectToggle(project, $event)" />
                     </div>
-                    <el-switch :model-value="form.projectStates[projectKey(project)] === true" :aria-label="`${project} 拉取仓库进行 Review`"
-                      :disabled="!canEnableRepositoryContext(project) || form.projectStates[projectKey(project)] === undefined"
-                      active-text="开启" inactive-text="关闭" @change="onProjectToggle(project, $event)" />
-                  </div>
+                    <div class="auto-merge-setting">
+                      <div class="project-execution-row">
+                        <div class="project-setting__name"><h3>自动合并</h3>
+                          <span v-if="!canEnableAutoMerge(project)" class="cell-muted">仅完整 namespace/project 可开启，短项目名不会模糊匹配</span>
+                          <span v-else-if="!form.autoMergeKnown[projectKey(project)]" class="cell-muted">状态待加载</span>
+                          <span v-else-if="!isAdmin" class="cell-muted">只有管理员可以修改自动合并策略，当前为只读</span>
+                          <span v-else class="cell-muted">达到门槛并通过固定安全检查后，由服务端请求 GitLab 合并</span>
+                        </div>
+                        <el-switch :model-value="form.autoMergePolicies[projectKey(project)].enabled" :aria-label="`${project} 自动合并`"
+                          :disabled="!isAdmin || !canEnableAutoMerge(project) || !form.autoMergeKnown[projectKey(project)]"
+                          active-text="开启" inactive-text="关闭" @change="onAutoMergeToggle(project, $event)" />
+                      </div>
+                      <div v-if="form.autoMergeKnown[projectKey(project)] && form.autoMergePolicies[projectKey(project)].enabled" class="auto-merge-fields">
+                        <el-form-item label="最低评分">
+                          <el-input-number v-model="form.autoMergePolicies[projectKey(project)].minimumScore" :min="1" :max="100" :step="1"
+                            :disabled="!isAdmin" controls-position="right" />
+                        </el-form-item>
+                        <el-form-item label="目标分支（精确匹配）" class="auto-merge-fields__branches">
+                          <el-select v-model="form.autoMergePolicies[projectKey(project)].targetBranches" multiple filterable allow-create default-first-option
+                            :reserve-keyword="false" :disabled="!isAdmin" placeholder="输入 main、release 等分支后回车"
+                            @change="normalizeAutoMergeBranches(project)">
+                            <el-option v-for="branch in form.autoMergePolicies[projectKey(project)].targetBranches" :key="branch" :label="branch" :value="branch" />
+                          </el-select>
+                        </el-form-item>
+                        <el-form-item label="请求合并方式">
+                          <el-radio-group v-model="form.autoMergePolicies[projectKey(project)].method" :disabled="!isAdmin">
+                            <el-radio-button value="merge">Merge commit</el-radio-button>
+                            <el-radio-button value="squash">Squash</el-radio-button>
+                          </el-radio-group>
+                        </el-form-item>
+                        <el-form-item label="源分支处理">
+                          <el-switch v-model="form.autoMergePolicies[projectKey(project)].removeSourceBranch" :disabled="!isAdmin" active-text="请求合并后删除源分支" inactive-text="不主动删除源分支" />
+                        </el-form-item>
+                        <el-alert class="auto-merge-safety" type="warning" :closable="false" show-icon
+                          title="critical / high 问题固定阻断自动合并；GitLab 的审批、CI、冲突与保护分支规则仍照常生效。" />
+                      </div>
+                    </div>
+                  </article>
                 </div>
-                <el-empty v-else description="先关联项目，再选择是否拉取仓库" :image-size="60" />
+                <el-empty v-else description="先关联项目，再配置仓库上下文与自动合并" :image-size="60" />
                 <el-alert type="info" :closable="false" show-icon title="短项目名按路径结尾匹配（如 auto-ops 匹配 group/auto-ops），精确或更长的关联优先；实际仓库地址始终由本次 MR 的源项目确定。需要任务 GitLab token 具备仓库读取权限，采用单分支浅克隆，只读相关上下文，不执行代码；拉取失败、超时或版本不可用将终止本次评审。" />
               </template>
             </section>
@@ -204,7 +264,7 @@
       <template #footer>
         <div class="editor-footer"><span class="cell-muted">更改仅影响后续开始的评审</span><div>
           <el-button :disabled="saving" @click="requestClose">取消</el-button>
-          <el-button type="primary" :loading="saving" :disabled="editorLoading || !detailReady" @click="onSave">保存</el-button>
+          <el-button type="primary" :loading="saving" :disabled="editorLoading || !detailReady || autoMergeProtected || autoMergeStateUnknown" @click="onSave">保存</el-button>
         </div></div>
       </template>
     </el-dialog>
@@ -218,11 +278,15 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from "elem
 import { Download, Folder, Plus, Refresh } from "@element-plus/icons-vue";
 import PromptEditor from "../components/PromptEditor.vue";
 import { api, isApiError } from "../api/client.ts";
+import { currentIsAdmin } from "../stores/auth.ts";
 import type { PromptMeta, PromptSummary, StoredPrompt } from "../types.ts";
-import { buildPromptPayload, canEnableRepositoryContext, createPromptDraft, createRequestGeneration, projectKey,
-  REPOSITORY_STANDARDS_MAX_LENGTH, synchronizeProjectSettings, validatePromptDraft, type PromptSection } from "./prompt-form.ts";
+import { buildPromptPayload, canEnableAutoMerge, canEnableRepositoryContext, createPromptDraft, createRequestGeneration,
+  normalizeTargetBranches, projectKey, REPOSITORY_STANDARDS_MAX_LENGTH, summarizeAutoMergeConfirmation,
+  synchronizeProjectSettings, validatePromptDraft, type PromptSection } from "./prompt-form.ts";
 
+const isAdmin = currentIsAdmin();
 const loading = ref(false), saving = ref(false), importing = ref(false);
+const listReady = ref(false);
 const loadError = ref(""), detailError = ref(""), metaError = ref(false);
 const prompts = ref<PromptSummary[]>([]);
 const dialogVisible = ref(false), editorLoading = ref(false), detailReady = ref(false), metaLoading = ref(false);
@@ -242,6 +306,23 @@ const providerOptions = computed(() => meta.value.providers);
 const modelOptions = computed(() => {
   const models = meta.value.providers.find(item => item.id === form.value.providerId)?.models ?? [];
   return form.value.model && !models.includes(form.value.model) ? [form.value.model, ...models] : models;
+});
+/** 普通账号不能改动任何关联了已启用自动合并项目的 Prompt。 */
+const autoMergeProtected = computed(() => !isAdmin.value && form.value.projects.some(project =>
+  form.value.autoMergeKnown[projectKey(project)] === true && form.value.autoMergePolicies[projectKey(project)]?.enabled === true));
+/** 未取得项目执行状态时同样 fail closed，避免保存后才收到权限 403。 */
+const autoMergeStateUnknown = computed(() => !isAdmin.value && form.value.projects.some(project =>
+  !form.value.autoMergeKnown[projectKey(project)]));
+const listHasEnabledAutoMerge = computed(() => prompts.value.some(prompt =>
+  prompt.projectSettings?.some(setting => setting.autoMergePolicy?.enabled) === true));
+const yamlImportBlocked = computed(() => !isAdmin.value &&
+  (!listReady.value || loading.value || Boolean(loadError.value) || listHasEnabledAutoMerge.value));
+const yamlImportBlockReason = computed(() => {
+  if (isAdmin.value) return "";
+  if (!listReady.value || loading.value) return "Prompt 列表加载完成前暂不允许导入";
+  if (loadError.value) return "Prompt 列表加载失败，无法确认自动合并权限";
+  if (listHasEnabledAutoMerge.value) return "存在已启用自动合并的项目，只有管理员可以从 YAML 导入";
+  return "";
 });
 
 /** 覆盖概览按项目名去重，避免同一项目被多条规则重复计数。 */
@@ -263,7 +344,7 @@ const coverageStats = computed(() => {
   ];
 });
 const workflowItems = [
-  { label: "项目与执行", note: "关联项目、评审白名单与仓库上下文" },
+  { label: "项目与执行", note: "关联项目、仓库上下文与安全自动合并" },
   { label: "评审 Prompt", note: "System Prompt 与 User Prompt" },
   { label: "仓库规范", note: "共享代码规范，最多 32,000 字符" },
   { label: "模型与通知", note: "厂商、模型、企微阈值与机器人" },
@@ -278,6 +359,8 @@ const formRules: FormRules = {
 };
 
 function enabledCount(row: PromptSummary): number { return row.projectSettings?.filter(item => item.repositoryContextEnabled).length ?? 0; }
+function autoMergeEnabledCount(row: PromptSummary): number { return row.projectSettings?.filter(item => item.autoMergePolicy?.enabled).length ?? 0; }
+function rowAutoMergeProtected(row: PromptSummary): boolean { return !isAdmin.value && autoMergeEnabledCount(row) > 0; }
 function errorMessage(error: unknown, fallback: string): string { return isApiError(error) ? error.message : fallback; }
 
 /** 请求序号使旧列表响应不能覆盖更晚的刷新/保存结果。 */
@@ -285,7 +368,7 @@ async function load(): Promise<void> {
   const request = listGeneration.start(); loading.value = true; loadError.value = "";
   try {
     const result = await api.get<PromptSummary[]>("/api/prompts");
-    if (mounted && listGeneration.isCurrent(request)) prompts.value = result;
+    if (mounted && listGeneration.isCurrent(request)) { prompts.value = result; listReady.value = true; }
   } catch (error) {
     if (mounted && listGeneration.isCurrent(request)) loadError.value = errorMessage(error,"加载 Prompt 列表失败");
   } finally { if (mounted && listGeneration.isCurrent(request)) loading.value = false; }
@@ -329,10 +412,39 @@ async function reloadMeta(): Promise<void> {
 }
 function onProjectsChange(): void { synchronizeProjectSettings(form.value,metaLoaded.value ? meta.value.projectSettings ?? [] : undefined); }
 function onProjectToggle(project: string, value: string | number | boolean): void { if (typeof value === "boolean") form.value.projectStates[projectKey(project)] = value; }
+function onAutoMergeToggle(project: string, value: string | number | boolean): void {
+  const key = projectKey(project);
+  if (typeof value === "boolean" && isAdmin.value && form.value.autoMergeKnown[key] && canEnableAutoMerge(project)) {
+    form.value.autoMergePolicies[key].enabled = value;
+  }
+}
+function normalizeAutoMergeBranches(project: string): void {
+  const policy = form.value.autoMergePolicies[projectKey(project)];
+  policy.targetBranches = normalizeTargetBranches(policy.targetBranches);
+}
 function onProviderChange(): void { form.value.model = ""; }
+
+/** 高影响能力只在从关到开时确认，普通门槛调整沿用已有保存确认。 */
+async function confirmAutoMergeChanges(): Promise<boolean> {
+  const summary = summarizeAutoMergeConfirmation(form.value);
+  if (summary.enabledProjects.length === 0 && summary.removeSourceBranchProjects.length === 0) return true;
+  const lines: string[] = [];
+  if (summary.enabledProjects.length) lines.push(`启用自动合并：${summary.enabledProjects.join("、")}`);
+  if (summary.removeSourceBranchProjects.length) lines.push(`请求合并后删除源分支：${summary.removeSourceBranchProjects.join("、")}`);
+  lines.push("critical/high 问题仍固定阻断；GitLab 审批、CI、冲突与保护分支规则仍照常生效。");
+  try {
+    await ElMessageBox.confirm(lines.join("\n"), "确认自动合并策略", {
+      confirmButtonText: "确认并保存", cancelButtonText: "返回检查", type: "warning",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** 保存期间锁定草稿；只有成功响应才关闭，列表刷新失败不误报成保存失败。 */
 async function onSave(): Promise<void> {
+  if (autoMergeProtected.value || autoMergeStateUnknown.value) return;
   if (saving.value || !detailReady.value || editorLoading.value) return;
   saving.value = true;
   try {
@@ -340,6 +452,7 @@ async function onSave(): Promise<void> {
     if (errors.length) { activeSection.value = errors[0].group; await nextTick(); }
     const valid = await formRef.value?.validate().catch(() => false);
     if (errors.length || !valid) { if (errors.length) ElMessage.warning(errors[0].message); return; }
+    if (!(await confirmAutoMergeChanges())) return;
     const payload = buildPromptPayload(form.value);
     if (editingId.value === null) await api.post("/api/prompts",payload);
     else await api.put(`/api/prompts/${editingId.value}`,payload);
@@ -366,6 +479,7 @@ function onClosed(): void {
 }
 
 async function onDelete(row: PromptSummary): Promise<void> {
+  if (rowAutoMergeProtected(row)) { ElMessage.warning("该 Prompt 关联项目已启用自动合并，仅管理员可以删除"); return; }
   if (deletingId.value !== null) return;
   deletingId.value = row.id;
   try { await api.delete(`/api/prompts/${row.id}`); ElMessage.success("已删除，相关项目将重新匹配评审规则"); await load(); }
@@ -373,6 +487,7 @@ async function onDelete(row: PromptSummary): Promise<void> {
   finally { deletingId.value = null; }
 }
 async function onImport(): Promise<void> {
+  if (yamlImportBlocked.value) { ElMessage.warning(yamlImportBlockReason.value); return; }
   if (importing.value) return;
   importing.value = true;
   try {
@@ -389,6 +504,10 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
 <style scoped>
 .prompts-page {
   gap: 18px;
+}
+
+.action-tooltip {
+  display: inline-flex;
 }
 
 .cell-strong {
@@ -547,7 +666,8 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
   max-width: 480px;
 }
 
-.section-notice {
+.section-notice,
+.write-protection-notice {
   margin-bottom: 16px;
 }
 
@@ -644,10 +764,6 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
 }
 
 .project-setting {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
   padding: 16px;
 }
 
@@ -655,17 +771,74 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
   border-top: 1px solid var(--el-border-color-light);
 }
 
+.project-setting__header,
+.project-execution-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.project-setting__header {
+  align-items: center;
+  padding-bottom: 14px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .project-setting__name {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  gap: 8px;
+  gap: 6px;
   overflow-wrap: anywhere;
   font-size: 13px;
 }
 
+.project-setting__name h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
 .project-setting :deep(.el-switch) {
   flex-shrink: 0;
+}
+
+.auto-merge-setting {
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.auto-merge-fields {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.7fr) minmax(240px, 1.3fr);
+  gap: 14px 18px;
+  padding: 16px;
+  margin-top: 14px;
+  background-color: var(--el-fill-color-light);
+  border-radius: var(--el-border-radius-base);
+}
+
+.auto-merge-fields :deep(.el-form-item) {
+  margin-bottom: 0;
+}
+
+.auto-merge-fields :deep(.el-select),
+.auto-merge-fields :deep(.el-input-number) {
+  width: 100%;
+}
+
+.auto-merge-fields__branches,
+.auto-merge-safety {
+  grid-column: 1 / -1;
+}
+
+.auto-merge-count--enabled {
+  color: var(--el-color-success);
+  font-weight: 600;
 }
 
 .standards-textarea :deep(textarea) {
@@ -719,6 +892,15 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
     width: 132px;
     margin-right: 16px;
   }
+
+  .auto-merge-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .auto-merge-fields__branches,
+  .auto-merge-safety {
+    grid-column: auto;
+  }
 }
 
 @media (max-width: 768px) {
@@ -735,7 +917,7 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
     grid-template-columns: 1fr 1fr;
   }
 
-  .project-setting {
+  .project-execution-row {
     flex-wrap: wrap;
   }
 

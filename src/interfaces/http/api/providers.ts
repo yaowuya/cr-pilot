@@ -1,14 +1,15 @@
 /**
  * LLM 厂商管理路由。
  *
- * 提供厂商 CRUD、默认厂商设置与项目级绑定。厂商配置变更后会重建
+ * 提供厂商 CRUD、默认厂商设置与项目级绑定。读取对登录账号开放；全部写入仅管理员可用，
+ * 因为这些配置决定 evaluator 输出并可能被自动合并继承。配置变更后会重建
  * `pi-agent/models.json`（由 `onChanged` 回调完成），下一次评审即生效。
  *
  * 密钥处理（D-021）：读取接口只回掩码，不回明文；写入时若前端提交的是
  * 掩码形式或空串，视为「不修改原密钥」——否则页面每次保存都会把掩码
  * 当成新密钥写回，导致密钥被 `****` 覆盖。
  */
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import type { LlmApiKind, LlmProviderRepository } from "../../../domain/llm-provider.ts";
 import { LLM_PROVIDER_TEMPLATES } from "../../../domain/llm-provider-templates.ts";
 
@@ -91,6 +92,19 @@ function readProviderInput(
 /** 创建厂商管理路由。 */
 export function createProvidersRouter(deps: ProvidersRouterDeps): Router {
   const router = Router();
+
+  /**
+   * 厂商、默认模型和项目绑定共同构成 evaluator 信任根；普通账号即使在策略关闭时
+   * 预植恶意配置，也会被后来启用的自动合并继承，因此全部写入始终仅限管理员。
+   */
+  const requireAdminForWrites: RequestHandler = (req, res, next) => {
+    if (["GET", "HEAD", "OPTIONS"].includes(req.method) || res.locals.isAdmin === true) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "修改 AI 厂商与项目模型绑定需要管理员权限" });
+  };
+  router.use(requireAdminForWrites);
 
   /** 内置厂商模板：新建时页面据此预填 baseUrl 与常见模型。 */
   router.get("/templates", (_req, res) => {

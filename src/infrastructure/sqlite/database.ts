@@ -65,6 +65,11 @@ CREATE INDEX IF NOT EXISTS idx_prompt_projects_project ON prompt_projects (proje
 CREATE TABLE IF NOT EXISTS project_review_settings (
   project TEXT PRIMARY KEY NOT NULL,
   repository_context_enabled INTEGER NOT NULL DEFAULT 0 CHECK (repository_context_enabled IN (0, 1)),
+  auto_merge_enabled INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_enabled IN (0, 1)),
+  auto_merge_minimum_score INTEGER NOT NULL DEFAULT 100 CHECK (auto_merge_minimum_score BETWEEN 1 AND 100),
+  auto_merge_target_branches TEXT NOT NULL DEFAULT '[]',
+  auto_merge_method TEXT NOT NULL DEFAULT 'merge' CHECK (auto_merge_method IN ('merge', 'squash')),
+  auto_merge_remove_source_branch INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_remove_source_branch IN (0, 1)),
   updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS llm_providers (
@@ -193,6 +198,14 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "review_prompts", "provider_id", "INTEGER");
   addColumnIfMissing(db, "review_prompts", "model", "TEXT");
   addColumnIfMissing(db, "review_records", "mr_url", "TEXT");
+  // 自动合并升级必须安全关闭；老库只补默认值，不能从既有 Prompt 推断启用。
+  // 迁移仅追加带默认值的列、不重写旧数据：回滚旧版本时旧代码会忽略这些列，
+  // 因而无需危险的逆向删列；若要永久降级 schema，应先备份再按 SQLite 规则重建表。
+  addColumnIfMissing(db, "project_review_settings", "auto_merge_enabled", "INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_enabled IN (0, 1))");
+  addColumnIfMissing(db, "project_review_settings", "auto_merge_minimum_score", "INTEGER NOT NULL DEFAULT 100 CHECK (auto_merge_minimum_score BETWEEN 1 AND 100)");
+  addColumnIfMissing(db, "project_review_settings", "auto_merge_target_branches", "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, "project_review_settings", "auto_merge_method", "TEXT NOT NULL DEFAULT 'merge' CHECK (auto_merge_method IN ('merge', 'squash'))");
+  addColumnIfMissing(db, "project_review_settings", "auto_merge_remove_source_branch", "INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_remove_source_branch IN (0, 1))");
   // 采纳追踪需要任务级实例与凭据；老库补列后历史建议为空，追踪会按「无凭据」
   // 降级为不可统计，而不是用错误的全局实例去请求。
   addColumnIfMissing(db, "review_findings", "gitlab_url", "TEXT NOT NULL DEFAULT ''");

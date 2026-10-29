@@ -52,6 +52,7 @@ test("固定版本快照从 fork 源项目读取仓库，diff/commits/refs 同�
   const snapshot = await client.getRepositoryReviewSnapshot!(7, 2, "https://git.example", "fixture-token");
   assert.equal(snapshot.sourceProjectId, 9);
   assert.equal(snapshot.sourceBranch, "feature/review");
+  assert.equal(snapshot.targetBranch, "main");
   assert.equal(snapshot.repositoryUrl, "https://git.example/fork/repo.git");
   assert.equal(snapshot.gitlabUrl, "https://git.example");
   assert.deepEqual(snapshot.refs, {headSha:head,baseSha:base,startSha:start});
@@ -75,7 +76,7 @@ test("快照拒绝准备期间 head、source project、branch 或 diff refs 变�
 
 test("快照拒绝缺元数据、缺匹配版本、截断或不完整 diff", async () => {
   for (const overrides of [
-    {mr:{source_project_id:null}}, {mr:{sha:"invalid"}}, {mr:{source_branch:""}}, {mr:{diff_refs:null}},
+    {mr:{source_project_id:null}}, {mr:{sha:"invalid"}}, {mr:{source_branch:""}}, {mr:{target_branch:""}}, {mr:{diff_refs:null}},
     {versions:[]}, {versions:[{id:110,head_commit_sha:"d".repeat(40)}]},
     {version:{state:"overflow"}}, {version:{real_size:"1000+"}}, {version:{real_size:"2"}},
     {version:{head_commit_sha:"d".repeat(40)}}, {version:{merge_request_id:999}},

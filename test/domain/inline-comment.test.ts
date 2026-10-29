@@ -89,6 +89,26 @@ test("parseReviewJson 拒绝重复 id 与非法 severity", () => {
   );
 });
 
+test("parseReviewJson 支持 Markdown 正文末尾 fenced JSON，并解析覆盖无锚点问题的 merge_gate", () => {
+  const head = "c".repeat(40);
+  const parsed = parseReviewJson(`## 评审报告\n\n### P1：无法定位但必须阻断\n\n\`\`\`json\n${JSON.stringify({
+    reviewed_head_sha: head,
+    summary: { body: "总分：95 分" },
+    findings: [],
+    merge_gate: { max_severity: "high", blocking_findings: 1 },
+  })}\n\`\`\``);
+  assert.deepEqual(parsed?.mergeGate, { maxSeverity: "high", blockingFindings: 1 });
+  assert.equal(parsed?.reviewedHeadSha, head);
+  assert.deepEqual(parsed?.findings, []);
+});
+
+test("parseReviewJson 对既有无 merge_gate JSON 保持兼容，但拒绝畸形 gate", () => {
+  const base = { reviewed_head_sha: "d".repeat(40), summary: { body: "x" }, findings: [] };
+  assert.equal(parseReviewJson(JSON.stringify(base))?.mergeGate, undefined);
+  assert.equal(parseReviewJson(JSON.stringify({ ...base, merge_gate: { max_severity: "urgent", blocking_findings: 0 } })), null);
+  assert.equal(parseReviewJson(JSON.stringify({ ...base, merge_gate: { max_severity: "low", blocking_findings: -1 } })), null);
+});
+
 test("parseReviewJson 允许 old_line 锚点并保留 severity 小写", () => {
   const ok = parseReviewJson(
     JSON.stringify({

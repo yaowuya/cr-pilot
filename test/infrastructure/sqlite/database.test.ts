@@ -79,7 +79,7 @@ test("旧库升级默认关闭，重复升级保留已保存的规范和开关",
       assert.equal(row?.repository_standards, "");
       assert.equal(first.prepare("SELECT COUNT(*) AS n FROM project_review_settings").get()?.n, 0);
       first.prepare("UPDATE review_prompts SET repository_standards = ?").run("仓库约束");
-      first.prepare("INSERT INTO project_review_settings VALUES (?, ?, ?)").run("group/a", 1, 2);
+      first.prepare("INSERT INTO project_review_settings (project, repository_context_enabled, updated_at) VALUES (?, ?, ?)").run("group/a", 1, 2);
     } finally {
       first.close();
     }

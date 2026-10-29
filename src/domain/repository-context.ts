@@ -11,6 +11,8 @@ export interface RepositoryReviewSnapshot {
   refs: DiffRefs;
   sourceProjectId: number;
   sourceBranch: string;
+  /** 快照锁定时的目标分支；旧离线适配器可省略，自动合并会 fail closed。 */
+  targetBranch?: string;
   repositoryUrl: string;
   gitlabUrl: string;
 }

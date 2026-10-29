@@ -1,10 +1,11 @@
 /**
  * 环境变量管理路由。
  *
- * 语义（D-012 / D-014）：查询返回当前生效值，密钥类字段掩码；更新同时写数据库
- * 覆盖与 `process.env`，使可热更新项立即生效，并回报需要重启的键。
+ * 语义（D-012 / D-014）：查询返回当前生效值，密钥类字段掩码；管理员更新时
+ * 同时写数据库覆盖与 `process.env`，使可热更新项立即生效，并回报需要重启的键。
+ * 运行配置会影响自动合并 evaluator 与执行链，因此普通账号只读。
  */
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import type { ConfigRepository } from "../../../domain/runtime-config.ts";
 import { isSecretKey, READ_ONLY_KEYS, RESTART_REQUIRED_KEYS } from "../../../infrastructure/sqlite/config-repo.ts";
 
@@ -143,7 +144,7 @@ const CONFIG_DOCS: Record<string, ConfigDoc> = {
   },
   GITLAB_URL: {
     label: "GitLab 实例地址",
-    description: "拉取变更与回写评论的目标实例。可留空——webhook 请求头会带实例地址，会自动派生",
+    description: "拉取变更、回写评论及显式自动合并的目标实例。可留空——webhook 请求头会带实例地址，会自动派生",
     defaultValue: "",
     hint: "例如 https://code.cwoa.net（不带尾部斜杠）",
   },
@@ -271,6 +272,19 @@ function collectKeys(repo: ConfigRepository): string[] {
 export function createConfigRouter(deps: ConfigRouterDeps): Router {
   const router = Router();
 
+  /**
+   * 运行配置是自动合并 evaluator 与执行链的信任根，因此写操作始终仅管理员。
+   * 不能按“当前是否已启用自动合并”放行，否则普通账号可先预植恶意模型或
+   * GitLab 配置，再由管理员开启策略，从而绕过启用时的权限边界。
+   */
+  const requireConfigWriteAccess: RequestHandler = (_req, res, next) => {
+    if (res.locals.isAdmin === true) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "修改运行配置需要管理员权限" });
+  };
+
   router.get("/", (_req, res) => {
     const overrides = new Map(deps.config.list().map((item) => [item.key, item.value] as const));
     const items = collectKeys(deps.config).map((key) => {
@@ -298,7 +312,7 @@ export function createConfigRouter(deps: ConfigRouterDeps): Router {
     res.json({ items });
   });
 
-  router.put("/", (req, res) => {
+  router.put("/", requireConfigWriteAccess, (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const rawItems = Array.isArray(body.items) ? body.items : null;
     if (!rawItems) {

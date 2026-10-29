@@ -10,7 +10,7 @@
           <el-icon><Refresh /></el-icon>
           刷新
         </el-button>
-        <el-button type="primary" :loading="saving" @click="onSave">
+        <el-button type="primary" :loading="saving" :disabled="configWritesBlocked" @click="onSave">
           <el-icon><Check /></el-icon>
           保存更改
         </el-button>
@@ -21,6 +21,11 @@
       <template #title>
         密钥类字段不回传真实值，留空表示不修改；只有实际输入过内容的项才会提交。
       </template>
+    </el-alert>
+
+    <el-alert v-if="configWritesBlocked" type="warning" :closable="false" show-icon class="write-protection-alert">
+      <template #title>运行配置当前为只读</template>
+      运行配置属于自动合并评估与执行链的信任根，只有管理员可以修改。
     </el-alert>
 
     <el-alert v-if="loadError" type="error" :closable="false" show-icon class="load-alert">
@@ -94,7 +99,7 @@
               class="config-item__input"
               :type="row.masked && !row.revealed && row.draft ? 'password' : 'text'"
               :placeholder="row.masked ? '留空表示不修改' : row.defaultValue ? `未设置（默认 ${row.defaultValue}）` : '未设置'"
-              :disabled="row.readOnly"
+              :disabled="row.readOnly || configWritesBlocked"
               :aria-label="`${row.label || row.key} 当前值`"
               @input="row.dirty = true"
             >
@@ -129,14 +134,16 @@
 /**
  * 环境变量管理页。
  *
- * 密钥项的草稿始终从空值开始，避免把接口掩码写回数据库；保存只提交用户
- * 实际改动过的非空可编辑项。分组规则同时承担配置导航与新增键的兜底展示。
+ * 密钥项的草稿始终从空值开始，避免把接口掩码写回数据库；管理员保存只提交
+ * 实际改动过的非空可编辑项。运行配置影响自动合并评估与执行，普通账号只读；
+ * 前端禁用用于明确状态，真正授权仍由后端 PUT 门禁执行。
  */
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { Check, Cpu, Hide, Refresh, View } from "@element-plus/icons-vue";
 import { api, isApiError } from "../api/client.ts";
+import { currentIsAdmin } from "../stores/auth.ts";
 import type { ConfigItem } from "../types.ts";
 
 /** 接口配置项追加页面内编辑态后的行模型。 */
@@ -165,6 +172,9 @@ interface ConfigGroupRule {
 }
 
 const router = useRouter();
+const isAdmin = currentIsAdmin();
+/** 运行配置是自动合并信任根，普通账号无论当前策略状态如何都只读。 */
+const configWritesBlocked = computed(() => !isAdmin.value);
 const loading = ref(false);
 const loaded = ref(false);
 const loadError = ref("");
@@ -272,9 +282,16 @@ async function load(): Promise<void> {
   }
 }
 
+/** 脚本层再次守卫写操作；模板禁用不是安全边界。 */
+function ensureConfigWritesAllowed(): boolean {
+  if (!configWritesBlocked.value) return true;
+  ElMessage.warning("运行配置仅允许管理员修改");
+  return false;
+}
+
 /** 只提交用户实际改动过、非只读且非空的项。 */
 async function onSave(): Promise<void> {
-  if (saving.value) return;
+  if (!ensureConfigWritesAllowed() || saving.value) return;
   const changed = rows.value.filter((row) => row.dirty && !row.readOnly && row.draft.trim() !== "");
   if (changed.length === 0) {
     ElMessage.warning("没有需要保存的修改");

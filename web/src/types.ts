@@ -51,10 +51,26 @@ export interface ReviewStats {
   byCommitter: DimensionStat[];
 }
 
-/** 项目名称级开关：同项目在不同 Prompt 中共享，不等同逐实例租户配置。 */
+/** GitLab 合并接口支持的策略；不提供 rebase 等隐式降级方式。 */
+export type AutoMergeMethod = "merge" | "squash";
+
+/** 项目级自动合并策略。默认关闭，启用后仍受服务端固定安全门约束。 */
+export interface ProjectAutoMergePolicy {
+  enabled: boolean;
+  /** 评审最低分，闭区间 1..100。 */
+  minimumScore: number;
+  /** 只做精确分支名匹配，不是 glob 或正则。 */
+  targetBranches: string[];
+  method: AutoMergeMethod;
+  removeSourceBranch: boolean;
+}
+
+/** 项目名称级执行配置：同项目在不同 Prompt 中共享，不等同逐实例租户配置。 */
 export interface ProjectReviewSetting {
   project: string;
   repositoryContextEnabled: boolean;
+  /** 旧服务响应可缺省；前端按默认关闭处理。 */
+  autoMergePolicy?: ProjectAutoMergePolicy;
 }
 
 /** prompt 列表摘要：不含正文。 */

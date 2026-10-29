@@ -12,6 +12,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizeRepositoryKey } from "../../domain/review-rules.ts";
 import {
+  defaultProjectAutoMergePolicy,
   isRepositoryProjectKey,
   normalizePromptName,
   normalizeRepositoryStandards,
@@ -19,6 +20,7 @@ import {
   PromptValidationError,
   DEFAULT_PROMPT_REPOSITORY,
   type ProjectReviewSetting,
+  type ProjectReviewSettingPatch,
   type PromptInput,
   type PromptRepository,
   type PromptSummary,
@@ -27,6 +29,17 @@ import {
 import { parseRuleFileContent } from "../rules/review-rules.ts";
 
 export { DEFAULT_PROMPT_REPOSITORY };
+
+interface ProjectSettingRow {
+  project: string;
+  repository_context_enabled: number;
+  auto_merge_enabled: number;
+  auto_merge_minimum_score: number;
+  auto_merge_target_branches: string;
+  auto_merge_method: string;
+  auto_merge_remove_source_branch: number;
+  updated_at: number;
+}
 
 interface PromptRow {
   id: number;
@@ -102,14 +115,86 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     return new Set(rows.map((row) => normalizeRepositoryKey(String(row.project))).filter(isRepositoryProjectKey));
   };
 
-  const readEnabled = (project: string): boolean => isRepositoryProjectKey(project) &&
-    db.prepare("SELECT repository_context_enabled FROM project_review_settings WHERE project = ?")
-      .get(normalizeRepositoryKey(project))?.repository_context_enabled === 1;
+  /** 损坏的历史 JSON 以安全关闭处理；写入口始终只产生字符串数组。 */
+  const parseTargetBranches = (value: string): string[] => {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  /** 读取完整项目设置；未落库时返回安全默认，不把缺失配置解释为启用。 */
+  const readSetting = (project: string): ProjectReviewSetting => {
+    const key = normalizeRepositoryKey(project);
+    const row = db.prepare("SELECT * FROM project_review_settings WHERE project = ?").get(key) as
+      | ProjectSettingRow
+      | undefined;
+    if (!row) {
+      return { project: key, repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy() };
+    }
+    const targetBranches = parseTargetBranches(row.auto_merge_target_branches);
+    return {
+      project: key,
+      repositoryContextEnabled: row.repository_context_enabled === 1,
+      autoMergePolicy: {
+        // 已启用但目标分支损坏/为空时按关闭返回，避免高风险动作读取半份配置。
+        enabled: row.auto_merge_enabled === 1 && targetBranches.length > 0,
+        minimumScore: row.auto_merge_minimum_score,
+        targetBranches,
+        method: row.auto_merge_method === "squash" ? "squash" : "merge",
+        removeSourceBranch: row.auto_merge_remove_source_branch === 1,
+      },
+    };
+  };
+
+  const readEnabled = (project: string): boolean => isRepositoryProjectKey(project) && readSetting(project).repositoryContextEnabled;
 
   const readSettings = (projects: readonly string[]): ProjectReviewSetting[] => projects.map((project) => ({
+    ...readSetting(project),
     project,
-    repositoryContextEnabled: readEnabled(project),
   }));
+
+  /**
+   * 自动合并启用时项目必须精确归属一个非 default Prompt。
+   *
+   * Prompt 解析对重复关联只会取一条，若允许重复会让实际评分规则不确定；因此创建、
+   * 改关联和启用策略都在同一事务内校验，失败由调用方先显式关闭策略再清理脏关联。
+   */
+  const assertUniqueAutoMergePrompt = (projects: readonly string[]): void => {
+    const affected = new Set(projects.map(normalizeRepositoryKey).filter(isRepositoryProjectKey));
+    if (affected.size === 0) return;
+    const counts = new Map<string, number>();
+    const rows = db.prepare(`SELECT pp.project FROM prompt_projects pp
+      JOIN review_prompts p ON p.id = pp.prompt_id WHERE p.repository <> 'default'`).all();
+    for (const row of rows) {
+      const key = normalizeRepositoryKey(String(row.project));
+      if (affected.has(key)) counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    for (const project of affected) {
+      if (readSetting(project).autoMergePolicy.enabled && counts.get(project) !== 1) {
+        throw new PromptValidationError(`启用自动合并的项目 ${project} 必须且只能关联一个非 default Prompt`);
+      }
+    }
+  };
+
+  /**
+   * 自动合并只能使用确实注入本次 diff 的 Prompt。
+   *
+   * 校验放在关联与项目设置都写入后的同一事务内，才能看见“本次保存后的最终状态”：
+   * 同请求显式关闭策略后可移除占位符，其余正文/关联/设置任一失败则整体回滚。
+   */
+  const assertAutoMergeDiffPlaceholder = (projects: readonly string[], userPrompt: string): void => {
+    if (userPrompt.includes("{diffs_text}")) return;
+    const enabledProjects = [...new Set(projects.map(normalizeRepositoryKey).filter(isRepositoryProjectKey))]
+      .filter((project) => readSetting(project).autoMergePolicy.enabled);
+    if (enabledProjects.length > 0) {
+      throw new PromptValidationError(
+        `启用自动合并的 Prompt User Prompt 必须包含 {diffs_text} 占位符（项目：${enabledProjects.join("、")}）`,
+      );
+    }
+  };
 
   /** 解绑和旧版本遗留的设置必须清理，避免重新关联时意外恢复开启。 */
   const removeOrphanSettings = (): void => {
@@ -121,16 +206,35 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     }
   };
 
-  /** 只写显式提交的项目；普通保存或未操作的项目不能重置全局状态。 */
-  const writeSettings = (settings: readonly ProjectReviewSetting[]): void => {
-    const upsert = db.prepare(`INSERT INTO project_review_settings (project, repository_context_enabled, updated_at)
-      VALUES (?, ?, ?) ON CONFLICT(project) DO UPDATE SET
-      repository_context_enabled = excluded.repository_context_enabled, updated_at = excluded.updated_at
-      WHERE project_review_settings.repository_context_enabled <> excluded.repository_context_enabled`);
-    for (const setting of settings) {
-      if (isRepositoryProjectKey(setting.project)) {
-        upsert.run(setting.project, setting.repositoryContextEnabled ? 1 : 0, Date.now());
-      }
+  /**
+   * 只写显式提交的项目能力；每项 patch 先与当前完整设置合并，避免普通保存重置另一能力。
+   */
+  const writeSettings = (settings: readonly ProjectReviewSettingPatch[]): void => {
+    const upsert = db.prepare(`INSERT INTO project_review_settings (
+        project, repository_context_enabled, auto_merge_enabled, auto_merge_minimum_score,
+        auto_merge_target_branches, auto_merge_method, auto_merge_remove_source_branch, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project) DO UPDATE SET
+        repository_context_enabled = excluded.repository_context_enabled,
+        auto_merge_enabled = excluded.auto_merge_enabled,
+        auto_merge_minimum_score = excluded.auto_merge_minimum_score,
+        auto_merge_target_branches = excluded.auto_merge_target_branches,
+        auto_merge_method = excluded.auto_merge_method,
+        auto_merge_remove_source_branch = excluded.auto_merge_remove_source_branch,
+        updated_at = excluded.updated_at`);
+    for (const patch of settings) {
+      if (!isRepositoryProjectKey(patch.project)) continue;
+      const current = readSetting(patch.project);
+      const policy = patch.autoMergePolicy ?? current.autoMergePolicy;
+      upsert.run(
+        normalizeRepositoryKey(patch.project),
+        (patch.repositoryContextEnabled ?? current.repositoryContextEnabled) ? 1 : 0,
+        policy.enabled ? 1 : 0,
+        policy.minimumScore,
+        JSON.stringify(policy.targetBranches),
+        policy.method,
+        policy.removeSourceBranch ? 1 : 0,
+        Date.now(),
+      );
     }
   };
 
@@ -207,6 +311,8 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     const id = Number(result.lastInsertRowid);
     writeProjects(id, projects);
     writeSettings(settings);
+    assertUniqueAutoMergePrompt([...projects, ...settings.map((item) => item.project)]);
+    assertAutoMergeDiffPlaceholder(projects, input.userPrompt);
     return selectByRepository(input.repository)!;
   });
 
@@ -324,6 +430,8 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
         }
         writeSettings(settings);
         removeOrphanSettings();
+        assertUniqueAutoMergePrompt([...existing.projects, ...projects, ...settings.map((item) => item.project)]);
+        assertAutoMergeDiffPlaceholder(projects, input.userPrompt);
         return this.get(id)!;
       });
     },
@@ -353,6 +461,22 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     listProjectSettings() {
       const projects = [...new Set(this.listKnownProjects().map(normalizeRepositoryKey))].sort();
       return readSettings(projects);
+    },
+
+    resolveProjectSetting(repositoryFullName) {
+      const project = normalizeRepositoryKey(repositoryFullName);
+      // 高风险动作只接受完整项目精确命中；不复用 Prompt 的短名/default 兼容路径。
+      if (project.split("/").length < 2 || !isRepositoryProjectKey(project)) return undefined;
+      if (!activeProjectKeys().has(project)) return undefined;
+      return readSetting(project);
+    },
+
+    disableAllAutoMergePolicies() {
+      // 回退旧版本前只撤销授权，不删除门槛/分支：旧二进制会忽略新增列，日后重新
+      // 升级时仍能展示原配置，但必须由管理员逐项重新开启，不能自动复活。
+      const result = db.prepare(`UPDATE project_review_settings
+        SET auto_merge_enabled = 0, updated_at = ? WHERE auto_merge_enabled = 1`).run(Date.now());
+      return Number(result.changes);
     },
 
     listKnownProjects() {

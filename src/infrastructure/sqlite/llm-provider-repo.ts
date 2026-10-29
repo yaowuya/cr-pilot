@@ -111,6 +111,27 @@ export function createLlmProviderRepository(db: DatabaseSync): LlmProviderReposi
     return { ...input, models, defaultModel };
   };
 
+  /** 把可选模型解析成可用目标；过期绑定回落厂商默认，避免继续请求已删除模型。 */
+  const buildTarget = (provider: LlmProvider, model?: string): ResolvedLlmTarget | undefined => {
+    const requested = model?.trim();
+    const finalModel = requested && provider.models.includes(requested)
+      ? requested
+      : provider.defaultModel || provider.models[0];
+    return finalModel ? { provider, model: finalModel } : undefined;
+  };
+
+  /** 精确读取项目绑定；缺失或关联厂商已删除时返回 undefined，不混入全局默认。 */
+  const resolveProjectTarget = (project: string): ResolvedLlmTarget | undefined => {
+    const key = project.trim();
+    if (!key) return undefined;
+    const binding = db
+      .prepare("SELECT provider_id, model FROM llm_project_bindings WHERE project = ? COLLATE NOCASE LIMIT 1")
+      .get(key) as unknown as { provider_id: number; model: string | null } | undefined;
+    if (!binding) return undefined;
+    const provider = selectById(binding.provider_id);
+    return provider ? buildTarget(provider, binding.model ?? undefined) : undefined;
+  };
+
   const insertRow = (input: LlmProviderInput): number => {
     const now = Date.now();
     const result = db
@@ -249,29 +270,16 @@ export function createLlmProviderRepository(db: DatabaseSync): LlmProviderReposi
       }));
     },
 
+    resolveProjectTarget(project) {
+      return resolveProjectTarget(project);
+    },
+
     resolveTarget(project) {
-      /** 把厂商与模型配成最终目标；模型缺省时取厂商默认。 */
-      const build = (provider: LlmProvider, model?: string): ResolvedLlmTarget | undefined => {
-        const finalModel = model?.trim() || provider.defaultModel || provider.models[0];
-        return finalModel ? { provider, model: finalModel } : undefined;
-      };
-
-      // 项目绑定优先级最高（D-022）。
-      if (project?.trim()) {
-        const binding = db
-          .prepare("SELECT provider_id, model FROM llm_project_bindings WHERE project = ? COLLATE NOCASE LIMIT 1")
-          .get(project.trim()) as unknown as { provider_id: number; model: string | null } | undefined;
-        if (binding) {
-          const provider = selectById(binding.provider_id);
-          if (provider) {
-            const target = build(provider, binding.model ?? undefined);
-            if (target) return target;
-          }
-        }
-      }
-
+      // 旧调用方传项目时仍保留项目优先；新管线分别调用窄接缝与无参全局解析。
+      const projectTarget = project ? resolveProjectTarget(project) : undefined;
+      if (projectTarget) return projectTarget;
       const fallback = this.getDefault();
-      return fallback ? build(fallback) : undefined;
+      return fallback ? buildTarget(fallback) : undefined;
     },
   };
 }
