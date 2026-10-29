@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../../src/infrastructure/sqlite/database.ts";
 import { createPromptRepository } from "../../src/infrastructure/sqlite/prompt-repo.ts";
 
@@ -82,6 +83,41 @@ test("回退 CLI 拒绝错误 DB_PATH，不能静默创建空库", () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /数据库不存在/);
     assert.equal(existsSync(path), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("回退 CLI 拒绝已存在的空文件且不写入 SQLite schema", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crp-disable-auto-merge-empty-"));
+  const path = join(dir, "empty.db");
+  try {
+    writeFileSync(path, "");
+    const result = runCli(path);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /数据库不是|file is not a database|database disk image is malformed/i);
+    assert.equal(statSync(path).size, 0, "只读身份验证不能把空文件初始化成应用数据库");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("回退 CLI 拒绝其他 SQLite 数据库且不注入 cr-pilot 表", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crp-disable-auto-merge-foreign-"));
+  const path = join(dir, "foreign.db");
+  try {
+    const foreign = new DatabaseSync(path);
+    foreign.exec("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)");
+    foreign.close();
+
+    const result = runCli(path);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /不是 cr-pilot 当前 schema/);
+
+    const reopened = new DatabaseSync(path, { readOnly: true });
+    const names = reopened.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => String(row.name));
+    reopened.close();
+    assert.deepEqual(names, ["unrelated"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
