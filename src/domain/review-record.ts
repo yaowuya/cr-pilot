@@ -9,19 +9,23 @@
  * 一次评审消耗的模型 token。
  *
  * 取自 pi 会话实际返回的 usage，不做估算：估算值会让成本统计失真。
- * `cacheRead` / `cacheWrite` 是**输入侧的子集**（provider 的缓存命中/写入量），
- * 不能与 `input` 相加后再当总量，否则重复计数。
+ *
+ * **四个分量互斥**：pi 已把缓存命中/写入从 `input` 中剔除（见 SDK
+ * `openai-completions` 的 `promptTokens - cacheRead - cacheWrite` 与
+ * `calculateCost` 的 `input + cacheRead + cacheWrite`），因此
+ * `totalTokens = input + output + cacheRead + cacheWrite`，四者可直接相加。
+ * 把 `cacheRead` 当成 `input` 的子集会让命中率分母偏小、结果超过 100%。
  */
 export interface TokenUsage {
-  /** 计费/请求口径的输入 token（含未命中缓存的普通输入）。 */
+  /** 未命中缓存的普通输入 token。 */
   input: number;
   /** 模型输出 token。 */
   output: number;
-  /** 命中缓存的输入 token（input 的子集）。 */
+  /** 命中缓存的输入 token；与 `input` 互斥，不是它的子集。 */
   cacheRead: number;
-  /** 写入缓存的输入 token（input 的子集）。 */
+  /** 写入缓存的输入 token；与 `input` 互斥，不是它的子集。 */
   cacheWrite: number;
-  /** 总量；由 provider 给出或按 input+output+cacheRead+cacheWrite 计算。 */
+  /** 总量；等于四者之和。 */
   totalTokens: number;
 }
 
@@ -111,7 +115,12 @@ export interface TokenTotals {
   total: number | null;
   /** 每次评审平均总量；无 usage 时为 null。 */
   avgPerReview: number | null;
-  /** 缓存命中率 = cacheRead ÷ input；input 为 0 或缺失时为 null。 */
+  /**
+   * 缓存命中率 = cacheRead ÷ (input + cacheRead + cacheWrite)。
+   *
+   * 分母必须是**全部输入侧 token**：`input` 已被 SDK 剔除缓存部分，
+   * 只用它作分母会把命中率算到 1 以上。输入总量为 0 时为 null。
+   */
   cacheHitRate: number | null;
 }
 

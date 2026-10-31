@@ -544,13 +544,6 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       let committerName = task.triggerUserName ?? "";
 
       /**
-       * 写入评审记录并返回记录 ID（拿不到时为 `undefined`）。
-       *
-       * `score` 传 `number | null`：`parseReviewScore` 无匹配时返回 0，而 0 分与
-       * 「未解析出分数」在统计上必须区分——直接写 0 会把平均值拉低。调用方负责
-       * 判断「有没有分数」并传 null。
-       */
-      /**
        * 本次任务累计的 token 用量。
        *
        * 按「加成功一次」累计而不是覆盖：批次与汇总各自是独立模型请求，都要计费。
@@ -577,6 +570,16 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       const recordedTokenUsage = (): TokenUsage | null =>
         tokenUsageRecorded && !tokenUsageMissing ? { ...tokenUsage } : null;
 
+      /**
+       * 写入评审记录并返回记录 ID（拿不到时为 `undefined`）。
+       *
+       * `score` 传 `number | null`：`parseReviewScore` 无匹配时返回 0，而 0 分与
+       * 「未解析出分数」在统计上必须区分——直接写 0 会把平均值拉低。调用方负责
+       * 判断「有没有分数」并传 null。
+       *
+       * `tokenUsage` 取 `recordedTokenUsage()`：失败任务已发生的模型调用同样计费，
+       * 因此失败记录也带用量；只要有一次调用缺 usage 就整单写 null。
+       */
       const writeRecord = (outcome: {
         result: "success" | "failed";
         errorMessage?: string;

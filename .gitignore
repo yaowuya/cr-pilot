@@ -51,3 +51,7 @@ prompts/rules/*.yml
 # 都是本机验证的临时文件，入库只会让工作区反复变脏。只保留可复用的进度台账 progress.md。
 **/.fp-execute/*
 !**/.fp-execute/progress.md
+
+# 本地验证脚本与临时产物（隔离库、播种脚本、生成比对）
+.tmp/
+.taste-skill/

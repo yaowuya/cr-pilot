@@ -20,7 +20,7 @@ test("OpenAPI 声明 token 用量结构与 null 语义", () => {
   const usage = openapi.components.schemas.TokenUsage;
   assert.ok(usage, "缺少 TokenUsage schema");
   assert.deepEqual(usage.required, ["input", "output", "cacheRead", "cacheWrite", "totalTokens"]);
-  assert.match(usage.description ?? "", /子集/, "必须说明缓存是输入的子集，避免调用方相加");
+  assert.match(usage.description ?? "", /互斥/, "必须说明四个分量互斥，调用方才能直接相加");
 
   const record = openapi.components.schemas.ReviewRecord;
   assert.match(record.properties?.tokenUsage?.description ?? "", /没有可用 usage 数据/);
@@ -57,7 +57,7 @@ test("OpenAPI 采纳统计声明高分排除与排除条数", () => {
 
 test("README 记录 token 统计与高分排除口径", () => {
   assert.match(readme, /## Token 用量统计/);
-  assert.match(readme, /缓存.*子集/);
+  assert.match(readme, /互斥/);
   assert.match(readme, /整条记录记为 `null`|记为 `null`/);
   assert.match(readme, /≥ 95 分/);
   assert.match(readme, /不属于.*不可追踪/);

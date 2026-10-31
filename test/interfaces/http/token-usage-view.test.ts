@@ -39,7 +39,7 @@ test("统计页展示 token 用量，并用「—」表达缺失而不是 0", ()
   // 缺失必须是「—」，否则「没采到」会被读成「零消耗」。
   assert.match(source, /function formatTokens\(value: number \| null\): string \{ return value === null \? "—"/);
   assert.match(source, /缓存命中率/);
-  assert.match(source, /都是输入的子集，不与输入相加/);
+  assert.match(source, /与输入互斥，总量为四者之和/);
   assert.match(source, /recordedReviews/);
   // 维度表也展示 token。
   assert.match(source, /label="Token"[\s\S]{0,120}formatTokens\(row\.totalTokens\)/);

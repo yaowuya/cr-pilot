@@ -79,13 +79,13 @@
         <span>缓存命中率 {{ formatPercent(stats.tokens.cacheHitRate) }}</span>
       </header>
       <div class="token-strip">
-        <article><span>总 Token</span><strong>{{ formatTokens(stats.tokens.total) }}</strong><small>输入 + 输出（含缓存读写）</small></article>
-        <article><span>输入</span><strong>{{ formatTokens(stats.tokens.input) }}</strong><small>含缓存命中与写入</small></article>
+        <article><span>总 Token</span><strong>{{ formatTokens(stats.tokens.total) }}</strong><small>输入 + 输出 + 缓存读写</small></article>
+        <article><span>输入</span><strong>{{ formatTokens(stats.tokens.input) }}</strong><small>未命中缓存的普通输入</small></article>
         <article><span>输出</span><strong>{{ formatTokens(stats.tokens.output) }}</strong><small>模型生成内容</small></article>
         <article><span>每次平均</span><strong>{{ formatTokens(stats.tokens.avgPerReview) }}</strong><small>总量 ÷ {{ stats.tokens.recordedReviews }} 次有数据评审</small></article>
       </div>
       <p class="token-note">
-        缓存读取 {{ formatTokens(stats.tokens.cacheRead) }}、缓存写入 {{ formatTokens(stats.tokens.cacheWrite) }}；两者都是输入的子集，不与输入相加。
+        缓存读取 {{ formatTokens(stats.tokens.cacheRead) }}、缓存写入 {{ formatTokens(stats.tokens.cacheWrite) }}；它们是独立计费分量，与输入互斥，总量为四者之和。
         「—」表示没有 usage 数据（历史记录或模型未返回），不是零消耗。
       </p>
     </section>

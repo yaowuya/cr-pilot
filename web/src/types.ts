@@ -29,7 +29,8 @@ export interface ReviewRecord {
 /**
  * 一次评审消耗的模型 token。
  *
- * `cacheRead` / `cacheWrite` 是输入侧的子集，不能与 `input` 相加当作总量。
+ * 四个分量互斥（SDK 已把缓存从 `input` 中剔除），因此 `totalTokens` 等于四者之和；
+ * 把 `cacheRead` 当成 `input` 的子集会让命中率分母偏小、结果超过 1。
  */
 export interface TokenUsage {
   input: number;

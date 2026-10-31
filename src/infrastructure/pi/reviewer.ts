@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createSilentLogger, type Logger } from "../../shared/logger.ts";
 import type { ReviewInput, ReviewResult, Reviewer } from "../../domain/review-task.ts";
+import type { TokenUsage } from "../../domain/review-record.ts";
 import type { RepositoryReadAccess, RepositoryToolCallEvent } from "../../domain/repository-context.ts";
 import { createRepositoryTools } from "./repository-tools.ts";
 
@@ -38,12 +39,14 @@ export interface PiSessionLike {
   /** 当前生效模型身份都来自实际会话，尚未选出模型时为 undefined。 */
   readonly model: { provider?: string; id: string; baseUrl?: string; api?: string } | undefined;
   /**
-   * 最近一条助手消息的 token 用量。
+   * 本会话**全部**模型请求的 token 用量合计。
    *
-   * 可选：真实 AgentSession 有公开的 `messages`，这里由真实会话工厂适配；
+   * 一次 `review` 对应一个新会话，因此这里等价于「本次评审的用量」；带仓库
+   * 工具时一次调用会有多轮计费请求，必须求和而不是只取最后一条。
+   * 可选：真实 AgentSession 有公开的 `messages`，由真实会话工厂适配；
    * 测试替身可省略，缺失时按「无 usage 数据」处理而不是补 0。
    */
-  getLastUsage?(): { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number } | undefined;
+  getUsage?(): TokenUsage | undefined;
   /** 请求中断并等当前模型/工具 idle；旧测试替身可省略，由 dispose 兜底。 */
   abort?(): Promise<void>;
   /** 释放会话。重复调用由实现方保证安全，本服务仍只调用一次。 */
@@ -238,7 +241,7 @@ export function createPiReviewer(options: { sessionFactory?: PiSessionFactory; l
         }
         const text = session.getLastAssistantText()?.trim() ?? "";
         if (!text) throw new EmptyReviewError("pi 返回了空评审文本");
-        const usage = session.getLastUsage?.();
+        const usage = session.getUsage?.();
         logger.debug("pi 已返回", {
           评审字数: text.length,
           厂商: session.model?.provider ?? "unknown",
@@ -299,15 +302,14 @@ async function createRealSession(options: Parameters<PiSessionFactory>[0]): Prom
 }
 
 /**
- * 给真实 AgentSession 补 `getLastUsage()`。
+ * 给真实 AgentSession 补 `getUsage()`。
  *
  * SDK 的会话只暴露 `messages`，没有直接的 usage 读取方法；这里做一层薄适配，
- * 取最后一条 assistant 消息的 usage。**只转调不复制**：prompt/abort/dispose/model
+ * 把全部 assistant 消息的 usage 求和。**只转调不复制**：prompt/abort/dispose/model
  * 全部沿用原对象，避免出现两份状态。
  *
- * 取全部 assistant 消息并**求和**：真实会话按「一次 review 一个新 session」创建，
- * 因此 `messages` 只包含本次调用的全部模型请求。带仓库工具时一次调用会有多轮
- * 工具往返，每轮都是独立计费请求，只取最后一条会漏计前面的真实成本。
+ * 必须求和而不是只取最后一条：会话按「一次 review 一个新 session」创建，带仓库
+ * 工具时一次调用会有多轮工具往返，每轮都是独立计费请求，只取最后一条会漏计。
  */
 function withUsage(session: {
   prompt(text: string): Promise<void>;
@@ -323,10 +325,10 @@ function withUsage(session: {
     model: session.model,
     abort: session.abort ? () => session.abort!() : undefined,
     dispose: () => session.dispose(),
-    getLastUsage() {
+    getUsage() {
       const read = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
       let found = false;
-      const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+      const sum: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
       for (const raw of session.messages) {
         const message = raw as { role?: unknown; usage?: unknown } | undefined;
         if (!message || message.role !== "assistant") continue;

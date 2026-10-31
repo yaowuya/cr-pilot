@@ -264,3 +264,30 @@ test("排除条数与总计使用同一时间/项目筛选口径", () => {
   assert.equal(repo.getAdoptionStats({ projectId: 999 }).excluded.highScore, 0, "项目筛选必须同时作用于排除数");
   db.close();
 });
+
+test("高分记录的不可追踪建议仍计入 untrackable，不会静默丢失", () => {
+  const db = openDatabase(":memory:");
+  const high = seedScoredRecord(db, 97);
+  const low = seedScoredRecord(db, 60);
+  const repo = createReviewFindingRepository(db);
+  // 高分评审的降级建议（空指纹）与无法定位建议：不进采纳率，但也不能从
+  // 「建议总量」里消失——它们既不属于 excluded，也必须出现在 untrackable。
+  repo.insert(makeFinding({ recordId: high, marker: "hf", headSha: "h1", codeFingerprint: "", outcome: "pending" }));
+  repo.insert(makeFinding({ recordId: high, marker: "hu", headSha: "h2", outcome: "unknown" }));
+  // 低分评审的一条已采纳建议，用于确认采纳率本体不受影响。
+  repo.insert(makeFinding({ recordId: low, marker: "lo", headSha: "h3", outcome: "adopted", trackedAt: 1 }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.equal(stats.total.tracked, 1, "只有低分可统计建议进分母");
+  assert.equal(stats.untrackable.fallback, 1, "高分降级建议仍是不可追踪");
+  assert.equal(stats.untrackable.unknown, 1, "高分未知建议仍是不可追踪");
+  assert.equal(stats.excluded.highScore, 0, "可追踪的高分建议才算排除项");
+
+  // 本用例三条建议分属互不重叠的类别，四类之和应等于落库总数 3；
+  // 这验证的是「高分不可追踪项没有被静默丢弃」，不是普适守恒律
+  // （历史数据里空指纹与已判定可能重叠，属既有口径）。
+  const pageTotal = stats.total.pending + stats.total.tracked
+    + stats.untrackable.fallback + stats.untrackable.unknown + stats.excluded.highScore;
+  assert.equal(pageTotal, 3, "高分不可追踪项必须仍被计入某一类");
+  db.close();
+});

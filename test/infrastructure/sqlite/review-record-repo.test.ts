@@ -282,7 +282,10 @@ test("getStats 汇总 token：只对有用量的记录求和，缺失不当作 0
   assert.equal(tokens.cacheRead, 800);
   assert.equal(tokens.total, 3300);
   assert.equal(tokens.avgPerReview, 1650, "3 次评审里只有 2 次有用量，平均应按 2 算");
-  assert.equal(tokens.cacheHitRate, 0.4, "命中率 = cacheRead ÷ input");
+  // 命中率分母是全部输入侧 token：input 1000×2 + cacheRead 400×2 + cacheWrite 50×2 = 2900，
+  // 命中 800 → 800/2900。若误用 input（2000）作分母会得到 0.4 并掩盖 >1 的可能。
+  assert.ok(Math.abs((tokens.cacheHitRate ?? 0) - 800 / 2900) < 1e-9, "命中率 = cacheRead ÷ (input + cacheRead + cacheWrite)");
+  assert.ok((tokens.cacheHitRate ?? 0) <= 1, "命中率必须落在 0..1");
   db.close();
 });
 
@@ -326,5 +329,18 @@ test("token 统计与分数、时间筛选口径一致", () => {
   const filtered = repo.getStats({ from: 5000 }).tokens;
   assert.equal(filtered.recordedReviews, 1, "时间筛选必须同时作用于 token 聚合");
   assert.equal(filtered.total, USAGE.totalTokens);
+  db.close();
+});
+
+test("token 五列不齐的记录不进统计，与单行读取守卫一致", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ tokenUsage: USAGE }));
+  // 模拟迁移中途/人工写入只补了部分列。
+  db.prepare("UPDATE review_records SET cache_write_tokens = NULL WHERE id = 1").run();
+
+  const tokens = repo.getStats({}).tokens;
+  assert.equal(tokens.recordedReviews, 0, "半份数据不能计入平均值分母");
+  assert.equal(tokens.total, null, "半份数据不得被当成完整用量");
   db.close();
 });

@@ -165,6 +165,10 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
         params.push(query.to);
       }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      // token 统计只认「五列齐全」的记录，与单行读取的守卫保持一致：
+      // 迁移中途或人工写入只补了部分列时，半份用量会算出错误的命中率。
+      const usageComplete = "(input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND cache_read_tokens IS NOT NULL AND cache_write_tokens IS NOT NULL AND total_tokens IS NOT NULL)";
+      const whereWithUsage = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")} AND ${usageComplete}` : `WHERE ${usageComplete}`;
 
       // AVG 自动忽略 NULL，正是需要的语义：未解析出分数的记录不计入平均分。
       // 不要改成 COALESCE(score, 0)，那会把缺失分数当成 0 分拉低均值。
@@ -195,13 +199,13 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
       // 全部记录都没有 usage 时 SUM 返回 NULL，交由 asTokenTotals 转成 null。
       const tokenRow = db
         .prepare(
-          `SELECT COUNT(total_tokens) AS recorded,
+          `SELECT COUNT(*) AS recorded,
                   SUM(input_tokens) AS input,
                   SUM(output_tokens) AS output,
                   SUM(cache_read_tokens) AS cache_read,
                   SUM(cache_write_tokens) AS cache_write,
                   SUM(total_tokens) AS total
-           FROM review_records ${where}`,
+           FROM review_records ${whereWithUsage}`,
         )
         .get(...params) as unknown as {
           recorded: number;
@@ -259,17 +263,21 @@ function asTokenTotals(row: {
     };
   }
   const input = Number(row.input ?? 0);
+  const cacheRead = Number(row.cache_read ?? 0);
+  const cacheWrite = Number(row.cache_write ?? 0);
   const total = Number(row.total ?? 0);
+  // 输入侧总量必须包含缓存分量：SDK 已把 cacheRead/cacheWrite 从 input 中剔除，
+  // 只用 input 作分母会把命中率算到 1 以上。
+  const inputSide = input + cacheRead + cacheWrite;
   return {
     recordedReviews,
     input,
     output: Number(row.output ?? 0),
-    cacheRead: Number(row.cache_read ?? 0),
-    cacheWrite: Number(row.cache_write ?? 0),
+    cacheRead,
+    cacheWrite,
     total,
     avgPerReview: total / recordedReviews,
-    // cacheRead 是 input 的子集，命中率天然落在 0..1；input 为 0 时无意义。
-    cacheHitRate: input > 0 ? Number(row.cache_read ?? 0) / input : null,
+    cacheHitRate: inputSide > 0 ? cacheRead / inputSide : null,
   };
 }
 

@@ -71,7 +71,9 @@ test("统计接口返回 token 汇总与按维度用量", async () => {
     assert.equal(body.tokens.recordedReviews, 1, "只有 1 次评审有 usage");
     assert.equal(body.tokens.total, 1600);
     assert.equal(body.tokens.avgPerReview, 1600, "平均值分母只算有 usage 的记录");
-    assert.equal(body.tokens.cacheHitRate, 0.4);
+    // 输入侧总量 = input 1000 + cacheRead 400 + cacheWrite 0 = 1400，命中 400。
+    assert.ok(Math.abs((body.tokens.cacheHitRate ?? 0) - 400 / 1400) < 1e-9, "命中率分母含缓存分量");
+    assert.ok((body.tokens.cacheHitRate ?? 0) <= 1);
     assert.equal(body.byProject[0].totalTokens, 1600, "同组缺失记录不得拉低总量");
   });
 });
