@@ -85,11 +85,28 @@ export interface AdoptionDimensionRow {
   rate: number | null;
 }
 
+/**
+ * 采纳率排除阈值：评审总分达到该值的记录不参与采纳率。
+ *
+ * 95 分以上代表评审基本未提出实质问题（或问题极少），其「建议是否被采纳」
+ * 无法反映评审价值，留在分母里只会稀释采纳率、掩盖低分评审的采纳情况。
+ * 固定常量而非配置项：口径必须全局统一，否则跨时间、跨项目不可比。
+ */
+export const ADOPTION_EXCLUDED_SCORE_AT_LEAST = 95;
+
 /** 采纳统计结果：可统计部分与不可统计部分必须分开呈现。 */
 export interface AdoptionStats {
   total: { tracked: number; adopted: number; pending: number; rate: number | null };
   /** 不可统计条数：`fallback` 为降级并入汇总，`unknown` 为无法定位。 */
   untrackable: { fallback: number; unknown: number };
+  /**
+   * 因高分被排除在采纳率之外的建议数。
+   *
+   * 必须单独给出：采纳率口径调整后，用户需要知道「少算的那部分去哪了」，
+   * 否则会误以为数据丢失。这些建议**同时**从分子与分母移除，采纳率不会
+   * 因分子留在原处而超过 100%。
+   */
+  excluded: { highScore: number };
   byProject: AdoptionDimensionRow[];
   byCommitter: AdoptionDimensionRow[];
   bySeverity: AdoptionDimensionRow[];

@@ -192,7 +192,7 @@ const items = ref<ReviewRecord[]>([]);
 const total = ref(0);
 const page = ref(1);
 const pageSize = ref(20);
-// 记录页只用概览与 daily，但类型上必须给全字段（统计页需要 byProject/byCommitter）
+// 记录页只用概览与 daily，但类型上必须给全字段（统计页需要 byProject/byCommitter/tokens）
 const stats = ref<ReviewStats>({
   total: 0,
   projectCount: 0,
@@ -201,6 +201,10 @@ const stats = ref<ReviewStats>({
   daily: [],
   byProject: [],
   byCommitter: [],
+  tokens: {
+    recordedReviews: 0, input: null, output: null, cacheRead: null, cacheWrite: null,
+    total: null, avgPerReview: null, cacheHitRate: null,
+  },
 });
 
 const filters = reactive<{ projectId: string; committer: string; range: [string, string] | null }>({

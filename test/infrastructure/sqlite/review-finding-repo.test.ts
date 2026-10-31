@@ -154,3 +154,140 @@ test("按时间与项目过滤", () => {
   assert.equal(repo.getAdoptionStats({ to: 500 }).total.tracked, 1);
   assert.equal(repo.getAdoptionStats({ projectId: 999 }).total.tracked, 0);
 });
+
+// ============ 采纳率排除 ≥95 分评审 ============
+
+/** 写入一条指定分数的评审记录，返回其 ID，供高分排除用例使用。 */
+function seedScoredRecord(db: DatabaseSync, score: number | null, committer = "甲"): number {
+  const result = db.prepare(
+    `INSERT INTO review_records (
+       project_id, project_name, mr_iid, committer_name, change_count, batch_count,
+       score, duration_ms, result, error_message, comment_url, mr_url, started_at, finished_at
+     ) VALUES (1, 'g/p', 7, ?, 1, 1, ?, 10, 'success', NULL, NULL, NULL, 1, 2)`,
+  ).run(committer, score);
+  return Number(result.lastInsertRowid);
+}
+
+test("95 分及以上评审的建议同时从分子与分母排除", () => {
+  const db = openDatabase(":memory:");
+  const low = seedScoredRecord(db, 60);
+  const high = seedScoredRecord(db, 95);
+  const repo = createReviewFindingRepository(db);
+  // 低分评审：1 采纳 1 忽略 → 采纳率 50%
+  repo.insert(makeFinding({ recordId: low, marker: "low-a", headSha: "h1", outcome: "adopted", trackedAt: 1 }));
+  repo.insert(makeFinding({ recordId: low, marker: "low-b", headSha: "h2", outcome: "ignored", trackedAt: 1 }));
+  // 高分评审：2 条采纳。若只排除分母不排除分子，采纳率会变成 3/2 > 100%。
+  repo.insert(makeFinding({ recordId: high, marker: "high-a", headSha: "h3", outcome: "adopted", trackedAt: 1 }));
+  repo.insert(makeFinding({ recordId: high, marker: "high-b", headSha: "h4", outcome: "adopted", trackedAt: 1 }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.equal(stats.total.tracked, 2, "分母只保留低于 95 分的可统计建议");
+  assert.equal(stats.total.adopted, 1, "高分建议的采纳数也必须排除，否则采纳率会超过 100%");
+  assert.equal(stats.total.rate, 0.5);
+  assert.equal(stats.excluded.highScore, 2, "排除条数必须单列，避免被误认为数据丢失");
+  db.close();
+});
+
+test("95 分是边界：94 分计入，95 分排除", () => {
+  const db = openDatabase(":memory:");
+  const below = seedScoredRecord(db, 94);
+  const at = seedScoredRecord(db, 95);
+  const repo = createReviewFindingRepository(db);
+  repo.insert(makeFinding({ recordId: below, marker: "m94", headSha: "h1", outcome: "adopted", trackedAt: 1 }));
+  repo.insert(makeFinding({ recordId: at, marker: "m95", headSha: "h2", outcome: "ignored", trackedAt: 1 }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.equal(stats.total.tracked, 1, "94 分仍参与采纳率");
+  assert.equal(stats.total.adopted, 1);
+  assert.equal(stats.excluded.highScore, 1);
+  db.close();
+});
+
+test("没有分数的评审不被当作高分排除", () => {
+  const db = openDatabase(":memory:");
+  // 关键回归：SQL 里若直接写 `score < 95`，NULL 比较结果为 NULL，
+  // 会把缺分记录一起排除；必须用 COALESCE 保留它们。
+  const unscored = seedScoredRecord(db, null);
+  const repo = createReviewFindingRepository(db);
+  repo.insert(makeFinding({ recordId: unscored, marker: "m1", headSha: "h1", outcome: "adopted", trackedAt: 1 }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.equal(stats.total.tracked, 1, "缺分记录必须保留在采纳率分母中");
+  assert.equal(stats.excluded.highScore, 0);
+  db.close();
+});
+
+test("分组维度与总计使用同一高分排除口径", () => {
+  const db = openDatabase(":memory:");
+  const low = seedScoredRecord(db, 70, "甲");
+  const high = seedScoredRecord(db, 99, "乙");
+  const repo = createReviewFindingRepository(db);
+  repo.insert(makeFinding({ recordId: low, marker: "m1", headSha: "h1", severity: "p1", outcome: "adopted", trackedAt: 1 }));
+  repo.insert(makeFinding({ recordId: high, marker: "m2", headSha: "h2", severity: "p1", outcome: "adopted", trackedAt: 1 }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.deepEqual(stats.byCommitter.map((row) => row.name), ["甲"], "高分提交人整组消失，而不是留下 100% 的组");
+  assert.deepEqual(stats.byProject.map((row) => row.tracked), [1]);
+  assert.equal(stats.bySeverity.find((row) => row.name === "p1")?.tracked, 1);
+  db.close();
+});
+
+test("等待判定的高分建议也计入排除数，避免用户等一个永不出现在分母的数", () => {
+  const db = openDatabase(":memory:");
+  const high = seedScoredRecord(db, 97);
+  const repo = createReviewFindingRepository(db);
+  repo.insert(makeFinding({ recordId: high, marker: "m1", headSha: "h1", outcome: "pending", trackedAt: null }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.equal(stats.total.tracked, 0);
+  assert.equal(stats.total.pending, 0, "高分 pending 不进等待判定：它永远不会被计入采纳率");
+  assert.equal(stats.excluded.highScore, 1);
+  db.close();
+});
+
+test("排除条数与总计使用同一时间/项目筛选口径", () => {
+  const db = openDatabase(":memory:");
+  const highEarly = seedScoredRecord(db, 96);
+  // 把第一条挪到早期时间窗，验证筛选会作用到排除数上。
+  db.prepare("UPDATE review_records SET started_at = 100 WHERE id = ?").run(highEarly);
+  const highLate = seedScoredRecord(db, 98);
+  db.prepare("UPDATE review_records SET started_at = 9000 WHERE id = ?").run(highLate);
+  const repo = createReviewFindingRepository(db);
+  repo.insert(makeFinding({ recordId: highEarly, marker: "m-early", headSha: "h1", outcome: "adopted", trackedAt: 1 }));
+  repo.insert(makeFinding({ recordId: highLate, marker: "m-late", headSha: "h2", outcome: "adopted", trackedAt: 1 }));
+
+  assert.equal(repo.getAdoptionStats({}).excluded.highScore, 2, "无筛选时两条都排除");
+  // 注意：采纳统计 filter 用的是 findings.created_at，因此这里改用 createdAt 控制时间窗。
+  db.prepare("UPDATE review_findings SET created_at = 100 WHERE marker = 'm-early'").run();
+  db.prepare("UPDATE review_findings SET created_at = 9000 WHERE marker = 'm-late'").run();
+  assert.equal(repo.getAdoptionStats({ from: 5000 }).excluded.highScore, 1, "时间筛选必须同时作用于排除数");
+  assert.equal(repo.getAdoptionStats({ projectId: 999 }).excluded.highScore, 0, "项目筛选必须同时作用于排除数");
+  db.close();
+});
+
+test("高分记录的不可追踪建议仍计入 untrackable，不会静默丢失", () => {
+  const db = openDatabase(":memory:");
+  const high = seedScoredRecord(db, 97);
+  const low = seedScoredRecord(db, 60);
+  const repo = createReviewFindingRepository(db);
+  // 高分评审的降级建议（空指纹）与无法定位建议：不进采纳率，但也不能从
+  // 「建议总量」里消失——它们既不属于 excluded，也必须出现在 untrackable。
+  repo.insert(makeFinding({ recordId: high, marker: "hf", headSha: "h1", codeFingerprint: "", outcome: "pending" }));
+  repo.insert(makeFinding({ recordId: high, marker: "hu", headSha: "h2", outcome: "unknown" }));
+  // 低分评审的一条已采纳建议，用于确认采纳率本体不受影响。
+  repo.insert(makeFinding({ recordId: low, marker: "lo", headSha: "h3", outcome: "adopted", trackedAt: 1 }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.equal(stats.total.tracked, 1, "只有低分可统计建议进分母");
+  assert.equal(stats.untrackable.fallback, 1, "高分降级建议仍是不可追踪");
+  assert.equal(stats.untrackable.unknown, 1, "高分未知建议仍是不可追踪");
+  assert.equal(stats.excluded.highScore, 0, "可追踪的高分建议才算排除项");
+
+  // 本用例三条建议分属互不重叠的类别，四类之和应等于落库总数 3；
+  // 这验证的是「高分不可追踪项没有被静默丢弃」，不是普适守恒律
+  // （历史数据里空指纹与已判定可能重叠，属既有口径）。
+  const pageTotal = stats.total.pending + stats.total.tracked
+    + stats.untrackable.fallback + stats.untrackable.unknown + stats.excluded.highScore;
+  assert.equal(pageTotal, 3, "高分不可追踪项必须仍被计入某一类");
+  db.close();
+});

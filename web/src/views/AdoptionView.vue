@@ -39,7 +39,7 @@
       <header class="report-header">
         <div>
           <h2>代码变化率</h2>
-          <p>等待判定和不可统计建议不进入分母；每个数字均显示计算方式。</p>
+          <p>等待判定、不可统计与 95 分及以上评审的建议均不进入分母；每个数字均显示计算方式。</p>
         </div>
         <span>{{ rangeLabel }} · {{ selectedProjectLabel }}</span>
       </header>
@@ -68,6 +68,16 @@
         </div>
       </div>
     </section>
+
+    <el-alert
+      v-if="excludedHighScore > 0"
+      type="success"
+      :closable="false"
+      show-icon
+    >
+      <template #title>已按口径排除 {{ excludedHighScore }} 条高分建议</template>
+      这些建议来自评审总分 ≥ 95 分的记录：分子与分母同时排除，避免低风险评审稀释采纳率。排除项不计入等待判定。
+    </el-alert>
 
     <el-alert
       v-if="adoption && adoption.total.tracked === 0 && (adoption.total.pending > 0 || untrackableTotal > 0)"
@@ -136,6 +146,7 @@
 /**
  * 独立采纳分析页，负责加载 `/api/reviews/adoption`、按项目/提交人切换并解释统计口径。
  * 不变量：pending、fallback、unknown 都不进入采纳率分母；unknown 有行锚点，fallback 没有；
+ * 评审总分 ≥ 95 分的建议分子分母同时排除，单独计数，不能与不可追踪相加；
  * 项目筛选使用服务端返回的 projectId，但界面始终显示评审发生时保存的项目名称。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -167,9 +178,15 @@ const committerRows = computed(() => adoption.value?.byCommitter ?? []);
 const severityRows = computed(() => adoption.value?.bySeverity ?? []);
 const activeRows = computed(() => activeTab.value === "project" ? projectRows.value : committerRows.value);
 const untrackableTotal = computed(() => (adoption.value?.untrackable.fallback ?? 0) + (adoption.value?.untrackable.unknown ?? 0));
-const suggestionTotal = computed(() => (adoption.value?.total.pending ?? 0) + (adoption.value?.total.tracked ?? 0) + untrackableTotal.value);
+/** 评审总分 ≥ 95 而被排除的建议数；与 untrackable 是不同口径，不能相加。 */
+const excludedHighScore = computed(() => adoption.value?.excluded.highScore ?? 0);
+// 建议总量必须含高分排除项：它们已从 tracked/pending 中移除，若不加回来，
+// 页面的「建议总量」会小于实际落库条数，看起来像数据丢失。
+const suggestionTotal = computed(() => (adoption.value?.total.pending ?? 0) + (adoption.value?.total.tracked ?? 0) + untrackableTotal.value + excludedHighScore.value);
 // unknown 仍有代码指纹/行锚点，只是无法可靠定位；有锚点总数只排除空指纹 fallback。
-const anchoredTotal = computed(() => (adoption.value?.total.pending ?? 0) + (adoption.value?.total.tracked ?? 0) + (adoption.value?.untrackable.unknown ?? 0));
+// 高分排除项也带行锚点，必须加回来，否则「总量 − 空指纹 fallback」的公式对不上。
+const anchoredTotal = computed(() => (adoption.value?.total.pending ?? 0) + (adoption.value?.total.tracked ?? 0)
+  + (adoption.value?.untrackable.unknown ?? 0) + excludedHighScore.value);
 const rangeLabel = computed(() => range.value ? "自定义范围" : "全部时间");
 const selectedProjectLabel = computed(() => {
   if (selectedProjectId.value === null) return `${projectOptions.value.length} 个项目`;
@@ -188,7 +205,7 @@ const lifecycleSteps = computed(() => {
   const adopted = adoption.value?.total.adopted ?? 0;
   const share = (value: number) => total > 0 ? (value / total) * 100 : 0;
   return [
-    { label: "建议总量", value: total, formula: "等待 + 可统计 + 不可统计", share: share(total), color: "var(--el-text-color-secondary)" },
+    { label: "建议总量", value: total, formula: "等待 + 可统计 + 不可统计 + 高分排除", share: share(total), color: "var(--el-text-color-secondary)" },
     { label: "有行锚点", value: anchoredTotal.value, formula: "总量 − 空指纹 fallback", share: share(anchoredTotal.value), color: "var(--app-chart-primary)" },
     { label: "已完成判定", value: tracked, formula: "已采纳 + 已解决但未变 + 未采纳", share: share(tracked), color: "var(--el-text-color-secondary)" },
     { label: "代码已变化", value: adopted, formula: "已采纳建议", share: share(adopted), color: "var(--el-color-primary)" },
@@ -196,11 +213,12 @@ const lifecycleSteps = computed(() => {
 });
 const attentionRows = computed(() => [...projectRows.value].filter((row) => row.pending > 0).sort((a, b) => b.pending - a.pending).slice(0, 3));
 const methods = computed(() => [
-  { label: "建议总量", formula: `等待 ${adoption.value?.total.pending ?? 0} + 可统计 ${adoption.value?.total.tracked ?? 0} + 不可统计 ${untrackableTotal.value} = ${suggestionTotal.value}`, note: "所有已落库建议" },
+  { label: "建议总量", formula: `等待 ${adoption.value?.total.pending ?? 0} + 可统计 ${adoption.value?.total.tracked ?? 0} + 不可统计 ${untrackableTotal.value} + 高分排除 ${excludedHighScore.value} = ${suggestionTotal.value}`, note: "所有已落库建议" },
   { label: "等待判定", formula: `有行锚点且 outcome=pending = ${adoption.value?.total.pending ?? 0}`, note: "等待新提交或 MR 终态" },
   { label: "可统计", formula: `已完成判定 = ${adoption.value?.total.tracked ?? 0}`, note: "采纳率分母" },
   { label: "代码变化率", formula: `已采纳 ${adoption.value?.total.adopted ?? 0} ÷ 可统计 ${adoption.value?.total.tracked ?? 0} = ${formatRate(adoption.value?.total.rate ?? null)}`, note: "只证明代码变化，不证明修复正确" },
   { label: "不可统计", formula: `fallback + unknown = ${untrackableTotal.value}`, note: "不进入分母" },
+  { label: "高分排除", formula: `评审总分 ≥ 95 分的建议 = ${excludedHighScore.value}`, note: "分子与分母同时排除；不属于不可追踪" },
 ]);
 const severityOption = computed(() => ({
   tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },

@@ -101,3 +101,53 @@ test("openDatabase 支持内存库（测试用）", () => {
   assert.equal(row.n, 0);
   db.close();
 });
+
+test("旧库升级补齐 token 五列，历史记录保持 NULL 且可重复升级", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crp-db-token-"));
+  const path = join(dir, "old.db");
+  try {
+    // 模拟升级前只有基础列的 review_records，并写入一条历史记录。
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE review_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, project_name TEXT NOT NULL,
+      mr_iid INTEGER NOT NULL, committer_name TEXT NOT NULL, change_count INTEGER NOT NULL,
+      batch_count INTEGER NOT NULL, score INTEGER, duration_ms INTEGER NOT NULL, result TEXT NOT NULL,
+      error_message TEXT, comment_url TEXT, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL
+    );
+    INSERT INTO review_records (project_id, project_name, mr_iid, committer_name, change_count,
+      batch_count, score, duration_ms, result, started_at, finished_at)
+    VALUES (1, 'g/p', 7, 'alice', 2, 1, 88, 100, 'success', 1, 2);`);
+    old.close();
+
+    const first = openDatabase(path);
+    try {
+      const columns = first.prepare("PRAGMA table_info(review_records)").all() as unknown as Array<{ name: string }>;
+      for (const column of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens"]) {
+        assert.ok(columns.some((item) => item.name === column), `迁移必须补齐 ${column}`);
+      }
+      const row = first.prepare("SELECT * FROM review_records").get() as Record<string, unknown>;
+      assert.equal(row.score, 88, "历史数据不能被改写");
+      for (const column of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens"]) {
+        assert.equal(row[column], null, `${column} 必须是 NULL：历史用量不可回填，不能伪造为 0`);
+      }
+    } finally {
+      first.close();
+    }
+
+    // 二次升级必须幂等（不能因列已存在而抛错，也不能重置已有值）。
+    const second = openDatabase(path);
+    try {
+      second.prepare("UPDATE review_records SET total_tokens = 1234 WHERE id = 1").run();
+    } finally {
+      second.close();
+    }
+    const third = openDatabase(path);
+    try {
+      assert.equal(third.prepare("SELECT total_tokens FROM review_records WHERE id = 1").get()?.total_tokens, 1234);
+    } finally {
+      third.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

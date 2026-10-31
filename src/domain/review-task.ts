@@ -8,6 +8,7 @@
 import type { DiscussionPosition } from "./inline-comment.ts";
 import type { RepositoryReadAccess, RepositoryReviewSnapshot, RepositoryToolCallEvent } from "./repository-context.ts";
 import type { ProjectAutoMergePolicy } from "./review-prompt.ts";
+import type { TokenUsage } from "./review-record.ts";
 
 export type { DiscussionPosition };
 
@@ -123,6 +124,13 @@ export interface ReviewResult {
   model: string;
   baseUrl?: string;
   api?: string;
+  /**
+   * 本次调用实际消耗的 token。
+   *
+   * 可选：旧 Reviewer 实现与部分 provider 不返回 usage。缺失时调用方必须
+   * 记为「无数据」而不是 0，否则成本统计会被伪造的零值稀释。
+   */
+  usage?: TokenUsage;
 }
 
 /** 管线沿用项目设置的权威自动合并类型，不维护第二份结构。 */

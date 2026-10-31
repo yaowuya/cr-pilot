@@ -118,6 +118,7 @@ export function createReviewsRouter(deps: ReviewsRouterDeps): Router {
       res.json({
         total: { tracked: 0, adopted: 0, pending: 0, rate: null },
         untrackable: { fallback: 0, unknown: 0 },
+        excluded: { highScore: 0 },
         byProject: [],
         byCommitter: [],
         bySeverity: [],

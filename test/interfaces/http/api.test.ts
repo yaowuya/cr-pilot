@@ -268,7 +268,7 @@ test("评审概览与列表共享项目、提交人与时间筛选口径", async
   const { app, token, records } = buildHarness();
   const baseRecord = {
     mrIid: 1, changeCount: 1, batchCount: 1, durationMs: 1000, result: "success" as const,
-    errorMessage: null, commentUrl: null, mrUrl: null, finishedAt: 200,
+    errorMessage: null, commentUrl: null, mrUrl: null, finishedAt: 200, tokenUsage: null,
   };
   records.insert({ ...baseRecord, projectId: 11, projectName: "group/a", committerName: "甲", score: 90, startedAt: 100 });
   records.insert({ ...baseRecord, projectId: 22, projectName: "group/b", committerName: "乙", score: 60, startedAt: 150 });
