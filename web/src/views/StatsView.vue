@@ -53,19 +53,42 @@
       <section v-for="dimension in dimensions" :key="dimension.key" class="analytics-panel">
         <header class="panel-header"><div><h2>{{ dimension.title }}</h2><p>{{ dimension.description }}</p></div><span>{{ dimension.rows.length }} 项</span></header>
         <el-table :data="dimension.rows" size="default" empty-text="暂无统计数据">
-          <el-table-column prop="name" :label="dimension.nameLabel" min-width="220" show-overflow-tooltip>
+          <el-table-column prop="name" :label="dimension.nameLabel" min-width="180" show-overflow-tooltip>
             <template #default="{ row }"><span class="row-name">{{ row.name }}</span></template>
           </el-table-column>
-          <el-table-column prop="count" label="评审次数" width="100" align="right" sortable />
-          <el-table-column label="平均分" width="100" align="right" sortable :sort-by="'avgScore'">
+          <el-table-column prop="count" label="评审数" width="86" align="right" sortable />
+          <el-table-column label="平均分" width="92" align="right" sortable :sort-by="'avgScore'">
             <template #default="{ row }"><span :class="scoreClass(row.avgScore)">{{ formatScore(row.avgScore) }}</span></template>
           </el-table-column>
-          <el-table-column label="最低 / 最高" width="130" align="right">
+          <el-table-column label="最低/最高" width="104" align="right">
             <template #default="{ row }">{{ formatScore(row.minScore) }} / {{ formatScore(row.maxScore) }}</template>
+          </el-table-column>
+          <el-table-column label="Token" width="92" align="right" sortable :sort-by="'totalTokens'">
+            <template #default="{ row }">{{ formatTokens(row.totalTokens) }}</template>
           </el-table-column>
         </el-table>
       </section>
     </div>
+
+    <section class="analytics-panel token-panel">
+      <header class="panel-header">
+        <div>
+          <h2>Token 使用</h2>
+          <p>来自模型实际返回的 usage，不做估算；只统计有 usage 数据的 {{ stats.tokens.recordedReviews }} 次评审。</p>
+        </div>
+        <span>缓存命中率 {{ formatPercent(stats.tokens.cacheHitRate) }}</span>
+      </header>
+      <div class="token-strip">
+        <article><span>总 Token</span><strong>{{ formatTokens(stats.tokens.total) }}</strong><small>输入 + 输出（含缓存读写）</small></article>
+        <article><span>输入</span><strong>{{ formatTokens(stats.tokens.input) }}</strong><small>含缓存命中与写入</small></article>
+        <article><span>输出</span><strong>{{ formatTokens(stats.tokens.output) }}</strong><small>模型生成内容</small></article>
+        <article><span>每次平均</span><strong>{{ formatTokens(stats.tokens.avgPerReview) }}</strong><small>总量 ÷ {{ stats.tokens.recordedReviews }} 次有数据评审</small></article>
+      </div>
+      <p class="token-note">
+        缓存读取 {{ formatTokens(stats.tokens.cacheRead) }}、缓存写入 {{ formatTokens(stats.tokens.cacheWrite) }}；两者都是输入的子集，不与输入相加。
+        「—」表示没有 usage 数据（历史记录或模型未返回），不是零消耗。
+      </p>
+    </section>
   </div>
 </template>
 
@@ -85,7 +108,13 @@ let requestGeneration = 0;
 const errorMessage = ref("");
 const range = ref<[string, string] | null>(null);
 const dateRangeDefaultTime = [new Date(2000, 0, 1, 0, 0, 0), new Date(2000, 0, 1, 23, 59, 59, 999)];
-const stats = ref<ReviewStats>({ total: 0, projectCount: 0, committerCount: 0, avgScore: null, daily: [], byProject: [], byCommitter: [] });
+const stats = ref<ReviewStats>({
+  total: 0, projectCount: 0, committerCount: 0, avgScore: null, daily: [], byProject: [], byCommitter: [],
+  tokens: {
+    recordedReviews: 0, input: null, output: null, cacheRead: null, cacheWrite: null,
+    total: null, avgPerReview: null, cacheHitRate: null,
+  },
+});
 const hasDaily = computed(() => stats.value.daily.length > 0);
 const dimensions = computed(() => [
   { key: "project", title: "按项目评分", description: "只使用成功解析出的分数。", nameLabel: "项目", rows: stats.value.byProject },
@@ -110,6 +139,9 @@ function queryParams(): Record<string, unknown> { return inclusiveCalendarRange(
 function shareOf(count: number): number { return stats.value.total > 0 ? (count / stats.value.total) * 100 : 0; }
 function formatShare(count: number): string { return stats.value.total > 0 ? `${((count / stats.value.total) * 100).toFixed(1)}%` : "—"; }
 function formatScore(score: number | null): string { return score === null ? "—" : score.toFixed(1); }
+/** token 用千分位、整数值；null 显示「—」而不是 0，避免把「没采到」读成「没消耗」。 */
+function formatTokens(value: number | null): string { return value === null ? "—" : Math.round(value).toLocaleString("zh-CN"); }
+function formatPercent(value: number | null): string { return value === null ? "—" : `${(value * 100).toFixed(1)}%`; }
 function scoreClass(score: number | null): string { if (score === null) return "is-muted"; if (score < 60) return "is-low"; if (score < 80) return "is-mid"; return "is-good"; }
 async function loadStats(): Promise<void> {
   const request = ++requestGeneration;
@@ -149,6 +181,19 @@ onBeforeUnmount(() => { requestGeneration += 1; });
 .share-row { display: grid; grid-template-columns: minmax(130px,1fr) 100px 52px; gap: 12px; align-items: center; min-height: 43px; font-size: 13px; }
 .share-row i { height: 7px; overflow: hidden; background: var(--el-fill-color); }.share-row i b { display: block; height: 100%; background: var(--app-chart-primary); }.share-row strong { text-align: right; font-variant-numeric: tabular-nums; }
 .row-name { color: var(--el-text-color-primary); font-weight: 600; }
+/* Element Plus 会把排序图标算进宽度，列标题在窄列里折行；统计表列多，
+   统一禁止表头换行，由列宽保证可读性。 */
+.dimension-grid :deep(.el-table th .cell) { white-space: nowrap; }
+.token-panel { margin-top: 0; }
+.token-strip { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-top: 1px solid var(--el-border-color-light); }
+.token-strip article { padding: 16px 19px; border-left: 1px solid var(--el-border-color-light); }
+.token-strip article:first-child { border-left: 0; }
+.token-strip span,.token-strip small { display: block; color: var(--el-text-color-regular); }
+.token-strip span { font-size: 12px; }
+.token-strip strong { display: block; margin-top: 6px; font-size: 22px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.token-strip small { margin-top: 6px; font-size: 11px; line-height: 1.4; }
+.token-note { margin: 0; padding: 12px 19px 16px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
+@media (max-width: 1100px) { .token-strip { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 .is-low { color: var(--el-color-danger); }.is-mid { color: var(--el-color-warning); }.is-good { color: var(--el-color-success); }.is-muted { color: var(--el-text-color-secondary); }
 @media (max-width: 1100px) { .analytics-grid,.dimension-grid { grid-template-columns: 1fr; } }
 </style>

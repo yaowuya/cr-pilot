@@ -27,7 +27,8 @@ function repository(rows: ReviewFinding[]): ReviewFindingRepository {
       if (row) Object.assign(row, { outcome, trackedAt, headSha });
     },
     refreshTrackingCredentials: () => 0,
-    getAdoptionStats: () => ({ total: { tracked: 0, adopted: 0, pending: rows.length, rate: null }, untrackable: { fallback: 0, unknown: 0 }, byProject: [], byCommitter: [], bySeverity: [] }),
+    getAdoptionStats: () => ({ total: { tracked: 0, adopted: 0, pending: rows.length, rate: null }, untrackable: { fallback: 0, unknown: 0 },
+        excluded: { highScore: 0 }, byProject: [], byCommitter: [], bySeverity: [] }),
   };
 }
 

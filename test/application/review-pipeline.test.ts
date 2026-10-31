@@ -1552,3 +1552,96 @@ test("全部批次都失败时不回写评论并记为失败", async () => {
   assert.equal(client.notes.length, 0, "没有任何可用评审内容时不应回写");
   assert.equal(inserted[0].result, "failed");
 });
+
+// ============ token 用量记账 ============
+
+/** 按调用类型返回不同 usage，用来验证批次与汇总分别累计。 */
+function reviewerWithUsage(
+  batchText: string,
+  summaryText: string,
+  usage: { batch?: ReviewRecord["tokenUsage"]; summary?: ReviewRecord["tokenUsage"] },
+): Reviewer {
+  return {
+    review: async ({ systemPrompt }) => {
+      const isSummary = isSummaryCall(systemPrompt);
+      const target = isSummary ? usage.summary : usage.batch;
+      return {
+        text: isSummary ? summaryText : batchText,
+        model: "m",
+        ...(target === null ? {} : target ? { usage: target } : {}),
+      };
+    },
+  };
+}
+
+const BATCH_USAGE = { input: 1000, output: 200, cacheRead: 400, cacheWrite: 0, totalTokens: 1600 };
+const SUMMARY_USAGE = { input: 300, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 400 };
+
+test("批次与汇总的 usage 累加写入同一条评审记录", async () => {
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient(),
+    rules,
+    reviewer: reviewerWithUsage("批评论", "总分：88 分", { batch: BATCH_USAGE, summary: SUMMARY_USAGE }),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run(task);
+  assert.deepEqual(inserted[0].tokenUsage, {
+    input: 1300, output: 300, cacheRead: 400, cacheWrite: 0, totalTokens: 2000,
+  }, "汇总也是独立计费请求，必须与批次一起累计");
+});
+
+test("任一模型调用缺 usage 时整单记 null，不写不完整的低估值", async () => {
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient(),
+    rules,
+    // 汇总不返回 usage：若只累加批次，会把真实成本低估近 20%。
+    reviewer: reviewerWithUsage("批评论", "总分：88 分", { batch: BATCH_USAGE }),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run(task);
+  assert.equal(inserted[0].tokenUsage, null, "部分缺失必须整体记 null，否则统计把缺失当 0");
+});
+
+test("模型完全不返回 usage 时记录为 null 而不是全零", async () => {
+  const inserted: ReviewRecord[] = [];
+  const pipeline = createReviewPipeline({
+    client: fakeClient(),
+    rules,
+    reviewer: reviewerReturning("批评论", "总分：88 分"),
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run(task);
+  assert.equal(inserted[0].tokenUsage, null);
+});
+
+test("评审失败时仍记录已消耗的 token", async () => {
+  const inserted: ReviewRecord[] = [];
+  let calls = 0;
+  const pipeline = createReviewPipeline({
+    client: fakeClient(),
+    rules,
+    reviewer: {
+      review: async () => {
+        calls += 1;
+        // 批次成功记账后，汇总失败：成本已经发生，必须保留。
+        if (calls > 1) throw new Error("汇总超时");
+        return { text: "批评论", model: "m", usage: BATCH_USAGE };
+      },
+    },
+    logger: createSilentLogger(),
+    batchMaxTokens: 6000,
+    recordWriter: { insert: (record) => inserted.push(record) },
+  });
+  await pipeline.run(task);
+  assert.equal(inserted[0].result, "failed");
+  // 汇总那次没有 usage 结果，因此整单无法证明完整计量 → null。
+  assert.equal(inserted[0].tokenUsage, null, "缺一次计费证据时不能声称完整用量");
+});

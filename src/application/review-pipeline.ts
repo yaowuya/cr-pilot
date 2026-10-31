@@ -14,7 +14,7 @@ import {
 import { fingerprintLine } from "../domain/review-finding.ts";
 import { sealSecret } from "../shared/secret-box.ts";
 import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
-import type { ReviewRecord } from "../domain/review-record.ts";
+import type { ReviewRecord, TokenUsage } from "../domain/review-record.ts";
 import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
 import { PROJECT_REVIEW_DENIED_MESSAGE, PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE, type PromptRepository, type StoredPrompt } from "../domain/review-prompt.ts";
 import { decideAutoMerge, type AutoMergePolicy, type Change, type Commit, type DiffRefs, type GitlabClient, type MergeRequestTask, type Reviewer, type ReviewResult, type WecomNotifier } from "../domain/review-task.ts";
@@ -550,6 +550,33 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
        * 「未解析出分数」在统计上必须区分——直接写 0 会把平均值拉低。调用方负责
        * 判断「有没有分数」并传 null。
        */
+      /**
+       * 本次任务累计的 token 用量。
+       *
+       * 按「加成功一次」累计而不是覆盖：批次与汇总各自是独立模型请求，都要计费。
+       * `tokenUsageRecorded` 记录是否真的拿到过 usage——只要有一次请求没返回
+       * usage，累计值就是**不完整的**，此时不能写成完整用量，否则统计会把
+       * 缺失部分当成零消耗、低估成本。因此缺失时整单记 null。
+       */
+      const tokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+      let tokenUsageRecorded = false;
+      let tokenUsageMissing = false;
+      const accumulateUsage = (usage: TokenUsage | undefined): void => {
+        if (!usage) {
+          tokenUsageMissing = true;
+          return;
+        }
+        tokenUsageRecorded = true;
+        tokenUsage.input += usage.input;
+        tokenUsage.output += usage.output;
+        tokenUsage.cacheRead += usage.cacheRead;
+        tokenUsage.cacheWrite += usage.cacheWrite;
+        tokenUsage.totalTokens += usage.totalTokens;
+      };
+      /** 只有「拿到过用量且没有任何一次缺失」才视为完整计量。 */
+      const recordedTokenUsage = (): TokenUsage | null =>
+        tokenUsageRecorded && !tokenUsageMissing ? { ...tokenUsage } : null;
+
       const writeRecord = (outcome: {
         result: "success" | "failed";
         errorMessage?: string;
@@ -576,6 +603,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           mrUrl: buildMergeRequestUrl(task),
           startedAt,
           finishedAt: Date.now(),
+          // 失败任务在汇总前就已消耗模型调用，真实成本已经产生；这里照实记录，
+          // 不能用「结果失败」推断「没花钱」。
+          tokenUsage: recordedTokenUsage(),
         });
         // 记录 ID 只用于给建议明细做外键；拿不到就退化为不写建议，
         // 保证既有 recordWriter 实现（返回 void）行为不变。
@@ -843,6 +873,10 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
                   返回字符数: outputCharacters, 截断次数: truncations });
               }
               batchResults.push(result.text);
+              // 计入本次评审成本：重试失败的那次请求同样已被 provider 计费，
+              // 但这里只累计成功返回的结果——失败尝试的 usage 由 reviewer 抛出，
+              // 无法带回；缺失会被 tokenUsageMissing 标记，整单记 null 而不是低估。
+              accumulateUsage(result.usage);
               batchEvaluators.push({
                 provider: result.provider,
                 model: result.model,
@@ -866,6 +900,10 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
               });
             } catch (error) {
               lastError = error;
+              // 抛出错误的那次请求同样可能已被 provider 计费（例如响应中途断开），
+              // 但错误对象带不回 usage。因此本次评审的用量无法被证明完整，
+              // 标记缺失让记录写 null，而不是把「未知部分」当成零消耗少报成本。
+              accumulateUsage(undefined);
               const message = error instanceof Error ? error.message : String(error);
               // 瞬时故障重试；确定性错误（鉴权/参数）重试无意义，直接放弃该批。
               const retryable = isRetryableBatchError(error);
@@ -927,6 +965,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             model: llmTarget?.model,
           });
           finalComment = stripMarkdownFences(summary.text.trim());
+          accumulateUsage(summary.usage);
           summaryEvaluator = {
             provider: summary.provider,
             model: summary.model,
@@ -947,6 +986,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          // 汇总请求可能已被计费但拿不到 usage，本次用量无法证明完整。
+          accumulateUsage(undefined);
           logger.error("汇总失败，任务结束", { 项目ID: task.projectId, MR编号: task.iid, 错误: message });
           writeRecord({ result: "failed", errorMessage: message, changeCount: changes.length, batchCount: batches.length });
           return;

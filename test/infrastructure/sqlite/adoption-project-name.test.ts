@@ -13,7 +13,7 @@ test("采纳率按历史项目名称聚合，项目改名/同数字ID不会显�
     const recordId = records.insert({
       projectId: 3982, projectName: "rd-fy23-canway-kingark/cw-bcms-backend", mrIid: 2229,
       committerName: "张浩东", changeCount: 2, batchCount: 1, score: 90, durationMs: 10,
-      result: "success", errorMessage: null, commentUrl: null, mrUrl: null, startedAt: 1, finishedAt: 2,
+      result: "success", errorMessage: null, commentUrl: null, mrUrl: null, startedAt: 1, finishedAt: 2, tokenUsage: null,
     });
     if (typeof recordId !== "number") assert.fail("SQLite 仓储必须返回记录 ID");
     findings.insert({

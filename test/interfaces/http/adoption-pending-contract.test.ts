@@ -116,6 +116,7 @@ test("GET /api/reviews/adoption 在总计与全部维度返回 pending", async (
       mrUrl: null,
       startedAt: 1,
       finishedAt: 2,
+      tokenUsage: null,
     });
     if (typeof recordId !== "number") assert.fail("真实 SQLite 仓储必须返回自增记录 ID");
     harness.findings.insert(finding(recordId, "adopted", { outcome: "adopted", trackedAt: 200 }));

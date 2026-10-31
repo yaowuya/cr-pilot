@@ -265,3 +265,19 @@ test("仓库工具事件 createPiReviewer 经离线 sessionFactory 和真实 cus
     rmSync(agentDir, { recursive: true, force: true });
   }
 });
+
+// ============ usage 透传 ============
+
+test("createPiReviewer 透传会话实际 usage，并在缺失时不伪造零值", async () => {
+  const usage = { input: 1200, output: 300, cacheRead: 500, cacheWrite: 0, totalTokens: 2000 };
+  const withUsage = fakeSession("评审正文");
+  withUsage.session.getLastUsage = () => usage;
+  const reviewerWith = createPiReviewer({ sessionFactory: async () => withUsage.session });
+  const resultWith = await reviewerWith.review({ systemPrompt: "P", code: "CODE", signal: AbortSignal.timeout(5000) });
+  assert.deepEqual(resultWith.usage, usage, "有 usage 时必须原样带回");
+
+  const withoutUsage = fakeSession("评审正文");
+  const reviewerWithout = createPiReviewer({ sessionFactory: async () => withoutUsage.session });
+  const resultWithout = await reviewerWithout.review({ systemPrompt: "P", code: "CODE", signal: AbortSignal.timeout(5000) });
+  assert.equal(resultWithout.usage, undefined, "未提供 usage 时应保持 undefined，不能补 0");
+});

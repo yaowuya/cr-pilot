@@ -29,7 +29,14 @@ CREATE TABLE IF NOT EXISTS review_records (
   comment_url TEXT,
   mr_url TEXT,
   started_at INTEGER NOT NULL,
-  finished_at INTEGER NOT NULL
+  finished_at INTEGER NOT NULL,
+  -- token 用量全部可空：历史记录与未返回 usage 的模型无法补采，NULL 表示「无数据」，
+  -- 与真实的 0 消耗必须区分，统计页据此显示「—」。
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER,
+  total_tokens INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_reviews_started_at ON review_records (started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reviews_project ON review_records (project_id);
@@ -199,6 +206,13 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "review_prompts", "provider_id", "INTEGER");
   addColumnIfMissing(db, "review_prompts", "model", "TEXT");
   addColumnIfMissing(db, "review_records", "mr_url", "TEXT");
+  // token 用量统计：只追加可空列，历史记录保持 NULL（不可回填），旧版本代码
+  // 会忽略这些列，因此回退无需删列。五列必须整组存在，统计查询才能安全聚合。
+  addColumnIfMissing(db, "review_records", "input_tokens", "INTEGER");
+  addColumnIfMissing(db, "review_records", "output_tokens", "INTEGER");
+  addColumnIfMissing(db, "review_records", "cache_read_tokens", "INTEGER");
+  addColumnIfMissing(db, "review_records", "cache_write_tokens", "INTEGER");
+  addColumnIfMissing(db, "review_records", "total_tokens", "INTEGER");
   // 自动合并升级必须安全关闭；老库只补默认值，不能从既有 Prompt 推断启用。
   // 迁移仅追加带默认值的列、不重写旧数据：回滚旧版本时旧代码会忽略这些列，
   // 因而无需危险的逆向删列；若要永久降级 schema，应先备份再按 SQLite 规则重建表。

@@ -22,6 +22,7 @@ function record(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
     mrUrl: null,
     startedAt: 1000,
     finishedAt: 2000,
+    tokenUsage: null,
     ...overrides,
   };
 }
@@ -236,4 +237,94 @@ test("insert 返回自增 ID，且该 ID 可作为建议明细的外键", () => 
     gitlabTokenSealed: "",
   });
   assert.equal(findings.listByRecord(Number(first)).length, 1, "外键可用");
+});
+
+// ============ token 用量统计 ============
+
+/** 一条可辨识的用量，便于断言各项分别累加。 */
+const USAGE = { input: 1000, output: 200, cacheRead: 400, cacheWrite: 50, totalTokens: 1650 };
+
+test("token 用量往返：写入后读取与统计均保留五列", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ tokenUsage: USAGE }));
+
+  const item = repo.getList({ page: 1, pageSize: 1 }).items[0];
+  assert.deepEqual(item.tokenUsage, USAGE, "五列必须原样往返");
+  db.close();
+});
+
+test("token 用量为 null 表示无数据，与全零用量必须区分", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ tokenUsage: null }));
+  repo.insert(record({ tokenUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } }));
+
+  const items = repo.getList({ page: 1, pageSize: 10 }).items;
+  const nullUsage = items.filter((item) => item.tokenUsage === null);
+  assert.equal(nullUsage.length, 1, "没采到 usage 的记录必须保持 null");
+  const zeroUsage = items.filter((item) => item.tokenUsage !== null);
+  assert.equal(zeroUsage.length, 1, "真实的零消耗是有效数据，不能与缺失混同");
+  db.close();
+});
+
+test("getStats 汇总 token：只对有用量的记录求和，缺失不当作 0 拉低平均", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ tokenUsage: USAGE }));
+  repo.insert(record({ tokenUsage: USAGE }));
+  repo.insert(record({ tokenUsage: null }));
+
+  const tokens = repo.getStats({}).tokens;
+  assert.equal(tokens.recordedReviews, 2, "平均值分母只算有用量的记录");
+  assert.equal(tokens.input, 2000);
+  assert.equal(tokens.output, 400);
+  assert.equal(tokens.cacheRead, 800);
+  assert.equal(tokens.total, 3300);
+  assert.equal(tokens.avgPerReview, 1650, "3 次评审里只有 2 次有用量，平均应按 2 算");
+  assert.equal(tokens.cacheHitRate, 0.4, "命中率 = cacheRead ÷ input");
+  db.close();
+});
+
+test("getStats 无任何 usage 时 token 各项为 null 而不是 0", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ tokenUsage: null }));
+
+  const tokens = repo.getStats({}).tokens;
+  assert.equal(tokens.recordedReviews, 0);
+  for (const key of ["input", "output", "cacheRead", "cacheWrite", "total", "avgPerReview", "cacheHitRate"] as const) {
+    assert.equal(tokens[key], null, `${key} 必须是 null，避免把「没数据」显示成 0`);
+  }
+  db.close();
+});
+
+test("byProject / byCommitter 同时给出该组 token 总量，缺失组保持 null", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ projectName: "group/a", committerName: "甲", tokenUsage: USAGE }));
+  repo.insert(record({ projectName: "group/a", committerName: "甲", tokenUsage: { ...USAGE, totalTokens: 350 } }));
+  repo.insert(record({ projectName: "group/b", committerName: "乙", tokenUsage: null }));
+
+  const stats = repo.getStats({});
+  const projectA = stats.byProject.find((item) => item.name === "group/a");
+  assert.equal(projectA?.totalTokens, 2000, "同组多次评审累加");
+  const projectB = stats.byProject.find((item) => item.name === "group/b");
+  assert.equal(projectB?.totalTokens, null, "该组全无用量时为 null");
+
+  const committerA = stats.byCommitter.find((item) => item.name === "甲");
+  assert.equal(committerA?.totalTokens, 2000);
+  db.close();
+});
+
+test("token 统计与分数、时间筛选口径一致", () => {
+  const db = openDatabase(":memory:");
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ startedAt: 1000, score: 50, tokenUsage: USAGE }));
+  repo.insert(record({ startedAt: 9000, score: 90, tokenUsage: USAGE }));
+
+  const filtered = repo.getStats({ from: 5000 }).tokens;
+  assert.equal(filtered.recordedReviews, 1, "时间筛选必须同时作用于 token 聚合");
+  assert.equal(filtered.total, USAGE.totalTokens);
+  db.close();
 });

@@ -916,7 +916,9 @@ paths["/api/reviews/adoption"] = {
       "",
       "**不可统计部分单列**：`fallback` 为降级并入汇总评论的建议（无行锚点），`unknown` 为历史数据或其他无法可靠判定的建议，二者均不计入分母；明确删除或指纹消失记为已采纳。",
       "",
-      "**历史数据**：功能上线前的评审没有建议明细，统计只覆盖上线后的数据。",
+      "**高分排除**：评审总分 ≥ 95 分的记录，其建议**同时**从分子与分母排除（否则采纳率可能超过 100%），条数见 `excluded.highScore`。高分评审通常只提出少量或没有建议，其采纳情况无法反映评审价值；没有分数的记录不按高分处理，仍计入分母。该口径固定内建，不提供查询参数覆盖，以保证跨时间、跨项目可比。",
+      "",
+      "**历史数据**：功能上线前的评审没有建议明细，统计只覆盖上线后的数据；token 用量同样只覆盖上线后的记录。",
     ].join("\n"),
     operationId: "getAdoptionStats",
     security: [{ [BEARER]: [] }],
@@ -1200,6 +1202,24 @@ const schemas: Record<string, JsonObject> = {
       },
       startedAt: { type: "integer", description: "Unix 毫秒", example: 1792226620931 },
       finishedAt: { type: "integer", description: "Unix 毫秒", example: 1792226633331 },
+      tokenUsage: {
+        allOf: [{ $ref: "#/components/schemas/TokenUsage" }],
+        nullable: true,
+        description: "本次评审累计消耗。`null` 表示没有可用 usage 数据（历史记录或模型未返回），与全零消耗不同；任一批次或汇总缺 usage 时整单为 null，避免低估成本。",
+      },
+    },
+  },
+
+  TokenUsage: {
+    type: "object",
+    required: ["input", "output", "cacheRead", "cacheWrite", "totalTokens"],
+    description: "一次评审消耗的模型 token，取自模型实际返回的 usage，不做估算。`cacheRead` / `cacheWrite` 是输入侧的子集，不能与 `input` 相加当作总量。",
+    properties: {
+      input: { type: "integer", description: "输入 token，含缓存命中与写入", example: 18200 },
+      output: { type: "integer", description: "输出 token", example: 2400 },
+      cacheRead: { type: "integer", description: "命中缓存的输入 token（input 的子集）", example: 9000 },
+      cacheWrite: { type: "integer", description: "写入缓存的输入 token（input 的子集）", example: 0 },
+      totalTokens: { type: "integer", description: "总量，由 provider 给出或按各分量计算", example: 20600 },
     },
   },
 
@@ -1216,7 +1236,7 @@ const schemas: Record<string, JsonObject> = {
 
   ReviewStats: {
     type: "object",
-    required: ["total", "projectCount", "committerCount", "avgScore", "daily"],
+    required: ["total", "projectCount", "committerCount", "avgScore", "daily", "byProject", "byCommitter", "tokens"],
     properties: {
       total: { type: "integer", description: "评审总次数", example: 6 },
       projectCount: { type: "integer", description: "涉及项目数", example: 4 },
@@ -1240,6 +1260,38 @@ const schemas: Record<string, JsonObject> = {
           },
         },
       },
+      byProject: { type: "array", items: { $ref: "#/components/schemas/DimensionStat" } },
+      byCommitter: { type: "array", items: { $ref: "#/components/schemas/DimensionStat" } },
+      tokens: { $ref: "#/components/schemas/TokenTotals" },
+    },
+  },
+
+  TokenTotals: {
+    type: "object",
+    required: ["recordedReviews", "input", "output", "cacheRead", "cacheWrite", "total", "avgPerReview", "cacheHitRate"],
+    description: "全局 token 用量。`recordedReviews` 是平均值与命中率的真实分母：只除以有 usage 的记录，不能除以总评审次数。没有任何 usage 时除 `recordedReviews=0` 外各项均为 null。",
+    properties: {
+      recordedReviews: { type: "integer", description: "有 usage 数据的评审次数", example: 12 },
+      input: { type: "integer", nullable: true, example: 218400 },
+      output: { type: "integer", nullable: true, example: 28800 },
+      cacheRead: { type: "integer", nullable: true, description: "输入侧子集，不与 input 相加", example: 108000 },
+      cacheWrite: { type: "integer", nullable: true, description: "输入侧子集，不与 input 相加", example: 0 },
+      total: { type: "integer", nullable: true, example: 247200 },
+      avgPerReview: { type: "number", nullable: true, description: "总量 ÷ recordedReviews", example: 20600 },
+      cacheHitRate: { type: "number", nullable: true, description: "cacheRead ÷ input，0..1；input 为 0 时为 null", example: 0.49 },
+    },
+  },
+
+  DimensionStat: {
+    type: "object",
+    required: ["name", "count", "avgScore", "minScore", "maxScore", "totalTokens"],
+    properties: {
+      name: { type: "string", example: "group/payment-service" },
+      count: { type: "integer", example: 6 },
+      avgScore: { type: "number", nullable: true, description: "该组全部记录都没有分数时为 null", example: 73.2 },
+      minScore: { type: "integer", nullable: true, example: 55 },
+      maxScore: { type: "integer", nullable: true, example: 96 },
+      totalTokens: { type: "integer", nullable: true, description: "该组 token 总量；该组全无 usage 数据时为 null，不是 0", example: 123600 },
     },
   },
 
@@ -1522,7 +1574,7 @@ const schemas: Record<string, JsonObject> = {
 
   AdoptionStats: {
     type: "object",
-    required: ["total", "untrackable", "byProject", "byCommitter", "bySeverity"],
+    required: ["total", "untrackable", "excluded", "byProject", "byCommitter", "bySeverity"],
     properties: {
       total: {
         type: "object",
@@ -1532,6 +1584,18 @@ const schemas: Record<string, JsonObject> = {
           adopted: { type: "integer", example: 18 },
           pending: { type: "integer", description: "有行锚点、等待判定的建议数", example: 43 },
           rate: { type: "number", nullable: true, example: 0.6 },
+        },
+      },
+      excluded: {
+        type: "object",
+        required: ["highScore"],
+        description: "按口径排除的建议数。高分评审的建议同时从分子与分母排除，因此不属于不可追踪，也不能与 untrackable 相加。",
+        properties: {
+          highScore: {
+            type: "integer",
+            description: "来自评审总分 ≥ 95 分记录的建议数（含已完成判定与等待判定的可追踪建议）",
+            example: 7,
+          },
         },
       },
       untrackable: {

@@ -30,6 +30,7 @@ function seedRecord(
     mrUrl: null,
     startedAt: 1,
     finishedAt: 2,
+    tokenUsage: null,
   });
   if (typeof recordId !== "number") assert.fail("真实 SQLite 仓储必须返回自增记录 ID");
   return { recordId, projectId: input.projectId, mrIid: input.mrIid };

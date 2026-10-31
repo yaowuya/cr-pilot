@@ -22,6 +22,21 @@ export interface ReviewRecord {
   mrUrl: string | null;
   startedAt: number;
   finishedAt: number;
+  /** 本次评审消耗的 token；null 表示没有可用 usage 数据（历史记录或模型未返回）。 */
+  tokenUsage: TokenUsage | null;
+}
+
+/**
+ * 一次评审消耗的模型 token。
+ *
+ * `cacheRead` / `cacheWrite` 是输入侧的子集，不能与 `input` 相加当作总量。
+ */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
 }
 
 /** 单维度聚合结果（按项目或按提交人）。 */
@@ -36,6 +51,8 @@ export interface DimensionStat {
   minScore: number | null;
   /** 最高分；无带分数记录时为 null。 */
   maxScore: number | null;
+  /** 该组 token 总量；该组全无 usage 数据时为 null（不是 0）。 */
+  totalTokens: number | null;
 }
 
 /** 基础统计。`avgScore` 为 null 表示没有任何带分数的记录。 */
@@ -49,6 +66,20 @@ export interface ReviewStats {
   byProject: DimensionStat[];
   /** 按提交人聚合，按评审次数降序。 */
   byCommitter: DimensionStat[];
+  /** 全局 token 用量；没有任何 usage 数据时除 `recordedReviews` 外均为 null。 */
+  tokens: TokenTotals;
+}
+
+/** 全局 token 用量汇总。`recordedReviews` 是平均值与命中率的真实分母。 */
+export interface TokenTotals {
+  recordedReviews: number;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+  total: number | null;
+  avgPerReview: number | null;
+  cacheHitRate: number | null;
 }
 
 /** GitLab 合并接口支持的策略；不提供 rebase 等隐式降级方式。 */
@@ -238,6 +269,8 @@ export interface AdoptionStats {
   total: { tracked: number; adopted: number; pending: number; rate: number | null };
   /** 不可统计条数：`fallback` 为降级并入汇总，`unknown` 为无法定位。 */
   untrackable: { fallback: number; unknown: number };
+  /** 因评审总分达到 95 分而被排除在采纳率之外的建议数（分子分母同时排除）。 */
+  excluded: { highScore: number };
   byProject: AdoptionDimensionRow[];
   byCommitter: AdoptionDimensionRow[];
   bySeverity: AdoptionDimensionRow[];

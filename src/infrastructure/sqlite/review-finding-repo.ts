@@ -7,13 +7,14 @@
  * - `outcome` 区分等待、采纳、忽略、仅解决与未知；pending/unknown 不计入分母。
  */
 import type { DatabaseSync } from "node:sqlite";
-import type {
-  AdoptionDimensionRow,
-  AdoptionStats,
-  AdoptionStatsQuery,
-  FindingOutcome,
-  ReviewFinding,
-  ReviewFindingRepository,
+import {
+  ADOPTION_EXCLUDED_SCORE_AT_LEAST,
+  type AdoptionDimensionRow,
+  type AdoptionStats,
+  type AdoptionStatsQuery,
+  type FindingOutcome,
+  type ReviewFinding,
+  type ReviewFindingRepository,
 } from "../../domain/review-finding.ts";
 
 /** 数据库行形状（列名为 snake_case）。 */
@@ -80,6 +81,10 @@ function rateOf(adopted: number, tracked: number): number | null {
  * 构造统计查询的时间与项目过滤片段。
  *
  * `prefix` 用于联表场景区分列归属（如 `f.`），避免靠字符串替换猜表别名。
+ *
+ * 高分排除（`r.score >= ADOPTION_EXCLUDED_SCORE_AT_LEAST`）不在这里追加：
+ * 单维度聚合按 `review_findings` 单表统计，它的排除条件写在各自的 SQL 里；
+ * 只有联表维度可以在此统一追加记录侧条件。
  */
 function buildFilter(query: AdoptionStatsQuery, prefix = ""): { where: string; params: (string | number)[] } {
   const conditions: string[] = [];
@@ -99,13 +104,25 @@ function buildFilter(query: AdoptionStatsQuery, prefix = ""): { where: string; p
   return { where: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
 
-/** 聚合单维度。`nameExpression` 是分组列表达式，不接受外部输入。 */
+/**
+ * 高分评审记录的排除条件（记录侧）。
+ *
+ * 用 `COALESCE(score, -1) < 阈值` 而不是 `score < 阈值`：SQLite 里 NULL 参与
+ * 比较结果为 NULL（视为不成立），直接写 `score < 95` 会把**没有分数**的记录
+ * 一起排除掉。缺分不代表高分，必须仍然计入。
+ */
+const HIGH_SCORE_KEPT = `COALESCE(r.score, -1) < ${ADOPTION_EXCLUDED_SCORE_AT_LEAST}`;
+
+/** 单维度聚合。`nameExpression` 是分组列表达式，不接受外部输入。 */
 function aggregateBy(
   db: DatabaseSync,
   nameExpression: string,
-  where: string,
-  params: (string | number)[],
+  query: AdoptionStatsQuery,
 ): AdoptionDimensionRow[] {
+  // 必须用 f. 前缀：与 review_records 联表后，裸列名在两张表都存在的
+  // （如 project_id）会变成歧义列，SQLite 直接报错。
+  const filter = buildFilter(query, "f.");
+  const where = filter.where ? `${filter.where} AND ${HIGH_SCORE_KEPT}` : `WHERE ${HIGH_SCORE_KEPT}`;
   const rows = db
     .prepare(
       `SELECT ${nameExpression} AS name,
@@ -113,11 +130,13 @@ function aggregateBy(
               SUM(CASE WHEN outcome = 'adopted' THEN 1 ELSE 0 END) AS adopted,
               SUM(CASE WHEN ${TRACKABLE_PENDING} THEN 1 ELSE 0 END) AS pending,
               SUM(CASE WHEN outcome IN ${COUNTABLE_OUTCOMES} THEN 1 ELSE 0 END) AS tracked
-       FROM review_findings ${where}
+       FROM review_findings f
+       LEFT JOIN review_records r ON r.id = f.record_id
+       ${where}
        GROUP BY name
        ORDER BY tracked DESC, name ASC`,
     )
-    .all(...params) as unknown as { name: string; total: number; adopted: number; pending: number; tracked: number }[];
+    .all(...filter.params) as unknown as { name: string; total: number; adopted: number; pending: number; tracked: number }[];
   return rows.map((row) => {
     const tracked = Number(row.tracked ?? 0);
     const adopted = Number(row.adopted ?? 0);
@@ -136,6 +155,8 @@ function aggregateByRecordDimension(
   const nameExpression = isProject
     ? "COALESCE(NULLIF(TRIM(r.project_name), ''), '项目 ' || f.project_id)"
     : "COALESCE(r.committer_name, '')";
+  // 联表维度可以同时使用建议侧筛选（f.）与记录侧高分排除（r.）。
+  const where = filter.where ? `${filter.where} AND ${HIGH_SCORE_KEPT}` : `WHERE ${HIGH_SCORE_KEPT}`;
   const rows = db.prepare(
     `SELECT ${nameExpression} AS name,
             ${isProject ? "f.project_id" : "NULL"} AS project_id,
@@ -144,7 +165,7 @@ function aggregateByRecordDimension(
             SUM(CASE WHEN f.outcome = 'pending' AND f.code_fingerprint <> '' THEN 1 ELSE 0 END) AS pending
      FROM review_findings f
      LEFT JOIN review_records r ON r.id = f.record_id
-     ${filter.where}
+     ${where}
      GROUP BY ${isProject ? "f.project_id, " : ""}name
      ORDER BY tracked DESC, name ASC`,
   ).all(...filter.params) as unknown as Array<{ name: string; project_id: number | null; tracked: number; adopted: number; pending: number }>;
@@ -264,7 +285,9 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
     },
 
     getAdoptionStats(queryParams) {
-      const { where, params } = buildFilter(queryParams);
+      const filter = buildFilter(queryParams, "f.");
+      // 与维度聚合使用同一高分排除条件，保证总计与分组口径一致。
+      const where = filter.where ? `${filter.where} AND ${HIGH_SCORE_KEPT}` : `WHERE ${HIGH_SCORE_KEPT}`;
       const totals = db
         .prepare(
           `SELECT
@@ -273,9 +296,30 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
              SUM(CASE WHEN ${TRACKABLE_PENDING} THEN 1 ELSE 0 END) AS pending,
              SUM(CASE WHEN code_fingerprint = '' THEN 1 ELSE 0 END) AS fallback,
              SUM(CASE WHEN outcome = 'unknown' THEN 1 ELSE 0 END) AS unknown
-           FROM review_findings ${where}`,
+           FROM review_findings f
+           LEFT JOIN review_records r ON r.id = f.record_id
+           ${where}`,
         )
-        .get(...params) as unknown as { tracked: number | null; adopted: number | null; pending: number | null; fallback: number | null; unknown: number | null };
+        .get(...filter.params) as unknown as { tracked: number | null; adopted: number | null; pending: number | null; fallback: number | null; unknown: number | null };
+
+      // 被排除条数单独统计：只纳入「本来会进采纳率分母」的可统计建议，
+      // 加上尚未判定的可追踪建议——它们若判完也会被排除，用户在等一个
+      // 永远不会出现在分母里的数。
+      // 必须复用同一 filter：排除数若忽略时间/项目筛选，会与 total 口径不一致。
+      const excludedConditions = [
+        "r.score >= ?",
+        `(f.outcome IN ${COUNTABLE_OUTCOMES} OR (f.outcome = 'pending' AND f.code_fingerprint <> ''))`,
+      ];
+      // buildFilter 返回的已是完整的 "WHERE ..." 片段，这里取出条件本身再拼接。
+      if (filter.where) excludedConditions.push(filter.where.replace(/^WHERE /, ""));
+      const excludedRow = db
+        .prepare(
+          `SELECT COUNT(*) AS n
+           FROM review_findings f
+           JOIN review_records r ON r.id = f.record_id
+           WHERE ${excludedConditions.join(" AND ")}`,
+        )
+        .get(ADOPTION_EXCLUDED_SCORE_AT_LEAST, ...filter.params) as unknown as { n: number } | undefined;
 
       const tracked = Number(totals.tracked ?? 0);
       const adopted = Number(totals.adopted ?? 0);
@@ -283,10 +327,11 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
       return {
         total: { tracked, adopted, pending, rate: rateOf(adopted, tracked) },
         untrackable: { fallback: Number(totals.fallback ?? 0), unknown: Number(totals.unknown ?? 0) },
+        excluded: { highScore: Number(excludedRow?.n ?? 0) },
         // 名称取评审发生时写入 review_records 的历史快照；Prompt 后续改名/解绑不重写历史统计。
         byProject: aggregateByRecordDimension(db, "project_name", queryParams),
         byCommitter: aggregateByRecordDimension(db, "committer_name", queryParams),
-        bySeverity: aggregateBy(db, "severity", where, params),
+        bySeverity: aggregateBy(db, "severity", queryParams),
       };
     },
   };
