@@ -56,8 +56,21 @@ test("讨论映射保留解决状态，缺失按 false", async () => {
   assert.equal(discussions[0].notes[2].resolved, false);
 });
 
-test("getLatestHeadSha 复用 versions 接口的 head 值", async () => {
-  const client = makeClient((async () =>
-    new Response(JSON.stringify({ base_commit_sha: "b", start_commit_sha: "s", head_commit_sha: "h" }), { status: 200 })) as typeof fetch);
-  assert.equal(await client.getLatestHeadSha(1, 7), "h");
+test("getLatestHeadSha 从 MR 详情读实时 head，即使 GitLab 尚未生成新 diff 版本", async () => {
+  const oldHead = "a".repeat(40);
+  const currentHead = "b".repeat(40);
+  const detailPath = "/api/v4/projects/1/merge_requests/7";
+  const client = makeClient((async (input: string | URL | Request) => {
+    const path = new URL(String(input)).pathname;
+    if (path === detailPath) return Response.json({ sha: currentHead, diff_refs: { head_sha: oldHead } });
+    if (path === `${detailPath}/versions`) return Response.json([{ head_commit_sha: oldHead }]);
+    return new Response(null, { status: 404 });
+  }) as typeof fetch);
+
+  assert.equal(await client.getLatestHeadSha(1, 7), currentHead);
+});
+
+test("getLatestHeadSha 缺少实时 head 时不使用缓存的 diff head", async () => {
+  const client = makeClient((async () => Response.json({ diff_refs: { head_sha: "a".repeat(40) } })) as typeof fetch);
+  assert.equal(await client.getLatestHeadSha(1, 7), "");
 });

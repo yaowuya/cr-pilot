@@ -91,6 +91,21 @@ test("只改自动合并策略时不携带仓库上下文；default 永远不提
   assert.deepEqual(buildPromptPayload(draft).project_settings, []);
 });
 
+test("项目评审引擎从配置回填，且只提交用户修改过的选择", () => {
+  const draft = createPromptDraft(detail);
+  const app = projectKey("group/app");
+  assert.equal(draft.reviewEngines?.[app], "pi");
+  draft.reviewEngines[app] = "ocr";
+  assert.deepEqual(buildPromptPayload(draft).project_settings, [{ project: "group/app", review_engine: "ocr" }]);
+
+  draft.projects.push("group/new");
+  synchronizeProjectSettings(draft);
+  assert.equal(draft.reviewEngines["group/new"], undefined);
+  synchronizeProjectSettings(draft, [{ project: "group/new", repositoryContextEnabled: false, reviewEngine: "ocr" }]);
+  assert.equal(draft.reviewEngines["group/new"], "ocr");
+  assert.deepEqual(buildPromptPayload(draft).project_settings, [{ project: "group/app", review_engine: "ocr" }]);
+});
+
 test("meta 失败时新项目保持未知且不提交；重试只初始化未知状态", () => {
   const draft = createPromptDraft(detail);
   const appKey = projectKey("group/app");

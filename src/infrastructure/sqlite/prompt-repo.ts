@@ -34,6 +34,7 @@ export { DEFAULT_PROMPT_REPOSITORY };
 interface ProjectSettingRow {
   project: string;
   repository_context_enabled: number;
+  review_engine: string;
   auto_merge_enabled: number;
   auto_merge_minimum_score: number;
   auto_merge_target_mode: string;
@@ -137,7 +138,7 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
       | ProjectSettingRow
       | undefined;
     if (!row) {
-      return { project: key, repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy() };
+      return { project: key, repositoryContextEnabled: false, reviewEngine: "pi", autoMergePolicy: defaultProjectAutoMergePolicy() };
     }
     const parsedBranches = parseTargetBranches(row.auto_merge_target_branches);
     const modeValid = row.auto_merge_target_mode === "default" ||
@@ -149,6 +150,7 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
     return {
       project: key,
       repositoryContextEnabled: row.repository_context_enabled === 1,
+      reviewEngine: row.review_engine === "ocr" ? "ocr" : "pi",
       autoMergePolicy: {
         // mode/JSON/组合任一损坏都按关闭返回，避免高风险动作读取半份配置。
         enabled: row.auto_merge_enabled === 1 && modeValid && combinationValid,
@@ -223,11 +225,12 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
    */
   const writeSettings = (settings: readonly ProjectReviewSettingPatch[]): void => {
     const upsert = db.prepare(`INSERT INTO project_review_settings (
-        project, repository_context_enabled, auto_merge_enabled, auto_merge_minimum_score,
+        project, repository_context_enabled, review_engine, auto_merge_enabled, auto_merge_minimum_score,
         auto_merge_target_mode, auto_merge_target_branches, auto_merge_method,
         auto_merge_remove_source_branch, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project) DO UPDATE SET
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(project) DO UPDATE SET
         repository_context_enabled = excluded.repository_context_enabled,
+        review_engine = excluded.review_engine,
         auto_merge_enabled = excluded.auto_merge_enabled,
         auto_merge_minimum_score = excluded.auto_merge_minimum_score,
         auto_merge_target_mode = excluded.auto_merge_target_mode,
@@ -242,6 +245,7 @@ export function createPromptRepository(db: DatabaseSync): PromptRepository {
       upsert.run(
         normalizeRepositoryKey(patch.project),
         (patch.repositoryContextEnabled ?? current.repositoryContextEnabled) ? 1 : 0,
+        patch.reviewEngine ?? current.reviewEngine,
         policy.enabled ? 1 : 0,
         policy.minimumScore,
         policy.targetMode,

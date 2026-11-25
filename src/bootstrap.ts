@@ -7,6 +7,7 @@ import { applyConfigOverrides, loadConfig } from "./shared/config.ts";
 import { createTaskQueue } from "./shared/queue.ts";
 import { createGitlabClient } from "./infrastructure/gitlab/gitlab-client.ts";
 import { createPiReviewer } from "./infrastructure/pi/reviewer.ts";
+import { createOcrReviewer } from "./infrastructure/ocr/reviewer.ts";
 import { createRepositoryProvider } from "./infrastructure/git/repository-context.ts";
 import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
 import { createWecomNotifier } from "./infrastructure/wecom/wecom-notifier.ts";
@@ -212,6 +213,8 @@ async function startApplication(input: {
     const isProjectAllowed = (project: string): boolean => prompts.isProjectConfigured(project);
     const pipeline = createReviewPipeline({
       isProjectAllowed,
+      resolveReviewEngine: (project) => prompts.resolveProjectSetting?.(project)?.reviewEngine,
+      ocrReviewer: createOcrReviewer({ insecureTls: config.gitlabInsecureTls }),
       // 自动合并只读取完整项目路径的精确设置；短名与 default 兜底只能授权评审，
       // 不能授权高影响写操作。管线会在任务开始和 PUT 前各解析一次。
       resolveAutoMergePolicy: (project) => prompts.resolveProjectSetting?.(project)?.autoMergePolicy,

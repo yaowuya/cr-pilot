@@ -406,8 +406,8 @@ test("仓库配置 API 支持独立开关、规范、meta 和旧客户端省略�
     const detail = await created.json() as ContextPrompt;
     assert.equal(detail.repositoryStandards, "规范");
     assert.deepEqual(detail.projectSettings, [
-      { project: "g/a", repositoryContextEnabled: true, autoMergePolicy: defaultProjectAutoMergePolicy() },
-      { project: "g/b", repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy() },
+      { project: "g/a", repositoryContextEnabled: true, autoMergePolicy: defaultProjectAutoMergePolicy(), reviewEngine: "pi" },
+      { project: "g/b", repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy(), reviewEngine: "pi" },
     ]);
     const meta = await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta;
     assert.deepEqual(meta.projectSettings, detail.projectSettings);
@@ -428,6 +428,28 @@ test("仓库配置 API 支持独立开关、规范、meta 和旧客户端省略�
   });
 });
 
+test("项目评审引擎仅更新明确提交的项目并保留被旧客户端省略的值", async () => {
+  const { app, token } = buildHarness();
+  await withServer(app, async (base) => {
+    const prompt = { repository: "review-rules", projects: ["group/app", "other/app"], system_prompt: "s", user_prompt: "u" };
+    const created = await authed(base, token, "/api/prompts", {
+      method: "POST",
+      body: JSON.stringify({ ...prompt, project_settings: [{ project: "group/app", review_engine: "ocr" }] }),
+    });
+    assert.equal(created.status, 200);
+    const detail = await created.json() as ContextPrompt;
+    assert.deepEqual(detail.projectSettings.map(({ reviewEngine }) => reviewEngine), ["ocr", "pi"]);
+    const updated = await authed(base, token, `/api/prompts/${detail.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ ...prompt, project_settings: [{ project: "GROUP/APP", repository_context_enabled: true }] }),
+    });
+    assert.equal(updated.status, 200);
+    assert.equal((await updated.json() as ContextPrompt).projectSettings[0].reviewEngine, "ocr");
+    const meta = await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta;
+    assert.equal(meta.projectSettings.find(({ project }) => project === "group/app")?.reviewEngine, "ocr");
+  });
+});
+
 test("仓库配置 API 拒绝非法新字段且更新失败不改变配置", async () => {
   const { app, token } = buildHarness();
   await withServer(app, async (base) => {
@@ -437,6 +459,9 @@ test("仓库配置 API 拒绝非法新字段且更新失败不改变配置", asy
       {repository_standards:null}, {repository_standards:1}, {repository_standards:"x".repeat(32001)},
       {project_settings:null}, {project_settings:{}}, {project_settings:[null]},
       {project_settings:[{project:"g/a",repository_context_enabled:"true"}]},
+      {project_settings:[{project:"g/a",review_engine:"unknown"}]},
+      {project_settings:[{project:"g/a",review_engine:null}]},
+      {projects:["a"],project_settings:[{project:"a",review_engine:"ocr"}]},
       {project_settings:[{project:"g/b",repository_context_enabled:true}]},
       {project_settings:[{project:"g/a",repository_context_enabled:true},{project:"G/A",repository_context_enabled:false}]},
       {projects:["g/../escape"],project_settings:[{project:"g/../escape",repository_context_enabled:true}]},
@@ -464,8 +489,8 @@ test("既有短项目名可在页面和 API 正常开启仓库上下文", async 
     assert.equal(created.status, 200);
     const prompt = await created.json() as ContextPrompt;
     const expectedSettings = [
-      {project:"auto-ops",repositoryContextEnabled:true,autoMergePolicy:defaultProjectAutoMergePolicy()},
-      {project:"cw-auto-ops",repositoryContextEnabled:false,autoMergePolicy:defaultProjectAutoMergePolicy()},
+      {project:"auto-ops",repositoryContextEnabled:true,autoMergePolicy:defaultProjectAutoMergePolicy(),reviewEngine:"pi"},
+      {project:"cw-auto-ops",repositoryContextEnabled:false,autoMergePolicy:defaultProjectAutoMergePolicy(),reviewEngine:"pi"},
     ];
     assert.deepEqual(prompt.projectSettings, expectedSettings);
     const meta = await (await authed(base, token, "/api/prompts/meta")).json() as ContextMeta;

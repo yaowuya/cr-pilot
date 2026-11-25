@@ -85,6 +85,7 @@ test("管理员以 snake_case 保存自动合并，详情、列表和 meta 返�
       assert.deepEqual(detail.projectSettings, [{
         project: "group/app",
         repositoryContextEnabled: false,
+        reviewEngine: "pi",
         autoMergePolicy: {
           enabled: true,
           minimumScore: 95,

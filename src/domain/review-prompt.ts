@@ -14,6 +14,8 @@ import { normalizeRepositoryKey } from "./review-rules.ts";
 /** 仓库规范的字符上限；独立于整个 HTTP 请求的字节限制。 */
 export const REPOSITORY_STANDARDS_MAX_LENGTH = 32_000;
 
+export type ReviewEngine = "pi" | "ocr";
+
 /** GitLab 合并方式；不支持 rebase 等隐式降级。 */
 export type AutoMergeMethod = "merge" | "squash";
 
@@ -49,6 +51,7 @@ export function defaultProjectAutoMergePolicy(): ProjectAutoMergePolicy {
 export interface ProjectReviewSetting {
   project: string;
   repositoryContextEnabled: boolean;
+  reviewEngine: ReviewEngine;
   autoMergePolicy: ProjectAutoMergePolicy;
 }
 
@@ -56,6 +59,7 @@ export interface ProjectReviewSetting {
 export interface ProjectReviewSettingPatch {
   project: string;
   repositoryContextEnabled?: boolean;
+  reviewEngine?: ReviewEngine;
   autoMergePolicy?: ProjectAutoMergePolicy;
 }
 
@@ -164,8 +168,12 @@ export function validateProjectSettings(
     }
     const hasRepositoryContext = entry.repositoryContextEnabled !== undefined;
     const hasAutoMergePolicy = entry.autoMergePolicy !== undefined;
-    if (!hasRepositoryContext && !hasAutoMergePolicy) {
+    const engine = entry.reviewEngine;
+    if (!hasRepositoryContext && !hasAutoMergePolicy && engine === undefined) {
       throw new PromptValidationError("项目设置至少包含一个执行配置");
+    }
+    if (engine !== undefined && engine !== "pi" && engine !== "ocr") {
+      throw new PromptValidationError("review_engine 必须是 pi 或 ocr");
     }
     if (hasRepositoryContext && typeof entry.repositoryContextEnabled !== "boolean") {
       throw new PromptValidationError("repository_context_enabled 必须是布尔值");
@@ -177,9 +185,13 @@ export function validateProjectSettings(
     if (entry.repositoryContextEnabled && !isRepositoryProjectKey(project)) {
       throw new PromptValidationError("开启仓库上下文需要合法的项目名或相对项目路径");
     }
+    if (engine === "ocr" && (!project.includes("/") || !isRepositoryProjectKey(project))) {
+      throw new PromptValidationError("启用 Open Code Review 需要完整项目路径 namespace/project");
+    }
     return {
       project,
       ...(hasRepositoryContext ? { repositoryContextEnabled: entry.repositoryContextEnabled } : {}),
+      ...(engine !== undefined ? { reviewEngine: engine } : {}),
       ...(hasAutoMergePolicy ? { autoMergePolicy: normalizeAutoMergePolicy(entry.autoMergePolicy, project) } : {}),
     };
   });
@@ -290,7 +302,7 @@ export interface PromptRepository {
   listProjectSettings?(): ProjectReviewSetting[];
   /**
    * 精确读取完整 namespace/project 的执行设置。
-   * 不接受短名/default/fallback，供自动合并等高风险动作使用。
+   * 引擎选择及自动合并均不接受短名/default/fallback。
    */
   resolveProjectSetting?(repositoryFullName: string): ProjectReviewSetting | undefined;
   /**

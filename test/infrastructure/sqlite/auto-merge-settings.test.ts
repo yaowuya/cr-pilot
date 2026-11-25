@@ -27,6 +27,7 @@ test("project_review_settings 新库默认关闭并约束自动合并字段", ()
     assert.deepEqual({ ...db.prepare("SELECT * FROM project_review_settings").get() }, {
       project: "group/app",
       repository_context_enabled: 0,
+      review_engine: "pi",
       auto_merge_enabled: 0,
       auto_merge_minimum_score: 100,
       auto_merge_target_mode: "default",
@@ -35,6 +36,7 @@ test("project_review_settings 新库默认关闭并约束自动合并字段", ()
       auto_merge_remove_source_branch: 0,
       updated_at: 1,
     });
+    assert.throws(() => db.prepare("UPDATE project_review_settings SET review_engine = 'other'").run(), /CHECK/);
     assert.throws(() => db.prepare("UPDATE project_review_settings SET auto_merge_minimum_score = 101").run(), /CHECK/);
     assert.throws(() => db.prepare("UPDATE project_review_settings SET auto_merge_method = 'rebase'").run(), /CHECK/);
     assert.throws(() => db.prepare("UPDATE project_review_settings SET auto_merge_target_mode = 'glob'").run(), /CHECK/);
@@ -56,10 +58,11 @@ test("旧库幂等迁移补齐自动合并列并保留已有仓库上下文设�
 
     const first = openDatabase(path);
     try {
-      assert.deepEqual({ ...first.prepare(`SELECT repository_context_enabled, auto_merge_enabled,
+      assert.deepEqual({ ...first.prepare(`SELECT repository_context_enabled, review_engine, auto_merge_enabled,
         auto_merge_minimum_score, auto_merge_target_mode, auto_merge_target_branches, auto_merge_method,
         auto_merge_remove_source_branch FROM project_review_settings`).get() }, {
         repository_context_enabled: 1,
+        review_engine: "pi",
         auto_merge_enabled: 0,
         auto_merge_minimum_score: 100,
         auto_merge_target_mode: "default",
@@ -67,8 +70,12 @@ test("旧库幂等迁移补齐自动合并列并保留已有仓库上下文设�
         auto_merge_method: "merge",
         auto_merge_remove_source_branch: 0,
       });
+      first.prepare("UPDATE project_review_settings SET review_engine = 'ocr'").run();
     } finally { first.close(); }
-    openDatabase(path).close();
+    const reopened = openDatabase(path);
+    try {
+      assert.equal(reopened.prepare("SELECT review_engine FROM project_review_settings").get()?.review_engine, "ocr");
+    } finally { reopened.close(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -126,11 +133,13 @@ test("仓储按项目部分更新并在详情、列表、精确解析中返回�
       {
         project: "Group/App",
         repositoryContextEnabled: true,
+        reviewEngine: "pi",
         autoMergePolicy: { enabled: false, minimumScore: 100, targetMode: "default", targetBranches: [], method: "merge", removeSourceBranch: false },
       },
       {
         project: "legacy-app",
         repositoryContextEnabled: false,
+        reviewEngine: "pi",
         autoMergePolicy: { enabled: false, minimumScore: 100, targetMode: "default", targetBranches: [], method: "merge", removeSourceBranch: false },
       },
     ]);

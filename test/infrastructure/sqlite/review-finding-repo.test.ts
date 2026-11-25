@@ -203,6 +203,26 @@ test("95 分是边界：94 分计入，95 分排除", () => {
   db.close();
 });
 
+test("95 分的 OCR 建议保留在采纳统计、分组和等待判定中", (t) => {
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const pi = seedScoredRecord(db, 95, "Pi 作者");
+  const ocr = seedScoredRecord(db, 95, "OCR 作者");
+  db.prepare("UPDATE review_records SET review_engine = 'ocr' WHERE id = ?").run(ocr);
+  const repo = createReviewFindingRepository(db);
+  repo.insert(makeFinding({ recordId: pi, marker: "pi-archived", outcome: "ignored", trackedAt: 1 }));
+  repo.insert(makeFinding({ recordId: pi, marker: "pi-waiting" }));
+  repo.insert(makeFinding({ recordId: ocr, marker: "ocr-adopted", severity: "high", outcome: "adopted", trackedAt: 1 }));
+  repo.insert(makeFinding({ recordId: ocr, marker: "ocr-waiting", severity: "high" }));
+
+  const stats = repo.getAdoptionStats({});
+  assert.deepEqual(stats.total, { tracked: 1, adopted: 1, pending: 1, rate: 1 });
+  assert.deepEqual(stats.excluded, { highScore: 2 });
+  assert.deepEqual(stats.byCommitter, [{ name: "OCR 作者", tracked: 1, adopted: 1, pending: 1, rate: 1 }]);
+  assert.deepEqual(stats.byProject, [{ name: "g/p", projectId: 1, tracked: 1, adopted: 1, pending: 1, rate: 1 }]);
+  assert.deepEqual(stats.bySeverity, [{ name: "high", tracked: 1, adopted: 1, pending: 1, rate: 1 }]);
+});
+
 test("没有分数的评审不被当作高分排除", () => {
   const db = openDatabase(":memory:");
   // 关键回归：SQL 里若直接写 `score < 95`，NULL 比较结果为 NULL，

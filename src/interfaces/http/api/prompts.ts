@@ -16,6 +16,7 @@ import {
   type ProjectAutoMergePolicy,
   type ProjectReviewSettingPatch,
   type PromptRepository,
+  type ReviewEngine,
 } from "../../../domain/review-prompt.ts";
 import type { LlmProviderRepository } from "../../../domain/llm-provider.ts";
 
@@ -122,12 +123,14 @@ function readRepositoryConfig(body: Record<string, unknown>, projects: string[],
       const entry = item as Record<string, unknown> & { project: string };
       const hasContext = Object.prototype.hasOwnProperty.call(entry, "repository_context_enabled");
       const hasAutoMerge = Object.prototype.hasOwnProperty.call(entry, "auto_merge_policy");
+      const hasReviewEngine = Object.prototype.hasOwnProperty.call(entry, "review_engine");
       if (hasContext && typeof entry.repository_context_enabled !== "boolean") {
         throw new PromptValidationError("repository_context_enabled 必须是布尔值");
       }
       return {
         project: entry.project,
         ...(hasContext ? { repositoryContextEnabled: entry.repository_context_enabled as boolean } : {}),
+        ...(hasReviewEngine ? { reviewEngine: entry.review_engine as ReviewEngine } : {}),
         ...(hasAutoMerge ? { autoMergePolicy: readAutoMergePolicy(entry.auto_merge_policy) } : {}),
       };
     });

@@ -39,7 +39,7 @@
       <header class="report-header">
         <div>
           <h2>代码变化率</h2>
-          <p>等待判定、不可统计与 95 分及以上评审的建议均不进入分母；每个数字均显示计算方式。</p>
+          <p>分母排除等待判定、不可统计和 Pi 评审总分 ≥ 95 分的建议。</p>
         </div>
         <span>{{ rangeLabel }} · {{ selectedProjectLabel }}</span>
       </header>
@@ -76,7 +76,7 @@
       show-icon
     >
       <template #title>已按口径排除 {{ excludedHighScore }} 条高分建议</template>
-      这些建议来自评审总分 ≥ 95 分的记录：分子与分母同时排除，避免低风险评审稀释采纳率。排除项不计入等待判定。
+      这些建议来自 Pi 评审总分 ≥ 95 分的记录。分子与分母同时排除，等待判定也排除这些建议。
     </el-alert>
 
     <el-alert
@@ -146,7 +146,7 @@
 /**
  * 独立采纳分析页，负责加载 `/api/reviews/adoption`、按项目/提交人切换并解释统计口径。
  * 不变量：pending、fallback、unknown 都不进入采纳率分母；unknown 有行锚点，fallback 没有；
- * 评审总分 ≥ 95 分的建议分子分母同时排除，单独计数，不能与不可追踪相加；
+ * Pi 评审总分 ≥ 95 分的建议分子分母同时排除，单独计数，不能与不可追踪相加；
  * 项目筛选使用服务端返回的 projectId，但界面始终显示评审发生时保存的项目名称。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -178,7 +178,7 @@ const committerRows = computed(() => adoption.value?.byCommitter ?? []);
 const severityRows = computed(() => adoption.value?.bySeverity ?? []);
 const activeRows = computed(() => activeTab.value === "project" ? projectRows.value : committerRows.value);
 const untrackableTotal = computed(() => (adoption.value?.untrackable.fallback ?? 0) + (adoption.value?.untrackable.unknown ?? 0));
-/** 评审总分 ≥ 95 而被排除的建议数；与 untrackable 是不同口径，不能相加。 */
+/** Pi 评审总分 ≥ 95 而被排除的建议数；与 untrackable 是不同口径，不能相加。 */
 const excludedHighScore = computed(() => adoption.value?.excluded.highScore ?? 0);
 // 建议总量必须含高分排除项：它们已从 tracked/pending 中移除，若不加回来，
 // 页面的「建议总量」会小于实际落库条数，看起来像数据丢失。
@@ -218,7 +218,7 @@ const methods = computed(() => [
   { label: "可统计", formula: `已完成判定 = ${adoption.value?.total.tracked ?? 0}`, note: "采纳率分母" },
   { label: "代码变化率", formula: `已采纳 ${adoption.value?.total.adopted ?? 0} ÷ 可统计 ${adoption.value?.total.tracked ?? 0} = ${formatRate(adoption.value?.total.rate ?? null)}`, note: "只证明代码变化，不证明修复正确" },
   { label: "不可统计", formula: `fallback + unknown = ${untrackableTotal.value}`, note: "不进入分母" },
-  { label: "高分排除", formula: `评审总分 ≥ 95 分的建议 = ${excludedHighScore.value}`, note: "分子与分母同时排除；不属于不可追踪" },
+  { label: "高分排除", formula: `Pi 评审总分 ≥ 95 分的建议 = ${excludedHighScore.value}`, note: "分子与分母同时排除。此类建议不属于不可追踪" },
 ]);
 const severityOption = computed(() => ({
   tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },

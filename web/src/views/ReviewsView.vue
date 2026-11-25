@@ -108,6 +108,9 @@
             <el-table-column prop="committerName" label="提交人" min-width="150" show-overflow-tooltip />
             <el-table-column prop="changeCount" label="文件" width="76" align="right" />
             <el-table-column prop="batchCount" label="批次" width="76" align="right" />
+            <el-table-column label="评审引擎" width="96">
+              <template #default="{ row }">{{ row.reviewEngine === 'ocr' ? 'OCR' : 'Pi' }}</template>
+            </el-table-column>
             <el-table-column label="分数" width="86" align="right">
               <template #default="{ row }">
                 <!-- 0 分与「未解析出分数」在库里分别是 0 与 null，页面必须区别展示。 -->

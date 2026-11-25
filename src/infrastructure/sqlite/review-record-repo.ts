@@ -23,6 +23,7 @@ interface ReviewRow {
   committer_name: string;
   change_count: number;
   batch_count: number;
+  review_engine: string;
   score: number | null;
   duration_ms: number;
   result: string;
@@ -62,6 +63,7 @@ function toRecord(row: ReviewRow): ReviewRecord {
     committerName: row.committer_name,
     changeCount: row.change_count,
     batchCount: row.batch_count,
+    reviewEngine: row.review_engine === "ocr" ? "ocr" : "pi",
     score: row.score,
     durationMs: row.duration_ms,
     result: row.result === "failed" ? "failed" : "success",
@@ -79,9 +81,9 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
   const insertStatement = db.prepare(`
     INSERT INTO review_records (
       project_id, project_name, mr_iid, committer_name, change_count, batch_count,
-      score, duration_ms, result, error_message, comment_url, mr_url, started_at, finished_at,
+      review_engine, score, duration_ms, result, error_message, comment_url, mr_url, started_at, finished_at,
       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   return {
@@ -93,6 +95,7 @@ export function createReviewRecordRepository(db: DatabaseSync): ReviewRecordRepo
         record.committerName,
         record.changeCount,
         record.batchCount,
+        record.reviewEngine ?? "pi",
         // node:sqlite 不接受 undefined：显式传 null 表达「无分数」。
         record.score ?? null,
         record.durationMs,

@@ -1,5 +1,5 @@
 /** Prompt 草稿与请求转换：纯逻辑不持有 Vue 状态、网络或凭据。 */
-import type { AutoMergeMethod, AutoMergeTargetMode, ProjectAutoMergePolicy, ProjectReviewSetting, StoredPrompt } from "../types.ts";
+import type { AutoMergeMethod, AutoMergeTargetMode, ProjectAutoMergePolicy, ProjectReviewSetting, ReviewEngine, StoredPrompt } from "../types.ts";
 
 export const REPOSITORY_STANDARDS_MAX_LENGTH = 32_000;
 export type PromptSection = "projects" | "prompt" | "standards" | "delivery";
@@ -19,6 +19,8 @@ export interface PromptDraft {
   /** undefined 是新关联尚未取得服务器状态，不能误当作 false 提交。 */
   projectStates: Record<string, boolean | undefined>;
   originalProjectStates: Record<string, boolean | undefined>;
+  reviewEngines: Record<string, ReviewEngine | undefined>;
+  originalReviewEngines: Record<string, ReviewEngine | undefined>;
   /** 策略对象始终存在供表单绑定；known=false 时只读且绝不进入 payload。 */
   autoMergePolicies: Record<string, PromptAutoMergePolicy>;
   autoMergeKnown: Record<string, boolean>;
@@ -112,6 +114,7 @@ export function createPromptDraft(detail?: StoredPrompt): PromptDraft {
     providerId: detail?.providerId,
     model: detail?.model ?? "",
     projectStates: {}, originalProjectStates: {},
+    reviewEngines: {}, originalReviewEngines: {},
     autoMergePolicies: {}, autoMergeKnown: {}, originalAutoMergePolicies: {},
   };
   const settings = new Map((detail?.projectSettings ?? []).map(item => [projectKey(item.project), item]));
@@ -120,6 +123,8 @@ export function createPromptDraft(detail?: StoredPrompt): PromptDraft {
     const setting = settings.get(key);
     draft.projectStates[key] = setting?.repositoryContextEnabled ?? false;
     draft.originalProjectStates[key] = draft.projectStates[key];
+    draft.reviewEngines[key] = setting?.reviewEngine ?? "pi";
+    draft.originalReviewEngines[key] = draft.reviewEngines[key];
     // 已加载详情是当前记录的完整快照；旧响应缺字段按后端默认关闭兼容。
     draft.autoMergePolicies[key] = cloneAutoMergePolicy(setting?.autoMergePolicy);
     draft.autoMergeKnown[key] = true;
@@ -142,19 +147,24 @@ export function synchronizeProjectSettings(draft: PromptDraft, metadata?: readon
   for (const key of Object.keys(draft.projectStates)) {
     if (!seen.has(key)) {
       delete draft.projectStates[key]; delete draft.originalProjectStates[key];
+      delete draft.reviewEngines[key]; delete draft.originalReviewEngines[key];
       delete draft.autoMergePolicies[key]; delete draft.autoMergeKnown[key]; delete draft.originalAutoMergePolicies[key];
     }
   }
   const known = metadata === undefined ? undefined : new Map(metadata.map(item => [projectKey(item.project), item]));
   for (const project of draft.projects) {
     const key = projectKey(project);
+    const setting = known?.get(key);
     if (!(key in draft.projectStates) || draft.projectStates[key] === undefined) {
-      draft.projectStates[key] = known ? known.get(key)?.repositoryContextEnabled ?? false : undefined;
+      draft.projectStates[key] = known ? setting?.repositoryContextEnabled ?? false : undefined;
       draft.originalProjectStates[key] = draft.projectStates[key];
+    }
+    if (draft.originalReviewEngines[key] === undefined && known) {
+      draft.reviewEngines[key] = setting?.reviewEngine ?? "pi";
+      draft.originalReviewEngines[key] = draft.reviewEngines[key];
     }
     if (!(key in draft.autoMergePolicies)) draft.autoMergePolicies[key] = createDefaultAutoMergePolicy();
     if (draft.autoMergeKnown[key] !== true) {
-      const setting = known?.get(key);
       if (known) {
         draft.autoMergePolicies[key] = cloneAutoMergePolicy(setting?.autoMergePolicy);
         draft.autoMergeKnown[key] = true;
@@ -170,6 +180,7 @@ export function synchronizeProjectSettings(draft: PromptDraft, metadata?: readon
 interface ProjectSettingPayload {
   project: string;
   repository_context_enabled?: boolean;
+  review_engine?: ReviewEngine;
   auto_merge_policy?: {
     enabled: boolean;
     minimum_score: number;
@@ -180,7 +191,7 @@ interface ProjectSettingPayload {
   };
 }
 
-/** 两种项目配置独立判脏，但同项目合并成一个 partial patch。 */
+/** 项目执行配置独立判脏，同项目合并成一个 partial patch。 */
 export function buildPromptPayload(draft: PromptDraft) {
   const project_settings = draft.projects.flatMap<ProjectSettingPayload>(project => {
     const key = projectKey(project);
@@ -189,6 +200,9 @@ export function buildPromptPayload(draft: PromptDraft) {
     if (repositoryEnabled !== undefined && repositoryEnabled !== draft.originalProjectStates[key]) {
       patch.repository_context_enabled = repositoryEnabled;
     }
+    const originalEngine = draft.originalReviewEngines[key];
+    const engine = draft.reviewEngines[key];
+    if (originalEngine !== undefined && engine !== undefined && originalEngine !== engine) patch.review_engine = engine;
     const policy = draft.autoMergePolicies[key];
     const original = draft.originalAutoMergePolicies[key];
     if (draft.autoMergeKnown[key] === true && policy && !sameAutoMergePolicy(original, policy)) {
@@ -201,7 +215,8 @@ export function buildPromptPayload(draft: PromptDraft) {
         remove_source_branch: policy.removeSourceBranch,
       };
     }
-    return patch.repository_context_enabled === undefined && patch.auto_merge_policy === undefined ? [] : [patch];
+    return patch.repository_context_enabled === undefined && patch.review_engine === undefined && patch.auto_merge_policy === undefined
+      ? [] : [patch];
   });
   return {
     repository: draft.repository.trim(),

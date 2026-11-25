@@ -916,7 +916,7 @@ paths["/api/reviews/adoption"] = {
       "",
       "**不可统计部分单列**：`fallback` 为降级并入汇总评论的建议（无行锚点），`unknown` 为历史数据或其他无法可靠判定的建议，二者均不计入分母；明确删除或指纹消失记为已采纳。",
       "",
-      "**高分排除**：评审总分 ≥ 95 分的记录，其建议**同时**从分子与分母排除（否则采纳率可能超过 100%），条数见 `excluded.highScore`。高分评审通常只提出少量或没有建议，其采纳情况无法反映评审价值；没有分数的记录不按高分处理，仍计入分母。该口径固定内建，不提供查询参数覆盖，以保证跨时间、跨项目可比。",
+      "**高分排除**：Pi 评审总分 ≥ 95 分的记录，其建议**同时**从分子与分母排除，条数见 `excluded.highScore`。没有分数的记录不按高分处理。Open Code Review 的可追踪建议按实际采纳情况统计。",
       "",
       "**历史数据**：功能上线前的评审没有建议明细，统计只覆盖上线后的数据；token 用量同样只覆盖上线后的记录。",
     ].join("\n"),
@@ -1184,10 +1184,11 @@ const schemas: Record<string, JsonObject> = {
       committerName: { type: "string", example: "张三" },
       changeCount: { type: "integer", description: "变更文件数", example: 8 },
       batchCount: { type: "integer", description: "评审批次数", example: 3 },
+      reviewEngine: { type: "string", enum: ["pi", "ocr"], description: "本次实际使用的评审引擎，历史记录为 pi。" },
       score: {
         type: "integer",
         nullable: true,
-        description: "AI 给出的总分。`null` 表示未解析出分数，与真实的 0 分不同。",
+        description: "评审总分。Pi 使用模型给出的分数，OCR 使用严重级别扣分。`null` 表示没有可用分数，与真实的 0 分不同。",
         example: 86,
       },
       durationMs: { type: "integer", description: "耗时毫秒", example: 12400 },
@@ -1345,20 +1346,22 @@ const schemas: Record<string, JsonObject> = {
   },
   ProjectReviewSetting: {
     type: "object",
-    required: ["project", "repositoryContextEnabled", "autoMergePolicy"],
+    required: ["project", "repositoryContextEnabled", "reviewEngine", "autoMergePolicy"],
     properties: {
       project: { type: "string", description: "名称级项目键；仓库上下文兼容存量短名，自动合并只允许完整 namespace/project", example: "group/project" },
       repositoryContextEnabled: { type: "boolean", description: "默认关闭；沿命中 Prompt 的最具体关联生效" },
+      reviewEngine: { type: "string", enum: ["pi", "ocr"], default: "pi", description: "后续评审使用的引擎。OCR 仅允许完整项目路径。" },
       autoMergePolicy: { $ref: "#/components/schemas/ProjectAutoMergePolicy" },
     },
   },
   ProjectReviewSettingInput: {
     type: "object",
     required: ["project"],
-    description: "项目设置 partial patch；只更新显式提交的 repository_context_enabled 或 auto_merge_policy，其他值保持不变。",
+    description: "只更新显式提交的项目执行设置。",
     properties: {
       project: { type: "string", description: "必须属于最终关联项目；仓库上下文允许既有短名，自动合并开启时必须是完整 namespace/project" },
       repository_context_enabled: { type: "boolean", description: "严格布尔；不接受字符串/数字/null" },
+      review_engine: { type: "string", enum: ["pi", "ocr"], description: "OCR 仅允许完整项目路径。" },
       auto_merge_policy: { $ref: "#/components/schemas/ProjectAutoMergePolicyInput" },
     },
   },
@@ -1589,11 +1592,11 @@ const schemas: Record<string, JsonObject> = {
       excluded: {
         type: "object",
         required: ["highScore"],
-        description: "按口径排除的建议数。高分评审的建议同时从分子与分母排除，因此不属于不可追踪，也不能与 untrackable 相加。",
+        description: "按口径排除的建议数。高分 Pi 评审的建议同时从分子与分母排除，因此不属于不可追踪，也不能与 untrackable 相加。",
         properties: {
           highScore: {
             type: "integer",
-            description: "来自评审总分 ≥ 95 分记录的建议数（含已完成判定与等待判定的可追踪建议）",
+            description: "来自总分 ≥ 95 分的 Pi 评审建议数（含已完成判定与等待判定的可追踪建议）",
             example: 7,
           },
         },

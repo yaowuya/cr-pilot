@@ -95,6 +95,7 @@ export function readDiffLine(diff: string, lineKey: "new_line" | "old_line", lin
 export interface ParsedFinding {
   id: string;
   severity: string;
+  category?: string;
   path: string;
   body: string;
   lineKey: "new_line" | "old_line";

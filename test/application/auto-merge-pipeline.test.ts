@@ -62,6 +62,7 @@ function harness(options: {
   reviewedDefaultBranch?: string;
   currentDefaultBranch?: string;
   defaultBranchError?: Error;
+  engineAfterDefaultBranch?: "ocr" | Error;
   omitDefaultBranch?: boolean;
   mergeError?: Error;
   summaryText?: string;
@@ -80,6 +81,7 @@ function harness(options: {
   let reviewCalls = 0;
   let policyCalls = 0;
   let defaultBranchCalls = 0;
+  let currentReviewEngine: "pi" | "ocr" | Error = "pi";
   const systemPrompts: string[] = [];
   const changes = options.changes ?? [{ newPath: "a.ts", oldPath: "a.ts", diff: "@@ -0,0 +1 @@\n+const x = 1;" }];
   const commits = [{ id: "c1", message: "feat" }];
@@ -119,6 +121,10 @@ function harness(options: {
       defaultBranchCalls += 1;
       events.push(`defaultBranch:${defaultBranchCalls}`);
       if (options.defaultBranchError) throw options.defaultBranchError;
+      if (defaultBranchCalls === 2 && options.engineAfterDefaultBranch !== undefined) {
+        await Promise.resolve();
+        currentReviewEngine = options.engineAfterDefaultBranch;
+      }
       return defaultBranchCalls === 1 ? (options.reviewedDefaultBranch ?? "main") : (options.currentDefaultBranch ?? "main");
     },
     mergeMergeRequest: async (_project, _iid, command) => {
@@ -159,6 +165,10 @@ function harness(options: {
     recordWriter,
     findingWriter: { insert: () => { events.push("finding"); } },
     llmProviders: evaluatorRepository(),
+    resolveReviewEngine: options.engineAfterDefaultBranch === undefined ? undefined : () => {
+      if (currentReviewEngine instanceof Error) throw currentReviewEngine;
+      return currentReviewEngine;
+    },
     resolveAutoMergePolicy: () => {
       policyCalls += 1;
       events.push(`policy:${policyCalls}`);
@@ -191,6 +201,22 @@ test("default 模式在任务开始与 PUT 前各读取一次默认分支，完�
   await run.pipeline.run(task);
   assert.equal(run.events.filter((event) => event.startsWith("defaultBranch:")).length, 2);
   assert.equal(run.events.some((event) => event.startsWith("merge:")), true);
+});
+
+test("自动合并前最后一次读取引擎，切换到 OCR 或读取失败时跳过合并", async (t) => {
+  const defaultPolicy: AutoMergePolicy = { ...policy, targetMode: "default", targetBranches: [] };
+  for (const [scenario, engineAfterDefaultBranch] of [
+    ["切换到 OCR", "ocr"],
+    ["读取引擎失败", new Error("engine settings unavailable")],
+  ] as const) {
+    await t.test(scenario, async () => {
+      const run = harness({ initialPolicy: defaultPolicy, engineAfterDefaultBranch });
+      await run.pipeline.run(task);
+      assert.equal(run.events.includes("defaultBranch:2"), true);
+      assert.equal(run.events.some((event) => event.startsWith("merge:")), false);
+      assert.equal(run.records[0]?.result, "success");
+    });
+  }
 });
 
 test("default 模式默认分支变化、缺 seam 或读取失败均 fail closed，但评审保持成功", async () => {

@@ -45,6 +45,22 @@ test("insert 后 getList 可按项目筛选，getStats 忽略 null 分数", () =
   db.close();
 });
 
+test("评审记录保留实际引擎，旧调用默认为 Pi，OCR 的零分与缺分保持独立", (t) => {
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const repo = createReviewRecordRepository(db);
+  repo.insert(record({ mrIid: 1 }));
+  repo.insert(record({ mrIid: 2, reviewEngine: "ocr", score: 0 }));
+  repo.insert(record({ mrIid: 3, reviewEngine: "ocr", score: null }));
+
+  const rows = repo.getList({ page: 1, pageSize: 10 }).items;
+  assert.deepEqual(rows.map(({ mrIid, reviewEngine, score }) => [mrIid, reviewEngine, score]), [
+    [3, "ocr", null],
+    [2, "ocr", 0],
+    [1, "pi", 90],
+  ]);
+});
+
 test("getList 支持按提交人与时间范围筛选并按时间倒序", () => {
   const db = openDatabase(":memory:");
   const repo = createReviewRecordRepository(db);
