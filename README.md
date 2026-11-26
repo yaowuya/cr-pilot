@@ -230,7 +230,7 @@ curl -X POST http://localhost:5001/api/prompts/import -H "Authorization: Bearer 
 
 OCR 从后台「AI 厂商」复用地址、API Key 和模型，优先级为项目绑定、Prompt 指定厂商、全局默认。支持使用 API Key 认证的 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接口。厂商地址可填 HTTP(S) 基址或同协议的完整接口地址，地址中不应包含凭据、查询参数或片段。没有匹配到后台厂商时，可以在 `.env` 补充 `OCR_LLM_*` 作为部署级兜底。更新环境变量后重启服务。
 
-Docker 镜像在 Linux amd64 和 arm64 上内置校验过 SHA-256 的 OCR v1.14.3。直接运行源码时，安装同一版本的 `ocr` 和 Git 2.41 或以上版本。Windows 下将 `OCR_EXECUTABLE` 指向发行版的 `.exe` 文件。
+Docker 镜像在 Linux amd64 和 arm64 上从 npm 镜像下载官方 OCR v1.14.3 平台包，并使用官方发布的 SHA-256 校验其中的二进制。镜像默认使用 `https://registry.npmmirror.com`，可在 Compose 的 `.env` 中设置 `OCR_NPM_REGISTRY`，例如使用 `https://registry.npmjs.org`。直接运行源码时，安装同一版本的 `ocr` 和 Git 2.41 或以上版本。Windows 下将 `OCR_EXECUTABLE` 指向发行版的 `.exe` 文件。
 
 | 环境变量 | 用途 |
 |---|---|
