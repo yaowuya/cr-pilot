@@ -24,6 +24,32 @@ import { buildOcrReport, renderReviewPath } from "./ocr-review-result.ts";
 
 export type { MergeRequestTask };
 
+/** 正式评审与自检共用模型选择顺序（项目绑定、Prompt、全局默认、各引擎兜底）。 */
+export function resolveReviewLlmTarget(
+  repo: LlmProviderRepository | undefined,
+  project?: string,
+  stored?: StoredPrompt,
+): ResolvedLlmTarget | undefined {
+  if (!repo) return undefined;
+
+  // 窄接口只读取项目绑定，保留旧仓储替身在缺少方法时回落 Prompt 的行为。
+  const projectTarget = project ? repo.resolveProjectTarget?.(project) : undefined;
+  if (projectTarget) return projectTarget;
+
+  if (stored?.providerId) {
+    const provider = repo.get(stored.providerId);
+    if (provider) {
+      const requestedModel = stored.model?.trim();
+      const model = requestedModel && provider.models.includes(requestedModel)
+        ? requestedModel
+        : provider.defaultModel || provider.models[0];
+      if (model) return { provider, model };
+    }
+  }
+
+  return repo.resolveTarget();
+}
+
 /**
  * 待写入的建议明细（不含自增 id，由仓储生成）。
  *
@@ -664,7 +690,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         try {
           if (!client.getRepositoryReviewSnapshot || !deps.ocrReviewer) throw new Error("Open Code Review 执行能力未配置");
           // 复用 Pi 的模型选择优先级，在任务开始时锁定地址、模型与密钥。
-          const llmTarget = resolveLlmTarget(task.fullName, deps.promptSource?.resolve(task.fullName));
+          const llmTarget = resolveReviewLlmTarget(deps.llmProviders, task.fullName, deps.promptSource?.resolve(task.fullName));
           const [snapshot, author] = await Promise.all([
             client.getRepositoryReviewSnapshot(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken),
             resolveAuthor(task),
@@ -758,7 +784,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         configuration = {
           ...resolved,
           repositoryEnabled: deps.promptSource?.isRepositoryContextEnabled?.(task.fullName) ?? false,
-          llmTarget: resolveLlmTarget(task.fullName, resolved.stored),
+          llmTarget: resolveReviewLlmTarget(deps.llmProviders, task.fullName, resolved.stored),
         };
       } catch {
         logger.error("读取评审配置失败，任务结束", { 项目ID: task.projectId, MR编号: task.iid });
@@ -1377,38 +1403,6 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     }
     // 落到 yaml 目录或 Markdown 兜底：数据库里没有可用记录。
     return { ruleSet: rules.resolve(fullName), source: { kind: "fallback", name: fullName } };
-  }
-
-  /**
-   * 解析本次评审使用的 LLM 厂商与模型。
-   *
-   * 优先级（D-022）：项目绑定 > prompt 上指定的厂商 > 全局默认厂商。
-   * 全都没有配置时返回 undefined，由 Pi 和 OCR 各自读取原有的部署级默认值。
-   */
-  function resolveLlmTarget(fullName: string, stored?: StoredPrompt): ResolvedLlmTarget | undefined {
-    const repo = deps.llmProviders;
-    if (!repo) return undefined;
-
-    // 生产仓储通过窄接缝只读取项目绑定，不把全局默认提前混进来。旧测试替身没有
-    // 新方法时安全跳到 Prompt；这是兼容降级，不改变生产优先级。
-    const projectTarget = repo.resolveProjectTarget?.(fullName);
-    if (projectTarget) return projectTarget;
-
-    // Prompt 显式选择位于项目绑定与全局默认之间。模型已从厂商清单移除时回落
-    // defaultModel/首个模型，避免把过期模型 id 继续传给 reviewer。
-    if (stored?.providerId) {
-      const provider = repo.get(stored.providerId);
-      if (provider) {
-        const requestedModel = stored.model?.trim();
-        const model = requestedModel && provider.models.includes(requestedModel)
-          ? requestedModel
-          : provider.defaultModel || provider.models[0];
-        if (model) return { provider, model };
-      }
-    }
-
-    // 必须无参解析全局默认；传 fullName 会让旧的组合方法再次把项目绑定提到 Prompt 前。
-    return repo.resolveTarget();
   }
 
   /**

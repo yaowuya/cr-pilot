@@ -485,7 +485,9 @@ code_review_prompt:
 
 ## 功能自检
 
-不用等真实 MR 合并，直接验证 AI 评审与企微推送两条链路。有两种入口：
+功能自检可以独立验证 AI 评审、OCR 和企微推送。
+
+**OCR 接口**：管理员携带管理后台的 Bearer 令牌调用 `POST /api/verify/ocr`，用返回的 `taskId` 查询 `GET /api/verify/tasks/{id}`。请求体可以是 `{}`，也可以传 `{"project":"namespace/project"}` 复用该项目生效的模型配置。OCR 会评审固定样例中的除零错误。结果包含缺陷识别状态、实际建议、分数和原始 `comments` 字段的类型。自检使用临时 Git 仓库，不访问 GitLab 或发布评论。
 
 **页面**：登录后打开左侧「功能自检」，两个按钮分别验证：
 

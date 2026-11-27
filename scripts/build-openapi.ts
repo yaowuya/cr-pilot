@@ -821,6 +821,30 @@ paths["/api/verify/ai"] = {
   },
 };
 
+paths["/api/verify/ocr"] = {
+  post: {
+    tags: ["功能自检"],
+    summary: "提交 OCR 样例验证任务（管理员）",
+    description: "用固定除零样例和实际模型运行 Open Code Review。返回任务 ID 后轮询 GET /api/verify/tasks/{id}。指定 project 时使用正式评审的模型选择顺序。",
+    operationId: "submitVerifyOcr",
+    security: [{ [BEARER]: [] }],
+    requestBody: {
+      required: false,
+      content: { "application/json": { schema: {
+        type: "object", additionalProperties: false,
+        properties: { project: { type: "string", description: "可选的完整 GitLab 项目路径", example: "namespace/project" } },
+      } } },
+    },
+    responses: {
+      200: jsonResponse("任务已提交", { type: "object", required: ["taskId"], properties: { taskId: { type: "string" } } }),
+      400: errorResponse("项目路径或请求体非法", { error: "OCR 验证仅接受可选的完整项目路径 project" }),
+      401: COMMON_ERRORS[401],
+      403: COMMON_ERRORS[403],
+      409: errorResponse("已有 OCR 验证在执行", { error: "已有 OCR 验证正在执行，请等待完成" }),
+    },
+  },
+};
+
 paths["/api/verify/wecom-bots"] = {
   get: {
     tags: ["功能自检"],
@@ -890,13 +914,14 @@ paths["/api/verify/tasks/{id}"] = {
   get: {
     tags: ["功能自检"],
     summary: "查询验证任务状态",
-    description: "轮询验证结果。企微自检的 detail 与错误信息会掩码显示 userid；发给群机器人的真实消息仍使用完整 userid。任务只存内存，进程重启后丢失；超过 1 小时或超过 20 条会被清理。",
+    description: "轮询验证结果。OCR 任务仅管理员可查。企微自检的 detail 与错误信息会掩码显示 userid；发给群机器人的真实消息仍使用完整 userid。任务只存内存，进程重启后丢失；超过 1 小时或超过 20 条会被清理。",
     operationId: "getVerifyTask",
     security: [{ [BEARER]: [] }],
     parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
     responses: {
       200: jsonResponse("任务状态与结果", { $ref: "#/components/schemas/VerifyTask" }),
       401: COMMON_ERRORS[401],
+      403: COMMON_ERRORS[403],
       404: errorResponse("任务不存在或已过期", { error: "任务不存在或已过期" }),
     },
   },
@@ -1630,13 +1655,36 @@ const schemas: Record<string, JsonObject> = {
     required: ["id", "kind", "status", "message", "detail", "durationMs", "startedAt", "finishedAt"],
     properties: {
       id: { type: "string", example: "8f3c2a1e-..." },
-      kind: { type: "string", enum: ["ai", "wecom"], example: "ai" },
+      kind: { type: "string", enum: ["ai", "wecom", "ocr"], example: "ai" },
       status: { type: "string", enum: ["running", "success", "failed"], example: "success" },
       message: { type: "string", description: "结论或错误原因", example: "AI 评审通过，解析出 17 分" },
       detail: { type: "string", description: "详细输出摘要", example: "# 代码审查报告…" },
       durationMs: { type: "integer", description: "耗时毫秒；未结束时为 0", example: 72432 },
       startedAt: { type: "integer", description: "Unix 毫秒" },
       finishedAt: { type: "integer", nullable: true, description: "Unix 毫秒；未结束时为 null" },
+      ocr: {
+        type: "object", description: "OCR 返回报告时提供的样例结果",
+        required: ["verdict", "fixture", "filesReviewed", "complete", "score", "findings"],
+        properties: {
+          project: { type: "string" },
+          provider: { type: "string" },
+          model: { type: "string" },
+          verdict: { type: "string", enum: ["detected", "missed", "incomplete"] },
+          fixture: {
+            type: "object", required: ["path", "line", "baseSha", "headSha"],
+            properties: { path: { type: "string" }, line: { type: "integer" }, baseSha: { type: "string" }, headSha: { type: "string" } },
+          },
+          filesReviewed: { type: "integer" },
+          complete: { type: "boolean" },
+          score: { type: "integer", nullable: true },
+          findings: { type: "array", items: {
+            type: "object", required: ["path", "line", "severity", "message"],
+            properties: { path: { type: "string" }, line: { type: "integer" }, severity: { type: "string" }, message: { type: "string" } },
+          } },
+          diagnostics: { type: "object", description: "OCR 返回的状态、建议和工具提交计数" },
+          rawCommentsFormat: { type: "string", enum: ["array", "null"], description: "原始 OCR comments 字段的类型" },
+        },
+      },
     },
   },
 
