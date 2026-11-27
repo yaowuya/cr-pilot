@@ -224,6 +224,27 @@ curl -X POST http://localhost:5001/api/prompts/import -H "Authorization: Bearer 
 - 每任务临时目录独立，正常/异常/超时结束都等待读取和子进程停止后清理；进程被系统强杀仍可能遗留系统临时目录下的 `cr-pilot-repo-*`，运维可在确认无活动任务后清理。磁盘监测存在采样窗口，不是操作系统硬配额。
 - 项目配置沿既有名称级模型：不同 GitLab 实例的同名完整路径共享开关，不能冒充逐实例租户隔离；实际仓库和 token 始终按任务隔离。
 
+### Open Code Review（OCR）
+
+在「Prompt 管理 → 项目执行配置」中，为完整路径的项目选择 Open Code Review。已有项目默认使用 Pi。OCR 校验并评审 GitLab MR 固定的 `baseSha..headSha`，把命中变更行的建议回写为行内评论，其余建议进入 MR 汇总。完整评审从 100 分起按每条 `critical`、`high`、`medium`、`low` 分别扣 10、5、2、1 分，最低 0 分。缺少覆盖证据或严重级别时仍回写已有建议，分数留空。OCR 评审只发布评论。
+
+OCR 的问题说明和修改建议使用简体中文。文件路径、代码标识符和建议代码沿用原文。
+
+OCR 从后台「AI 厂商」复用地址、API Key 和模型，优先级为项目绑定、Prompt 指定厂商、全局默认。支持使用 API Key 认证的 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接口。厂商地址可填 HTTP(S) 基址或同协议的完整接口地址，地址中不应包含凭据、查询参数或片段。没有匹配到后台厂商时，可以在 `.env` 补充 `OCR_LLM_*` 作为部署级兜底。更新环境变量后重启服务。
+
+Docker 镜像在 Linux amd64 和 arm64 上从 npm 镜像下载官方 OCR v1.14.3 平台包，并使用官方发布的 SHA-256 校验其中的二进制。镜像默认使用 `https://registry.npmmirror.com`，可在 Compose 的 `.env` 中设置 `OCR_NPM_REGISTRY`，例如使用 `https://registry.npmjs.org`。直接运行源码时，安装同一版本的 `ocr` 和 Git 2.41 或以上版本。Windows 下将 `OCR_EXECUTABLE` 指向发行版的 `.exe` 文件。
+
+| 环境变量 | 用途 |
+|---|---|
+| `OCR_LLM_URL` | 兜底模型的完整请求地址，例如 `https://api.openai.com/v1/chat/completions` |
+| `OCR_LLM_TOKEN` | 兜底模型的 API Key |
+| `OCR_LLM_MODEL` | 兜底模型名 |
+| `OCR_LLM_PROTOCOL` | 可选。兜底模型的协议 `openai`、`openai-responses` 或 `anthropic` |
+| `OCR_RULE_FILE` | 可选。服务端可读的 OCR 规则 JSON 路径。容器部署需将文件只读挂载 |
+| `OCR_EXECUTABLE` | 可选。指定 CLI 的绝对路径，默认从 `PATH` 解析 `ocr` |
+
+OCR 子进程只接收本次评审选中的模型凭据，使用独立的临时 HOME，不加载宿主 OCR 配置或 MR 工作树里的规则。抓取提交需要本次任务令牌的 Git 仓库读取权限；令牌只提供给 Git 的同源抓取进程。进程退出后删除临时仓库、报告和 OCR 会话数据。仓库范围和部署要求可参考 [OCR CLI](https://github.com/alibaba/open-code-review/blob/v1.14.3/pages/src/content/docs/en/cli-reference.md#ocr-review)。
+
 ### 升级与回退门禁
 
 升级前停止 webhook 与配置写入并关闭服务连接，制作可恢复的一致性 SQLite 备份；WAL 模式不能仅复制运行中的主 DB 文件。首次升级只增量加表加列，存量自动合并策略全部默认关闭。
@@ -446,7 +467,7 @@ code_review_prompt:
 系统会记录每条行内评审建议（带被评论行的代码指纹），在 MR 有新提交时重新定位该行，并在 MR 合并或关闭时收口仍待判定的建议。统计页按项目、提交人、严重级分别展示等待判定数与采纳率。
 
 - **口径**：采纳率 = 代码已变化的建议数 ÷ 已完成判定的可统计建议数。指纹只能证明目标行变了，不能证明改得对，因此这是「代码变化率」而非「修复正确率」。等待判定的建议不按未采纳计入分母。
-- **高分排除**：评审总分 **≥ 95 分**的记录，其建议同时从分子与分母排除。高分评审通常只提出少量或没有建议，采纳情况无法反映评审价值，留在分母里会稀释结果；只排分母会让采纳率超过 100%，因此分子也一并排除。被排除条数在页面和 `excluded.highScore` 单独展示，**不属于**「不可追踪」。没有分数的记录不按高分处理，仍计入分母；该口径固定内建，不提供参数覆盖，以保证可比性。
+- **高分排除**：Pi 评审总分 **≥ 95 分**时，其建议同时从分子与分母排除。被排除条数在页面和 `excluded.highScore` 单独展示，**不属于**「不可追踪」。Pi 无分数时，可统计建议仍计入分母。OCR 的可统计建议按原有追踪结果计入，不受此分数门槛限制。
 - **终态收口**：MR 合并/关闭时，目标行变化记为已采纳；目标行未变且讨论已解决记为“已解决但代码未变”；未变且未解决记为未采纳。opened 且 head 未变时继续等待。
 - **不可统计部分单列**：降级并入汇总评论的建议（无行锚点）与历史上无法可靠判定的建议不计入分母。文件明确删除、整体重写或原指纹消失均属于代码变化，记为已采纳；限流、权限、超时和 5xx 保留原状态并在下一轮重试。行内评论**发布失败但位置合法**的建议保留指纹继续追踪。
 - **失败回写不丢证据**：行内评论已经发布后，即使最终汇总评论被 GitLab/WAF 拒绝，建议明细仍关联本次失败记录落库，避免 GitLab 有评论而统计缺失。
@@ -466,7 +487,9 @@ code_review_prompt:
 
 ## 功能自检
 
-不用等真实 MR 合并，直接验证 AI 评审与企微推送两条链路。有两种入口：
+功能自检可以独立验证 AI 评审、OCR 和企微推送。
+
+**OCR 接口**：管理员携带管理后台的 Bearer 令牌调用 `POST /api/verify/ocr`，用返回的 `taskId` 查询 `GET /api/verify/tasks/{id}`。请求体可以是 `{}`，也可以传 `{"project":"namespace/project"}` 复用该项目生效的模型配置。OCR 会评审固定样例中的除零错误。结果包含缺陷识别状态、实际建议、分数和原始 `comments` 字段的类型。自检使用临时 Git 仓库，不访问 GitLab 或发布评论。
 
 **页面**：登录后打开左侧「功能自检」，两个按钮分别验证：
 

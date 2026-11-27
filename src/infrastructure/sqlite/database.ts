@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS review_records (
   change_count INTEGER NOT NULL,
   batch_count INTEGER NOT NULL,
   score INTEGER,
+  review_engine TEXT NOT NULL DEFAULT 'pi' CHECK (review_engine IN ('pi', 'ocr')),
   duration_ms INTEGER NOT NULL,
   result TEXT NOT NULL,
   error_message TEXT,
@@ -72,6 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_prompt_projects_project ON prompt_projects (proje
 CREATE TABLE IF NOT EXISTS project_review_settings (
   project TEXT PRIMARY KEY NOT NULL,
   repository_context_enabled INTEGER NOT NULL DEFAULT 0 CHECK (repository_context_enabled IN (0, 1)),
+  review_engine TEXT NOT NULL DEFAULT 'pi' CHECK (review_engine IN ('pi', 'ocr')),
   auto_merge_enabled INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_enabled IN (0, 1)),
   auto_merge_minimum_score INTEGER NOT NULL DEFAULT 100 CHECK (auto_merge_minimum_score BETWEEN 1 AND 100),
   auto_merge_target_mode TEXT NOT NULL DEFAULT 'default' CHECK (auto_merge_target_mode IN ('default', 'specified', 'any')),
@@ -206,6 +208,7 @@ function migrate(db: DatabaseSync): void {
   addColumnIfMissing(db, "review_prompts", "provider_id", "INTEGER");
   addColumnIfMissing(db, "review_prompts", "model", "TEXT");
   addColumnIfMissing(db, "review_records", "mr_url", "TEXT");
+  addColumnIfMissing(db, "review_records", "review_engine", "TEXT NOT NULL DEFAULT 'pi' CHECK (review_engine IN ('pi', 'ocr'))");
   // token 用量统计：只追加可空列，历史记录保持 NULL（不可回填），旧版本代码
   // 会忽略这些列，因此回退无需删列。五列必须整组存在，统计查询才能安全聚合。
   addColumnIfMissing(db, "review_records", "input_tokens", "INTEGER");
@@ -217,6 +220,7 @@ function migrate(db: DatabaseSync): void {
   // 迁移仅追加带默认值的列、不重写旧数据：回滚旧版本时旧代码会忽略这些列，
   // 因而无需危险的逆向删列；若要永久降级 schema，应先备份再按 SQLite 规则重建表。
   addColumnIfMissing(db, "project_review_settings", "auto_merge_enabled", "INTEGER NOT NULL DEFAULT 0 CHECK (auto_merge_enabled IN (0, 1))");
+  addColumnIfMissing(db, "project_review_settings", "review_engine", "TEXT NOT NULL DEFAULT 'pi' CHECK (review_engine IN ('pi', 'ocr'))");
   addColumnIfMissing(db, "project_review_settings", "auto_merge_minimum_score", "INTEGER NOT NULL DEFAULT 100 CHECK (auto_merge_minimum_score BETWEEN 1 AND 100)");
   addColumnIfMissing(db, "project_review_settings", "auto_merge_target_branches", "TEXT NOT NULL DEFAULT '[]'");
   // 旧版本只支持 allowlist，ALTER 默认 specified 才不会把已启用策略扩大为 default/any。

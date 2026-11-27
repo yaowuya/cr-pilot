@@ -7,12 +7,15 @@ import { applyConfigOverrides, loadConfig } from "./shared/config.ts";
 import { createTaskQueue } from "./shared/queue.ts";
 import { createGitlabClient } from "./infrastructure/gitlab/gitlab-client.ts";
 import { createPiReviewer } from "./infrastructure/pi/reviewer.ts";
+import { createOcrReviewer } from "./infrastructure/ocr/reviewer.ts";
+import { runOcrSelfTest } from "./infrastructure/ocr/self-test.ts";
 import { createRepositoryProvider } from "./infrastructure/git/repository-context.ts";
 import { loadReviewRules } from "./infrastructure/rules/review-rules.ts";
 import { createWecomNotifier } from "./infrastructure/wecom/wecom-notifier.ts";
 import { createReviewPipeline } from "./application/review-pipeline.ts";
 import { createAdoptionTracker, createAdoptionTrackingEventHandler, createAdoptionTrackingTrigger } from "./application/adoption-tracker.ts";
 import { createFeatureVerifier } from "./application/feature-verifier.ts";
+import { createOcrSelfTestVerifier } from "./application/ocr-self-test.ts";
 import { startServer } from "./interfaces/http/server.ts";
 import { openDatabase } from "./infrastructure/sqlite/database.ts";
 import { createAdminRepository } from "./infrastructure/sqlite/admin-repo.ts";
@@ -212,6 +215,8 @@ async function startApplication(input: {
     const isProjectAllowed = (project: string): boolean => prompts.isProjectConfigured(project);
     const pipeline = createReviewPipeline({
       isProjectAllowed,
+      resolveReviewEngine: (project) => prompts.resolveProjectSetting?.(project)?.reviewEngine,
+      ocrReviewer: createOcrReviewer({ insecureTls: config.gitlabInsecureTls }),
       // 自动合并只读取完整项目路径的精确设置；短名与 default 兜底只能授权评审，
       // 不能授权高影响写操作。管线会在任务开始和 PUT 前各解析一次。
       resolveAutoMergePolicy: (project) => prompts.resolveProjectSetting?.(project)?.autoMergePolicy,
@@ -262,9 +267,10 @@ async function startApplication(input: {
     // 功能自检与正式 MR 通知共用映射和 prompt 仓储：机器人列表和发送地址
     // 必须遵守相同的数据库优先、YAML 兜底顺序，不读取已被覆盖的旧 webhook。
     const verifier = createFeatureVerifier({ config, logger, wecomContacts, promptSource: prompts });
+    const verifyOcr = createOcrSelfTestVerifier({ logger, run: runOcrSelfTest, prompts, providers, timeoutMs: config.timeoutMs });
 
     const authMiddleware = createAuthMiddleware({ admins, authSalt: config.authSalt });
-    // 管理员权限门：只挂在账号管理路由上，其余管理页所有登录账号都能用。
+    // 涉及账号权限和主动消耗模型额度的 OCR 自检需要管理员。
     const requireAdmin = createRequireAdmin();
     const staticAssets = createStaticAssets({ distDir: WEB_DIST_DIR, logger });
     await startServer(
@@ -285,7 +291,7 @@ async function startApplication(input: {
           "/api/reviews": createReviewsRouter({ records, findings }),
           "/api/config": createConfigRouter({ config: configRepo }),
           "/api/wecom-contacts": createWecomContactsRouter({ contacts: wecomContacts }),
-          "/api/verify": createVerifyRouter({ verifier }),
+          "/api/verify": createVerifyRouter({ verifier, ocr: { verify: verifyOcr, requireAdmin } }),
           "/api/prompts": createPromptsRouter({ prompts, providers, rulesDir: config.rulesDir }),
           "/api/providers": createProvidersRouter({ providers, onChanged: syncModels }),
         },

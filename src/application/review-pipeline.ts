@@ -16,11 +16,39 @@ import { sealSecret } from "../shared/secret-box.ts";
 import { parseReviewScore, renderUserPrompt, shouldNotifyByScore, stripMarkdownFences, type ReviewRules, type RuleSet } from "../domain/review-rules.ts";
 import type { ReviewRecord, TokenUsage } from "../domain/review-record.ts";
 import type { LlmProviderRepository, ResolvedLlmTarget } from "../domain/llm-provider.ts";
-import { PROJECT_REVIEW_DENIED_MESSAGE, PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE, type PromptRepository, type StoredPrompt } from "../domain/review-prompt.ts";
+import { PROJECT_REVIEW_DENIED_MESSAGE, PROJECT_REVIEW_POLICY_UNAVAILABLE_MESSAGE, type PromptRepository, type ReviewEngine, type StoredPrompt } from "../domain/review-prompt.ts";
 import { decideAutoMerge, type AutoMergePolicy, type Change, type Commit, type DiffRefs, type GitlabClient, type MergeRequestTask, type Reviewer, type ReviewResult, type WecomNotifier } from "../domain/review-task.ts";
 import type { RepositoryProvider, RepositoryWorkspace, RepositoryPreparationEvent, RepositoryToolCallEvent } from "../domain/repository-context.ts";
+import type { OcrReviewer } from "../domain/ocr-review.ts";
+import { buildOcrReport, renderReviewPath } from "./ocr-review-result.ts";
 
 export type { MergeRequestTask };
+
+/** 正式评审与自检共用模型选择顺序（项目绑定、Prompt、全局默认、各引擎兜底）。 */
+export function resolveReviewLlmTarget(
+  repo: LlmProviderRepository | undefined,
+  project?: string,
+  stored?: StoredPrompt,
+): ResolvedLlmTarget | undefined {
+  if (!repo) return undefined;
+
+  // 窄接口只读取项目绑定，保留旧仓储替身在缺少方法时回落 Prompt 的行为。
+  const projectTarget = project ? repo.resolveProjectTarget?.(project) : undefined;
+  if (projectTarget) return projectTarget;
+
+  if (stored?.providerId) {
+    const provider = repo.get(stored.providerId);
+    if (provider) {
+      const requestedModel = stored.model?.trim();
+      const model = requestedModel && provider.models.includes(requestedModel)
+        ? requestedModel
+        : provider.defaultModel || provider.models[0];
+      if (model) return { provider, model };
+    }
+  }
+
+  return repo.resolveTarget();
+}
 
 /**
  * 待写入的建议明细（不含自增 id，由仓储生成）。
@@ -99,6 +127,8 @@ interface PipelineDeps {
   client: GitlabClient;
   rules: ReviewRules;
   reviewer: Reviewer;
+  resolveReviewEngine?: (repositoryFullName: string) => ReviewEngine | undefined;
+  ocrReviewer?: OcrReviewer;
   logger: Logger;
   batchMaxTokens: number;
   /** 单批评审/汇总的超时毫秒数，缺省 1200000（20 分钟）。 */
@@ -476,6 +506,17 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       }
     }
 
+    // 项目可以在 GitLab 请求期间切换到仅评审的 OCR，合并前以最新引擎为准。
+    try {
+      if ((deps.resolveReviewEngine?.(input.task.fullName) ?? "pi") !== "pi") {
+        logger.info("自动合并前发现评审引擎已切换，跳过合并", { 项目ID: input.task.projectId, MR编号: input.task.iid });
+        return;
+      }
+    } catch {
+      logger.warn("自动合并前复核评审引擎失败，跳过合并", { 项目ID: input.task.projectId, MR编号: input.task.iid });
+      return;
+    }
+
     const structuredReviews = input.batchResults.map((raw) => parseReviewJson(raw)).filter((review): review is ParsedReview => review !== null);
     const mergeGates = structuredReviews.flatMap((review) => review.mergeGate ? [review.mergeGate] : []);
     const reportCounts = [...input.batchResults, input.safetyComment].map((report) => countFindingsBySeverity(report));
@@ -542,6 +583,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       const startedAt = Date.now();
       logger.info("管线开始处理 MR", { 项目ID: task.projectId, MR编号: task.iid, 项目全名: task.fullName });
       let committerName = task.triggerUserName ?? "";
+      let reviewEngine: ReviewEngine = "pi";
 
       /**
        * 本次任务累计的 token 用量。
@@ -599,6 +641,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           changeCount: outcome.changeCount ?? 0,
           batchCount: outcome.batchCount ?? 0,
           score: outcome.score ?? null,
+          reviewEngine,
           durationMs: Date.now() - startedAt,
           result: outcome.result,
           errorMessage: outcome.errorMessage ?? null,
@@ -631,6 +674,95 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         return;
       }
 
+      try {
+        reviewEngine = deps.resolveReviewEngine?.(task.fullName) ?? "pi";
+      } catch {
+        logger.error("读取项目评审引擎失败", { 项目ID: task.projectId, MR编号: task.iid });
+        writeRecord({ result: "failed", errorMessage: "读取项目评审引擎失败" });
+        return;
+      }
+
+      if (reviewEngine === "ocr") {
+        let changeCount = 0;
+        let batchCount = 0;
+        let pendingFindings: Omit<PendingFinding, "recordId">[] = [];
+        let outcome: Parameters<typeof writeRecord>[0];
+        try {
+          if (!client.getRepositoryReviewSnapshot || !deps.ocrReviewer) throw new Error("Open Code Review 执行能力未配置");
+          // 复用 Pi 的模型选择优先级，在任务开始时锁定地址、模型与密钥。
+          const llmTarget = resolveReviewLlmTarget(deps.llmProviders, task.fullName, deps.promptSource?.resolve(task.fullName));
+          const [snapshot, author] = await Promise.all([
+            client.getRepositoryReviewSnapshot(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken),
+            resolveAuthor(task),
+          ]);
+          committerName = author.name;
+          changeCount = snapshot.changes.length;
+          batchCount = 1;
+          const signal = AbortSignal.timeout(timeoutMs);
+          const output = await deps.ocrReviewer.review({
+            snapshot, token: task.gitlabToken ?? "", signal, llmTarget, mr: { projectId: task.projectId, iid: task.iid },
+          });
+          accumulateUsage(output.tokenUsage);
+          const { complete } = output;
+          const report = buildOcrReport({ ...output, complete });
+          // 先记录引擎与适配器各阶段的数量，MR 过期或回写失败时也可排查建议在哪里减少。
+          logger.info("Open Code Review 诊断", {
+            项目ID: task.projectId, MR编号: task.iid,
+            模型厂商: llmTarget?.provider.name, 配置模型: llmTarget?.model,
+            变更文件数: changeCount, 已评审文件数: output.filesReviewed, 完整: complete,
+            映射后建议数: output.findings.length, 去重后建议数: report.findings.length,
+            引擎诊断: output.diagnostics,
+            排障记录: output.troubleshooting,
+          });
+
+          const { refs } = snapshot;
+          // GitLab 生成新 diff 有延迟，须同时核对实时 head 和收集好的版本 SHA。
+          const assertSnapshotCurrent = async (): Promise<void> => {
+            const [currentRefs, currentHead] = await Promise.all([
+              client.getMergeRequestVersions(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken),
+              client.getLatestHeadSha(task.projectId, task.iid, task.gitlabUrl, task.gitlabToken),
+            ]);
+            if (currentHead !== refs.headSha || currentRefs.headSha !== refs.headSha ||
+                currentRefs.baseSha !== refs.baseSha || currentRefs.startSha !== refs.startSha) {
+              throw new Error("MR diff 版本在 OCR 评审期间变化，评审结果已过期");
+            }
+          };
+          await assertSnapshotCurrent();
+          const inline = await publishInlineComments({
+            task,
+            changes: snapshot.changes,
+            refs,
+            parsedReview: { reviewedHeadSha: refs.headSha, summaryBody: report.summary, findings: report.findings },
+            logger,
+          });
+          pendingFindings = inline.findings;
+          // 行内评论自带版本，但汇总评论没有。行内回写或读取已有讨论后须再核对一次。
+          if (report.findings.length > 0) await assertSnapshotCurrent();
+          const range = `${refs.baseSha.slice(0, 12)}..${refs.headSha.slice(0, 12)}`;
+          const comment = appendFallback(`${report.summary}\n\n评审范围 \`${range}\``, inline.fallback);
+          await client.postMergeRequestNote(task.projectId, task.iid, comment, task.gitlabUrl, task.gitlabToken);
+          outcome = {
+            result: complete ? "success" : "failed",
+            ...(!complete ? { errorMessage: "Open Code Review 未完成全部计划评审的文件" } : {}),
+            score: report.score,
+            commentUrl: `MR !${task.iid}`,
+            changeCount,
+            batchCount,
+          };
+          logger.info("Open Code Review 回写完成", {
+            项目ID: task.projectId, MR编号: task.iid, 已评审文件: output.filesReviewed,
+            完整: complete, 评分: report.score, 行内评论数: inline.published.size,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Open Code Review 执行失败";
+          logger.error("Open Code Review 评审失败", { 项目ID: task.projectId, MR编号: task.iid, 错误: message });
+          outcome = { result: "failed", errorMessage: message, changeCount, batchCount };
+        }
+        const id = writeRecord(outcome);
+        if (id !== undefined) writeFindings(id, pendingFindings);
+        return;
+      }
+
       // 自动合并策略在任何外部 await 前做深拷贝快照；配置对象可能被仓储缓存复用，
       // 不能让评审期间的页面保存原地改变本次安全基线。
       let autoMergePolicySnapshot: AutoMergePolicy | undefined;
@@ -652,7 +784,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         configuration = {
           ...resolved,
           repositoryEnabled: deps.promptSource?.isRepositoryContextEnabled?.(task.fullName) ?? false,
-          llmTarget: resolveLlmTarget(task.fullName, resolved.stored),
+          llmTarget: resolveReviewLlmTarget(deps.llmProviders, task.fullName, resolved.stored),
         };
       } catch {
         logger.error("读取评审配置失败，任务结束", { 项目ID: task.projectId, MR编号: task.iid });
@@ -1274,39 +1406,6 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
   }
 
   /**
-   * 解析本次评审使用的 LLM 厂商与模型。
-   *
-   * 优先级（D-022）：项目绑定 > prompt 上指定的厂商 > 全局默认厂商。
-   * 全都没有配置时返回 undefined，reviewer 会回落到 models.json 的默认模型，
-   * 保证「没配厂商」的老部署仍然能跑。
-   */
-  function resolveLlmTarget(fullName: string, stored?: StoredPrompt): ResolvedLlmTarget | undefined {
-    const repo = deps.llmProviders;
-    if (!repo) return undefined;
-
-    // 生产仓储通过窄接缝只读取项目绑定，不把全局默认提前混进来。旧测试替身没有
-    // 新方法时安全跳到 Prompt；这是兼容降级，不改变生产优先级。
-    const projectTarget = repo.resolveProjectTarget?.(fullName);
-    if (projectTarget) return projectTarget;
-
-    // Prompt 显式选择位于项目绑定与全局默认之间。模型已从厂商清单移除时回落
-    // defaultModel/首个模型，避免把过期模型 id 继续传给 reviewer。
-    if (stored?.providerId) {
-      const provider = repo.get(stored.providerId);
-      if (provider) {
-        const requestedModel = stored.model?.trim();
-        const model = requestedModel && provider.models.includes(requestedModel)
-          ? requestedModel
-          : provider.defaultModel || provider.models[0];
-        if (model) return { provider, model };
-      }
-    }
-
-    // 必须无参解析全局默认；传 fullName 会让旧的组合方法再次把项目绑定提到 Prompt 前。
-    return repo.resolveTarget();
-  }
-
-  /**
    * 发布行内评论，返回成功集合与需并入汇总的文本。
    *
    * 降级链（不丢弃任何内容）：
@@ -1323,9 +1422,8 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
     changes: Change[];
     /** 已取到的 diff version；缺省表示取版本失败，全部降级。 */
     refs?: DiffRefs;
-    batchResults: string[];
     logger: Logger;
-  }): Promise<InlinePublishOutcome> {
+  } & ({ batchResults: string[] } | { parsedReview: ParsedReview })): Promise<InlinePublishOutcome> {
     const published = new Set<string>();
     const publishedBodies = new Set<string>();
     const fallback: string[] = [];
@@ -1340,10 +1438,15 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
       publishFailed: 0,
       missingChange: 0,
     };
-    const { task, changes, batchResults } = input;
+    const { task, changes } = input;
 
     // 没有 reviewJson 时无从判断，全部按「不可定位」处理。
     const parsedList: { review: ParsedReview; source: string; batchIndex: number }[] = [];
+    const isOcr = "parsedReview" in input;
+    if (isOcr && input.parsedReview.findings.length > 0) {
+      parsedList.push({ review: input.parsedReview, source: input.parsedReview.findings.map(renderFallbackFinding).join("\n\n"), batchIndex: 0 });
+    }
+    const batchResults = "batchResults" in input ? input.batchResults : [];
     batchResults.forEach((raw, index) => {
       const parsed = parseReviewJson(raw);
       if (parsed) {
@@ -1510,10 +1613,12 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
         }
 
         try {
+          const label = finding.category ? `${finding.severity} · ${finding.category}` : finding.severity;
+          const discussionBody = isOcr ? `**${label}**\n\n${finding.body}` : finding.body;
           const created = await client.postDiscussion(
             task.projectId,
             task.iid,
-            `${finding.body}\n\n${marker}`,
+            `${discussionBody}\n\n${marker}`,
             buildPosition({
               refs,
               oldPath: change.oldPath,
@@ -1623,9 +1728,12 @@ function stripPublishedFindings(comment: string, publishedBodies: Set<string>): 
 }
 
 /** 把无法定位的 finding 渲染成汇总评论中可读的一段。 */
-function renderFallbackFinding(finding: { severity: string; path: string; line: number; lineKey: string; body: string }): string {
+function renderFallbackFinding(finding: { severity: string; category?: string; path: string; line: number; lineKey: string; body: string }): string {
   const side = finding.lineKey === "new_line" ? "新文件" : "原文件";
-  return `- **[${finding.severity}] \`${finding.path}\`（${side}第 ${finding.line} 行）**：${finding.body}`;
+  const location = finding.line > 0 ? `（${side}第 ${finding.line} 行）` : "（未定位行号）";
+  const label = finding.category ? `${finding.severity} · ${finding.category}` : finding.severity;
+  const heading = `- **[${label}] ${renderReviewPath(finding.path)}${location}**`;
+  return finding.body.startsWith("> ") ? `${heading}\n\n${finding.body}` : `${heading}：${finding.body}`;
 }
 
 /**

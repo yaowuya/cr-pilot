@@ -9,9 +9,10 @@
  * 落库反而增加清理负担。
  */
 import { randomUUID } from "node:crypto";
-import { Router } from "express";
-import type { FeatureVerifier } from "../../../application/feature-verifier.ts";
-import type { VerifyTask } from "../../../application/feature-verifier.ts";
+import { Router, type RequestHandler } from "express";
+import type { FeatureVerifier, VerifyTask } from "../../../application/feature-verifier.ts";
+import type { OcrSelfTestOutcome } from "../../../application/ocr-self-test.ts";
+import { isRepositoryProjectKey } from "../../../domain/review-prompt.ts";
 
 /** 任务保留上限：超过后丢弃最旧的，防止长时间运行累积内存。 */
 const MAX_TASKS = 20;
@@ -22,71 +23,86 @@ const TASK_TTL_MS = 60 * 60 * 1000;
 /** 验证路由依赖。 */
 export interface VerifyRouterDeps {
   verifier: FeatureVerifier;
+  /** OCR 使用配置好的模型，提交与轮询都由管理员操作。 */
+  ocr?: { verify(project?: string): Promise<OcrSelfTestOutcome>; requireAdmin: RequestHandler };
+}
+
+type VerifyKind = VerifyTask["kind"] | "ocr";
+type StoredTask = Omit<VerifyTask, "kind"> & { kind: VerifyKind; ocr?: OcrSelfTestOutcome["ocr"] };
+
+/** OCR 自检只接受选择配置的项目路径，测试代码、模型地址及凭据均由服务端决定。 */
+function readOcrProject(body: unknown): string | undefined | null {
+  if (body === undefined) return undefined;
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return null;
+  const keys = Object.keys(body);
+  if (keys.length === 0) return undefined;
+  if (keys.length !== 1 || keys[0] !== "project") return null;
+  const value = (body as Record<string, unknown>).project;
+  const project = typeof value === "string" ? value.trim() : "";
+  return project.includes("/") && isRepositoryProjectKey(project) ? project : null;
 }
 
 /**
  * 内存任务表。
  *
- * 只允许同一时刻运行一个 AI 验证：并发触发会各消耗一次模型额度，
- * 且结果互相干扰。企微验证同样串行，避免短时间内往群里连发多条。
+ * 每种类型单独限并发：避免重复消耗模型额度或短时间内向群里连发多条消息。
  */
 function createTaskStore() {
-  const tasks = new Map<string, VerifyTask>();
-  let runningKind: "ai" | "wecom" | null = null;
+  const tasks = new Map<string, StoredTask>();
+  const runningKinds = new Set<VerifyKind>();
 
   /** 清理过期与被挤出上限的任务。 */
   const prune = (now: number): void => {
     for (const [id, task] of tasks) {
       if (task.finishedAt !== null && now - task.finishedAt > TASK_TTL_MS) tasks.delete(id);
     }
-    while (tasks.size > MAX_TASKS) {
-      // Map 保持插入顺序，第一个就是最旧的。
-      const oldest = tasks.keys().next().value;
-      if (oldest === undefined) break;
-      tasks.delete(oldest);
+    // 按插入顺序丢弃已结束任务。保留运行中的任务以便轮询和释放同类型的并发占用。
+    for (const [id, task] of tasks) {
+      if (tasks.size <= MAX_TASKS) break;
+      if (task.finishedAt !== null) tasks.delete(id);
     }
   };
 
   return {
     /** 当前是否有同类任务在跑。 */
-    isRunning(kind: "ai" | "wecom"): boolean {
-      return runningKind === kind;
+    isRunning(kind: VerifyKind): boolean {
+      return runningKinds.has(kind);
     },
 
     /** 新建任务并登记；调用方负责实际执行。 */
-    create(kind: "ai" | "wecom"): VerifyTask {
-      prune(Date.now());
-      const task: VerifyTask = {
+    create(kind: VerifyKind): StoredTask {
+      const now = Date.now();
+      const task: StoredTask = {
         id: randomUUID(),
         kind,
         status: "running",
         message: "正在执行…",
         detail: "",
         durationMs: 0,
-        startedAt: Date.now(),
+        startedAt: now,
         finishedAt: null,
       };
       tasks.set(task.id, task);
-      runningKind = kind;
+      runningKinds.add(kind);
+      prune(now);
       return task;
     },
 
     /** 写回最终结果并释放运行标记。 */
-    finish(id: string, outcome: { success: boolean; message: string; detail: string; durationMs: number }): void {
+    finish(id: string, outcome: OcrSelfTestOutcome): void {
       const task = tasks.get(id);
-      if (!task) {
-        runningKind = null;
-        return;
-      }
+      if (!task || task.finishedAt !== null) return;
       task.status = outcome.success ? "success" : "failed";
       task.message = outcome.message;
       task.detail = outcome.detail;
       task.durationMs = outcome.durationMs;
       task.finishedAt = Date.now();
-      runningKind = null;
+      if (task.kind === "ocr" && outcome.ocr !== undefined) task.ocr = outcome.ocr;
+      runningKinds.delete(task.kind);
     },
 
-    get(id: string): VerifyTask | undefined {
+    get(id: string): StoredTask | undefined {
+      prune(Date.now());
       return tasks.get(id);
     },
   };
@@ -96,6 +112,7 @@ function createTaskStore() {
 export function createVerifyRouter(deps: VerifyRouterDeps): Router {
   const router = Router();
   const store = createTaskStore();
+  const { ocr } = deps;
 
   /**
    * 提交验证任务。
@@ -103,12 +120,12 @@ export function createVerifyRouter(deps: VerifyRouterDeps): Router {
    * 后台执行而不 await：请求立即返回任务 ID，页面据此轮询。
    * 执行体自身已捕获异常并返回结构化结果，这里再兜一层防止未处理 rejection。
    */
-  const submit = (kind: "ai" | "wecom", run: (taskId: string) => Promise<void>): { id: string } => {
+  const submit = (kind: VerifyKind, run: (taskId: string) => Promise<void>): { id: string } => {
     const task = store.create(kind);
     void run(task.id).catch((error: unknown) => {
       store.finish(task.id, {
         success: false,
-        message: `验证执行异常：${error instanceof Error ? error.message : String(error)}`,
+        message: kind === "ocr" ? "OCR 验证执行异常" : `验证执行异常：${error instanceof Error ? error.message : String(error)}`,
         detail: "",
         durationMs: Date.now() - task.startedAt,
       });
@@ -126,6 +143,26 @@ export function createVerifyRouter(deps: VerifyRouterDeps): Router {
     });
     res.json({ taskId: id });
   });
+
+  if (ocr) {
+    router.post("/ocr", ocr.requireAdmin, (req, res) => {
+      const project = readOcrProject(req.body);
+      // Express 会跳过非 JSON 正文。请求确实有正文时，不能误用无项目的默认厂商。
+      const bodySupplied = req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"]) > 0;
+      if (project === null || (req.body === undefined && bodySupplied)) {
+        res.status(400).json({ error: "OCR 验证仅接受可选的完整项目路径 project" });
+        return;
+      }
+      if (store.isRunning("ocr")) {
+        res.status(409).json({ error: "已有 OCR 验证正在执行，请等待完成" });
+        return;
+      }
+      const { id } = submit("ocr", async (taskId) => {
+        store.finish(taskId, await ocr.verify(project));
+      });
+      res.json({ taskId: id });
+    });
+  }
 
   // 机器人列表：只返回脱敏 key 与关联仓库，原始 webhook 地址不下发浏览器。
   router.get("/wecom-bots", async (_req, res) => {
@@ -162,13 +199,25 @@ export function createVerifyRouter(deps: VerifyRouterDeps): Router {
     res.json({ taskId: id });
   });
 
-  router.get("/tasks/:id", (req, res) => {
+  router.get("/tasks/:id", (req, res, next) => {
     const task = store.get(String(req.params.id ?? ""));
     if (!task) {
       res.status(404).json({ error: "任务不存在或已过期" });
       return;
     }
-    res.json(task);
+    if (task.kind !== "ocr") {
+      res.json(task);
+      return;
+    }
+    // OCR 任务 ID 并非授权凭据，查询始终复用与提交相同的管理员门禁。
+    if (!ocr) {
+      res.status(404).json({ error: "任务不存在或已过期" });
+      return;
+    }
+    res.locals.ocrTask = task;
+    return ocr.requireAdmin(req, res, next);
+  }, (_req, res) => {
+    res.json(res.locals.ocrTask);
   });
 
   return router;

@@ -4,6 +4,7 @@
  * 该端口是「评审记录」读写与统计的唯一入口，由 infrastructure/sqlite 实现。
  * domain 层零 IO：不引入数据库类型，只声明契约。
  */
+import type { ReviewEngine } from "./review-prompt.ts";
 
 /**
  * 一次评审消耗的模型 token。
@@ -37,12 +38,9 @@ export interface ReviewRecord {
   committerName: string;
   changeCount: number;
   batchCount: number;
-  /**
-   * AI 给出的总分；`null` 表示未解析出分数。
-   *
-   * 必须与真实的 0 分区分：`parseReviewScore` 无匹配时返回 0（见
-   * `src/domain/review-rules.ts`），把「未解析出分数」直接存 0 会把平均值拉低。
-   */
+  /** 实际执行引擎。旧写入方未提供时按 Pi 保存，读取已落库记录时始终返回。 */
+  reviewEngine?: ReviewEngine;
+  /** 评审总分。真实的 0 分有效，无法得到总分时返回 `null`。 */
   score: number | null;
   durationMs: number;
   result: "success" | "failed";

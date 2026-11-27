@@ -39,6 +39,13 @@ test("项目设置支持仓库上下文和自动合并独立部分更新", () =>
   assert.deepEqual(validateProjectSettings(patches, ["group/app", "legacy-short"], "rules"), patches);
 });
 
+test("OCR 评审引擎设置只接受已关联的完整项目路径", () => {
+  assert.deepEqual(validateProjectSettings([{ project: "Group/App", reviewEngine: "ocr" }], ["group/app"], "rules"), [
+    { project: "group/app", reviewEngine: "ocr" },
+  ]);
+  assert.throws(() => validateProjectSettings([{ project: "app", reviewEngine: "ocr" }], ["app"], "rules"), /完整项目/);
+});
+
 test("自动合并只允许完整项目路径，specified 模式要求分支至少一项且精确去重", () => {
   const invalid: Array<[ProjectReviewSettingPatch, RegExp]> = [
     [{ project: "app", autoMergePolicy: enabledPolicy }, /完整.*namespace\/project|完整项目/],

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
 import { createApp } from "../../../src/interfaces/http/app.ts";
-import { createAuthMiddleware } from "../../../src/interfaces/http/auth-middleware.ts";
+import { createAuthMiddleware, createRequireAdmin } from "../../../src/interfaces/http/auth-middleware.ts";
 import { createAuthRouter } from "../../../src/interfaces/http/api/auth.ts";
 import { createVerifyRouter } from "../../../src/interfaces/http/api/verify.ts";
 import { openDatabase } from "../../../src/infrastructure/sqlite/database.ts";
@@ -13,12 +13,14 @@ import { createAdminRepository } from "../../../src/infrastructure/sqlite/admin-
 import { createSilentLogger } from "../../../src/shared/logger.ts";
 import { deriveToken } from "../../../src/shared/crypto.ts";
 import { createFeatureVerifier, type FeatureVerifier, type VerifyOutcome, type VerifyWecomOptions } from "../../../src/application/feature-verifier.ts";
+import type { OcrSelfTestOutcome } from "../../../src/application/ocr-self-test.ts";
 import { createWecomContactRepository } from "../../../src/infrastructure/sqlite/wecom-contact-repo.ts";
 import { loadConfig } from "../../../src/shared/config.ts";
 
 const AUTH_SALT = "test-auth-salt";
 const ADMIN = "admin";
 const ADMIN_PASSWORD = "admin-password";
+const MEMBER = "verify-member";
 
 /** 可控制结果的验证器替身；记录调用参数便于断言。 */
 function fakeVerifier(options: {
@@ -46,19 +48,20 @@ function fakeVerifier(options: {
 }
 
 /** 真实 SQLite 内存库 + 真实 Express 应用。 */
-function buildHarness(verifier: FeatureVerifier) {
+function buildHarness(verifier: FeatureVerifier, verifyOcr?: (project?: string) => Promise<OcrSelfTestOutcome>) {
   const db = openDatabase(":memory:");
   const admins = createAdminRepository(db, AUTH_SALT, ADMIN);
   admins.ensureInitialAdmin(ADMIN, ADMIN_PASSWORD);
+  if (verifyOcr) admins.create(MEMBER, "member-password");
   const authMiddleware = createAuthMiddleware({ admins, authSalt: AUTH_SALT });
   const app = createApp({
     logger: createSilentLogger(),
     enqueue: () => {},
     publicApiRoutes: { "/api/auth": createAuthRouter({ admins, authSalt: AUTH_SALT, authMiddleware }) },
     authMiddleware,
-    apiRoutes: { "/api/verify": createVerifyRouter({ verifier }) },
+    apiRoutes: { "/api/verify": createVerifyRouter({ verifier, ...(verifyOcr ? { ocr: { verify: verifyOcr, requireAdmin: createRequireAdmin() } } : {}) }) },
   });
-  return { app, token: deriveToken(ADMIN, AUTH_SALT) };
+  return { app, token: deriveToken(ADMIN, AUTH_SALT), memberToken: deriveToken(MEMBER, AUTH_SALT) };
 }
 
 async function withServer<T>(app: Express, run: (base: string) => Promise<T>): Promise<T> {
@@ -86,11 +89,11 @@ function get(token: string, base: string, path: string): Promise<Response> {
 }
 
 /** 轮询任务直到结束（测试里验证器是即时的，通常一两次即可）。 */
-async function waitTask(token: string, base: string, taskId: string): Promise<{ status: string; message: string; detail: string }> {
+async function waitTask(token: string, base: string, taskId: string): Promise<{ kind: string; status: string; message: string; detail: string; ocr?: OcrSelfTestOutcome["ocr"] }> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     const res = await get(token, base, `/api/verify/tasks/${taskId}`);
     assert.equal(res.status, 200);
-    const task = (await res.json()) as { status: string; message: string; detail: string };
+    const task = (await res.json()) as Awaited<ReturnType<typeof waitTask>>;
     if (task.status !== "running") return task;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -128,6 +131,108 @@ test("AI 验证失败时任务状态为 failed，不是 500", async () => {
     const task = await waitTask(token, base, taskId);
     assert.equal(task.status, "failed");
     assert.match(task.message, /空文本/);
+  });
+});
+
+test("OCR 验证仅允许管理员提交和轮询，接受可选的完整项目路径", async () => {
+  const { verifier } = fakeVerifier({});
+  const calls: Array<string | undefined> = [];
+  const payload: NonNullable<OcrSelfTestOutcome["ocr"]> = {
+    project: "group/sub/repo", provider: "mock-provider", model: "mock-model", verdict: "detected",
+    fixture: { path: "fixture.ts", line: 7, baseSha: "a".repeat(40), headSha: "b".repeat(40) },
+    filesReviewed: 1, complete: true, score: 95,
+    findings: [{ path: "fixture.ts", line: 7, severity: "high", message: "synthetic finding" }], rawCommentsFormat: "array",
+  };
+  const { app, token, memberToken } = buildHarness(verifier, async (project) => {
+    calls.push(project);
+    return { success: true, message: "OCR 通过", detail: "摘要", durationMs: 20, ocr: payload };
+  });
+  await withServer(app, async (base) => {
+    const path = "/api/verify/ocr";
+    assert.equal((await fetch(`${base}${path}`, { method: "POST" })).status, 401);
+    assert.equal((await post(memberToken, base, path, { project: "group/sub/repo" })).status, 403);
+    assert.deepEqual(calls, []);
+
+    const submitted = await post(token, base, path, { project: " group/sub/repo " });
+    assert.equal(submitted.status, 200);
+    const { taskId } = (await submitted.json()) as { taskId: string };
+    const taskPath = `/api/verify/tasks/${taskId}`;
+    assert.equal((await get(memberToken, base, taskPath)).status, 403);
+    const result = await waitTask(token, base, taskId);
+    assert.equal(result.kind, "ocr");
+    assert.equal(result.status, "success");
+    assert.equal(result.message, "OCR 通过");
+    assert.deepEqual(result.ocr, payload);
+
+    const defaultRequest = await fetch(`${base}${path}`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(defaultRequest.status, 200);
+    assert.deepEqual(calls, ["group/sub/repo", undefined]);
+    const ai = await post(memberToken, base, "/api/verify/ai");
+    assert.equal(ai.status, 200);
+    const aiBody = (await ai.json()) as { taskId: string };
+    assert.equal((await waitTask(memberToken, base, aiBody.taskId)).status, "success");
+  });
+});
+
+test("OCR 验证拒绝自定义代码、URL 和非完整项目路径", async () => {
+  const { verifier } = fakeVerifier({});
+  let calls = 0;
+  const { app, token } = buildHarness(verifier, async () => {
+    calls++;
+    return { success: true, message: "OCR 通过", detail: "", durationMs: 0 };
+  });
+  await withServer(app, async (base) => {
+    for (const payload of [[], { code: "irrelevant" }, { url: "https://example.com" }, { project: null },
+      { project: 12 }, { project: "" }, { project: "repo" }, { project: "group//repo" }, { project: "../repo" },
+      { project: "group/repo", unknown: true }]) {
+      assert.equal((await post(token, base, "/api/verify/ocr", payload)).status, 400, JSON.stringify(payload));
+    }
+    const nonJson = await fetch(`${base}/api/verify/ocr`, {
+      method: "POST", headers: { "Content-Type": "text/plain", Authorization: `Bearer ${token}` }, body: "group/repo",
+    });
+    assert.equal(nonJson.status, 400);
+    assert.equal(calls, 0);
+  });
+});
+
+test("OCR 并发占用只在该任务结束后释放，不受同时运行的 AI 验证影响", async () => {
+  let completeAi!: (result: VerifyOutcome) => void;
+  const aiResult = new Promise<VerifyOutcome>((resolve) => { completeAi = resolve; });
+  let completeOcr!: (result: OcrSelfTestOutcome) => void;
+  const ocrResult = new Promise<OcrSelfTestOutcome>((resolve) => { completeOcr = resolve; });
+  const { verifier } = fakeVerifier({ ai: () => aiResult });
+  const { app, token } = buildHarness(verifier, () => ocrResult);
+  await withServer(app, async (base) => {
+    const ai = await post(token, base, "/api/verify/ai");
+    const ocr = await post(token, base, "/api/verify/ocr");
+    assert.equal(ai.status, 200);
+    assert.equal(ocr.status, 200);
+    const { taskId: aiTaskId } = (await ai.json()) as { taskId: string };
+    const { taskId: ocrTaskId } = (await ocr.json()) as { taskId: string };
+    assert.equal((await post(token, base, "/api/verify/ai")).status, 409);
+    assert.equal((await post(token, base, "/api/verify/ocr")).status, 409);
+
+    completeAi({ success: true, message: "AI 通过", detail: "", durationMs: 10 });
+    await waitTask(token, base, aiTaskId);
+    assert.equal((await post(token, base, "/api/verify/ocr")).status, 409);
+
+    completeOcr({ success: false, message: "OCR 验证失败", detail: "", durationMs: 20 });
+    assert.equal((await waitTask(token, base, ocrTaskId)).status, "failed");
+    assert.equal((await post(token, base, "/api/verify/ocr")).status, 200);
+  });
+});
+
+test("OCR 验证器意外抛错时返回脱敏的失败结果并释放占用", async () => {
+  const { verifier } = fakeVerifier({});
+  const { app, token } = buildHarness(verifier, async () => { throw new Error("sensitive upstream error detail"); });
+  await withServer(app, async (base) => {
+    const res = await post(token, base, "/api/verify/ocr");
+    assert.equal(res.status, 200);
+    const { taskId } = (await res.json()) as { taskId: string };
+    const task = await waitTask(token, base, taskId);
+    assert.equal(task.status, "failed");
+    assert.doesNotMatch(JSON.stringify(task), /sensitive upstream error detail/);
+    assert.equal((await post(token, base, "/api/verify/ocr")).status, 200);
   });
 });
 

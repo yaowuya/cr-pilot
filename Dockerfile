@@ -93,6 +93,23 @@ RUN if [ -n "${APK_MIRROR}" ]; then \
     fi \
     && apk add --no-cache su-exec git ca-certificates
 
+# OCR 的评审覆盖率来自版本化 manifest。升级 CLI 时同步核对 JSON 契约并更新校验和。
+# 平台 npm 包包含与 GitHub Release 相同的二进制，可通过镜像源下载并校验原始二进制。
+ARG TARGETARCH
+ARG OCR_NPM_REGISTRY=https://registry.npmmirror.com
+RUN arch="${TARGETARCH:-$(uname -m)}"; \
+    case "$arch" in \
+      amd64|x86_64) platform=x64; checksum=17ee32cdf0af6c006a199d758defb6c2abe05ec5b4d164df3a703c0208d5155e ;; \
+      arm64|aarch64) platform=arm64; checksum=873b2c2e0ece1a9db19104f6e2b2a8caebbb2c6db0f09d8978c43d50a215d8e6 ;; \
+      *) printf 'No bundled OCR binary for %s\n' "$arch"; exit 0 ;; \
+    esac \
+    && archive="$(mktemp)" \
+    && wget -q -T 40 -O "$archive" "${OCR_NPM_REGISTRY%/}/@alibaba-group/ocr-linux-${platform}/-/ocr-linux-${platform}-1.14.3.tgz" \
+    && tar -xOzf "$archive" package/bin/opencodereview > /usr/local/bin/ocr \
+    && printf '%s  /usr/local/bin/ocr\n' "$checksum" | sha256sum -c - \
+    && chmod 755 /usr/local/bin/ocr \
+    && rm -f "$archive"
+
 # 启动脚本：以 root 修正卷属主后降权运行。
 #
 # 为什么需要它：具名卷首次挂载到已存在目录时，Docker 会复制目录**内容**，

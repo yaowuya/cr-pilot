@@ -24,12 +24,12 @@ test("项目开关独立且跨 Prompt 共享，规范仍归 Prompt", () => {
     assert.equal(repo.isRepositoryContextEnabled!("group/b"), false);
     assert.equal(repo.isRepositoryContextEnabled!("a"), false, "新开关不得使用短名匹配");
     assert.equal(repo.isRepositoryContextEnabled!("other/a"), false);
-    assert.deepEqual(b.projectSettings, [{ project: "Group/A", repositoryContextEnabled: true, autoMergePolicy: defaultProjectAutoMergePolicy() }]);
+    assert.deepEqual(b.projectSettings, [{ project: "Group/A", repositoryContextEnabled: true, reviewEngine: "pi", autoMergePolicy: defaultProjectAutoMergePolicy() }]);
     assert.equal(repo.list()[0].hasRepositoryStandards, true);
     assert.equal("repositoryStandards" in repo.list()[0], false);
     assert.deepEqual(repo.listProjectSettings!(), [
-      { project: "group/a", repositoryContextEnabled: true, autoMergePolicy: defaultProjectAutoMergePolicy() },
-      { project: "group/b", repositoryContextEnabled: false, autoMergePolicy: defaultProjectAutoMergePolicy() },
+      { project: "group/a", repositoryContextEnabled: true, reviewEngine: "pi", autoMergePolicy: defaultProjectAutoMergePolicy() },
+      { project: "group/b", repositoryContextEnabled: false, reviewEngine: "pi", autoMergePolicy: defaultProjectAutoMergePolicy() },
     ]);
   } finally { db.close(); }
 });
@@ -41,8 +41,8 @@ test("旧短项目名开关可保存，并仅对命中该 Prompt 的 MR 项目�
     const p = repo.create({ ...input("legacy"), projects:["auto-ops","cw-auto-ops"],
       projectSettings:[{project:"auto-ops",repositoryContextEnabled:true}] });
     assert.deepEqual(p.projectSettings,[
-      {project:"auto-ops",repositoryContextEnabled:true,autoMergePolicy:defaultProjectAutoMergePolicy()},
-      {project:"cw-auto-ops",repositoryContextEnabled:false,autoMergePolicy:defaultProjectAutoMergePolicy()},
+      {project:"auto-ops",repositoryContextEnabled:true,reviewEngine:"pi",autoMergePolicy:defaultProjectAutoMergePolicy()},
+      {project:"cw-auto-ops",repositoryContextEnabled:false,reviewEngine:"pi",autoMergePolicy:defaultProjectAutoMergePolicy()},
     ]);
     assert.equal(repo.isRepositoryContextEnabled!("team/auto-ops"),true);
     assert.equal(repo.isRepositoryContextEnabled!(" TEAM/AUTO-OPS "),true);

@@ -176,10 +176,23 @@
                       <strong>{{ project }}</strong>
                       <el-tag v-if="!canEnableAutoMerge(project)" size="small" type="info" effect="plain">短项目名</el-tag>
                     </header>
+                    <div class="project-execution-row review-engine-setting">
+                      <div class="project-setting__name"><strong>评审引擎</strong>
+                        <span v-if="!canEnableAutoMerge(project)" class="cell-muted">Open Code Review 需要完整项目路径</span>
+                        <span v-else-if="form.reviewEngines[projectKey(project)] === 'ocr'" class="cell-muted">Open Code Review 使用固定的 MR 仓库快照，并回写评审评论</span>
+                      </div>
+                      <el-select v-model="form.reviewEngines[projectKey(project)]" class="review-engine-select"
+                        :aria-label="`${project} 评审引擎`" placeholder="状态待加载"
+                        :disabled="!canEnableAutoMerge(project) || form.reviewEngines[projectKey(project)] === undefined">
+                        <el-option label="Pi" value="pi" />
+                        <el-option label="Open Code Review" value="ocr" />
+                      </el-select>
+                    </div>
                     <div class="project-execution-row">
                       <div class="project-setting__name"><strong>拉取仓库上下文</strong>
                         <span v-if="!canEnableRepositoryContext(project)" class="cell-muted">项目名包含不允许的字符，无法开启</span>
                         <span v-else-if="form.projectStates[projectKey(project)] === undefined" class="cell-muted">状态待加载</span>
+                        <span v-else-if="form.reviewEngines[projectKey(project)] === 'ocr'" class="cell-muted">此配置用于 Pi 评审</span>
                         <span v-else class="cell-muted">{{ form.projectStates[projectKey(project)] ? '读取相关仓库文件辅助评审' : '仅使用本次 diff 评审' }}</span>
                       </div>
                       <el-switch :model-value="form.projectStates[projectKey(project)] === true" :aria-label="`${project} 拉取仓库进行 Review`"
@@ -191,6 +204,7 @@
                         <div class="project-setting__name"><h3>自动合并</h3>
                           <span v-if="!canEnableAutoMerge(project)" class="cell-muted">仅完整 namespace/project 可开启，短项目名不会模糊匹配</span>
                           <span v-else-if="!form.autoMergeKnown[projectKey(project)]" class="cell-muted">状态待加载</span>
+                          <span v-else-if="form.reviewEngines[projectKey(project)] === 'ocr'" class="cell-muted">当前所选引擎仅评审及回写评论</span>
                           <span v-else-if="!isAdmin" class="cell-muted">只有管理员可以修改自动合并策略，当前为只读</span>
                           <span v-else class="cell-muted">达到门槛并通过固定安全检查后，由服务端请求 GitLab 合并</span>
                         </div>
@@ -828,6 +842,15 @@ onBeforeUnmount(() => { mounted = false; listGeneration.invalidate(); editorGene
 }
 
 .project-setting :deep(.el-switch) {
+  flex-shrink: 0;
+}
+
+.review-engine-setting {
+  margin-bottom: 14px;
+}
+
+.review-engine-select {
+  width: 180px;
   flex-shrink: 0;
 }
 

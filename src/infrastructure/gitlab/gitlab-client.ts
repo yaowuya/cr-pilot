@@ -459,14 +459,9 @@ export function createGitlabClient(options: CreateGitlabClientOptions): GitlabCl
     },
 
     async getLatestHeadSha(projectId, iid, gitlabUrl = "", gitlabToken = "") {
-      // 直接读 versions 而不复用对象方法：`getFileRaw`/`getLatestHeadSha` 可能在
-      // 解构后单独传递（追踪器只依赖这两个方法），此时 `this` 不可靠。
-      const payload = await request<{ head_commit_sha?: string }>(
-        gitlabUrl,
-        gitlabToken,
-        `/api/v4/projects/${projectId}/merge_requests/${iid}/versions`,
-      );
-      return payload.head_commit_sha ?? "";
+      // 新提交可能先到达 MR，待 GitLab 生成 diff 后 versions 才更新。回写校验需要实时 head。
+      const { sha } = await readMergeRequest(projectId, iid, gitlabUrl, gitlabToken);
+      return isGitObjectId(sha) ? sha : "";
     },
 
     async getMergeRequestTrackingState(projectId, iid, gitlabUrl = "", gitlabToken = "") {

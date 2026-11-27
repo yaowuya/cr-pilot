@@ -5,7 +5,9 @@
  * 字段为 snake_case 的地方保留后端原样，避免前后端各用一套命名造成映射错误。
  */
 
-/** 评审明细记录。`score` 为 null 表示未解析出分数，与 0 分不同。 */
+export type ReviewEngine = "pi" | "ocr";
+
+/** 评审明细记录。`score` 为 null 表示未获得分数，与 0 分不同。 */
 export interface ReviewRecord {
   projectId: number;
   projectName: string;
@@ -14,6 +16,7 @@ export interface ReviewRecord {
   changeCount: number;
   batchCount: number;
   score: number | null;
+  reviewEngine?: ReviewEngine;
   durationMs: number;
   result: "success" | "failed";
   errorMessage: string | null;
@@ -105,6 +108,8 @@ export interface ProjectAutoMergePolicy {
 export interface ProjectReviewSetting {
   project: string;
   repositoryContextEnabled: boolean;
+  /** 旧服务响应可缺省；默认使用 Pi。 */
+  reviewEngine?: ReviewEngine;
   /** 旧服务响应可缺省；前端按默认关闭处理。 */
   autoMergePolicy?: ProjectAutoMergePolicy;
 }

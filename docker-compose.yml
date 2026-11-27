@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        OCR_NPM_REGISTRY: ${OCR_NPM_REGISTRY:-https://registry.npmmirror.com}
     container_name: cr-pilot
     # 宿主机端口 → 容器端口。
     #

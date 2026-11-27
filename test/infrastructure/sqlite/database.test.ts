@@ -127,6 +127,7 @@ test("旧库升级补齐 token 五列，历史记录保持 NULL 且可重复升�
       }
       const row = first.prepare("SELECT * FROM review_records").get() as Record<string, unknown>;
       assert.equal(row.score, 88, "历史数据不能被改写");
+      assert.equal(row.review_engine, "pi", "历史评审使用 Pi");
       for (const column of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens"]) {
         assert.equal(row[column], null, `${column} 必须是 NULL：历史用量不可回填，不能伪造为 0`);
       }

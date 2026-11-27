@@ -105,13 +105,13 @@ function buildFilter(query: AdoptionStatsQuery, prefix: string): { conditions: s
 }
 
 /**
- * 高分评审记录的排除条件（记录侧）。
+ * Pi 高分评审记录的排除条件（记录侧）。
  *
- * 用 `COALESCE(score, -1) < 阈值` 而不是 `score < 阈值`：SQLite 里 NULL 参与
- * 比较结果为 NULL（视为不成立），直接写 `score < 95` 会把**没有分数**的记录
- * 一起排除掉。缺分不代表高分，必须仍然计入。
+ * 缺分建议仍计入采纳统计。OCR 的分数由严重级别扣分计算，单条高危建议可得 95 分，
+ * 因此只对 Pi 应用这个阈值。
  */
-const HIGH_SCORE_KEPT = `COALESCE(r.score, -1) < ${ADOPTION_EXCLUDED_SCORE_AT_LEAST}`;
+const PI_HIGH_SCORE_EXCLUDED = `COALESCE(r.review_engine, 'pi') = 'pi' AND COALESCE(r.score, -1) >= ${ADOPTION_EXCLUDED_SCORE_AT_LEAST}`;
+const HIGH_SCORE_KEPT = `NOT (${PI_HIGH_SCORE_EXCLUDED})`;
 
 /** 把条件数组拼成 WHERE 子句；空数组返回空串，避免调用方各自三元判断。 */
 function whereOf(conditions: readonly string[]): string {
@@ -325,7 +325,7 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
       // 条件数组直接复用，避免翻解析已拼好的 SQL（顺序变化会静默错配参数）。
       const excludedConditions = [
         ...filter.conditions,
-        "r.score >= ?",
+        PI_HIGH_SCORE_EXCLUDED,
         `(f.outcome IN ${COUNTABLE_OUTCOMES} OR (f.outcome = 'pending' AND f.code_fingerprint <> ''))`,
       ];
       const excludedRow = db
@@ -335,7 +335,7 @@ export function createReviewFindingRepository(db: DatabaseSync): ReviewFindingRe
            LEFT JOIN review_records r ON r.id = f.record_id
            ${whereOf(excludedConditions)}`,
         )
-        .get(...filter.params, ADOPTION_EXCLUDED_SCORE_AT_LEAST) as unknown as { n: number } | undefined;
+        .get(...filter.params) as unknown as { n: number } | undefined;
 
       const tracked = Number(totals.tracked ?? 0);
       const adopted = Number(totals.adopted ?? 0);
