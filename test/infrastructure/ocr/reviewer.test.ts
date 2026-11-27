@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { LlmApiKind, ResolvedLlmTarget } from "../../../src/domain/llm-provider.ts";
@@ -135,6 +136,64 @@ test("OCR 使用固定范围的独立工作目录并在任务结束后清理", a
   assert.deepEqual(result.diagnostics?.exclusionCounts, { default_path: 1 });
   assert.equal(result.diagnostics?.session, "unavailable");
   await assert.rejects(access(taskDir), { code: "ENOENT" });
+});
+
+test("OCR 仅为配置的 GitLab MR 保存一次受限的排障记录", async (t) => {
+  const traceRoot = await mkdtemp(join(tmpdir(), "cr-pilot-ocr-traces-test-"));
+  t.after(() => rm(traceRoot, { recursive: true, force: true }));
+  const sessionId = "12345678-1234-4321-8234-123456789abc";
+  const report = { ...validReport, session_id: sessionId };
+  const reviewer = createOcrReviewer({
+    env: {
+      OCR_DIAGNOSTIC_TARGET: "https://gitlab.example.com/42/17",
+      OCR_DIAGNOSTIC_DIRECTORY: traceRoot,
+      OCR_LLM_URL: "https://models.example.com/v1/chat/completions",
+      OCR_LLM_TOKEN: "ocr-credential", OCR_LLM_MODEL: "test-model",
+    },
+    gitRunner: async (args) => Buffer.from(args[0] === "merge-base" ? baseSha : ""),
+    ocrRunner: async (args, { env }) => {
+      await writeFile(args[args.indexOf("--output") + 1], JSON.stringify(report));
+      const dir = join(String(env.HOME), ".opencodereview", "sessions", "repo");
+      await mkdir(dir, { recursive: true });
+      const events = [
+        { type: "session_start", sessionId },
+        { type: "llm_response", sessionId, taskType: "main_task",
+          content: "A missing state check may crash the handler. token: glpat-placeholder12345",
+          tool_calls: [{ name: "task_done" }],
+        },
+        { type: "session_end", sessionId },
+      ];
+      await writeFile(join(dir, `${sessionId}.jsonl`), events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+      return Buffer.alloc(0);
+    },
+  });
+  const input = { snapshot, token: "test-only", signal: new AbortController().signal };
+  const excluded = await reviewer.review({ ...input, mr: { projectId: 42, iid: 18 } });
+  assert.equal(excluded.troubleshooting, undefined);
+  const otherInstance = await reviewer.review({
+    ...input, mr: { projectId: 42, iid: 17 },
+    snapshot: { ...snapshot, gitlabUrl: "https://another.example.com", repositoryUrl: "https://another.example.com/team/service.git" },
+  });
+  assert.equal(otherInstance.troubleshooting, undefined);
+  const otherPrefix = await reviewer.review({
+    ...input, mr: { projectId: 42, iid: 17 },
+    snapshot: { ...snapshot, gitlabUrl: "https://gitlab.example.com/second", repositoryUrl: "https://gitlab.example.com/second/team/service.git" },
+  });
+  assert.equal(otherPrefix.troubleshooting, undefined);
+  const exact = await reviewer.review({ ...input, mr: { projectId: 42, iid: 17 } });
+  assert.equal(exact.troubleshooting?.status, "written");
+  assert.match(exact.troubleshooting.id, /^cr-pilot-ocr-detail-[a-zA-Z0-9]+$/);
+  const directory = join(traceRoot, exact.troubleshooting.id);
+  const file = join(directory, "trace.json");
+  const trace = await readFile(file, "utf8");
+  assert.match(trace, /A missing state check may crash the handler/);
+  assert.doesNotMatch(trace, /glpat-placeholder12345|tool_calls|ocr-credential/);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+  }
+  const repeated = await reviewer.review({ ...input, mr: { projectId: 42, iid: 17 } });
+  assert.equal(repeated.troubleshooting, undefined);
 });
 
 test("Git merge-base 与快照不同则不调用 OCR", async () => {

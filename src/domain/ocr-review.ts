@@ -38,12 +38,16 @@ export interface OcrReviewResult {
   unreviewedPaths: string[];
   tokenUsage?: TokenUsage;
   diagnostics?: OcrDiagnostics;
+  /** 普通日志只记录临时排障文件标识或写入状态。 */
+  troubleshooting?: { status: "written"; id: string } | { status: "failed" };
 }
 
 /** 对固定 GitLab MR 快照运行一次 OCR 并释放该任务的临时资源。 */
 export interface OcrReviewer {
   review(input: {
     snapshot: RepositoryReviewSnapshot;
+    /** 用于匹配单个 GitLab 实例、项目和 MR 的排障开关。 */
+    mr?: { projectId: number; iid: number };
     /** GitLab 凭据只用于抓取，不交给 OCR 模型进程。 */
     token: string;
     /** 由评审任务控制的运行时限。 */

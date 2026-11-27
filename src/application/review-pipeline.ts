@@ -673,7 +673,9 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           changeCount = snapshot.changes.length;
           batchCount = 1;
           const signal = AbortSignal.timeout(timeoutMs);
-          const output = await deps.ocrReviewer.review({ snapshot, token: task.gitlabToken ?? "", signal, llmTarget });
+          const output = await deps.ocrReviewer.review({
+            snapshot, token: task.gitlabToken ?? "", signal, llmTarget, mr: { projectId: task.projectId, iid: task.iid },
+          });
           accumulateUsage(output.tokenUsage);
           const { complete } = output;
           const report = buildOcrReport({ ...output, complete });
@@ -684,6 +686,7 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             变更文件数: changeCount, 已评审文件数: output.filesReviewed, 完整: complete,
             映射后建议数: output.findings.length, 去重后建议数: report.findings.length,
             引擎诊断: output.diagnostics,
+            排障记录: output.troubleshooting,
           });
 
           const { refs } = snapshot;

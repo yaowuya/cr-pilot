@@ -66,6 +66,88 @@ test("OCR 只返回脱敏后的规则排除、警告、建议提交与结果数�
   });
 });
 
+test("OCR 详细诊断只采集未提交建议的结束轮次可见正文", async (t) => {
+  const workspace = await workspaceFor(t);
+  const visibleText = "  审核正文\n  保留原始空格。  ";
+  const taskDone = { name: "task_done", arguments: '{"state":"DONE"}' };
+  await sessionFile(workspace, [
+    event("session_start"),
+    event("llm_request", { taskType: "main_task", content: "private prompt", tool_calls: [taskDone] }),
+    event("llm_response", { taskType: "plan_task", content: "private plan", tool_calls: [taskDone] }),
+    event("llm_response", { taskType: "main_task", content: "not the ending turn", tool_calls: [] }),
+    event("llm_response", { taskType: "main_task", content: "already submitted", tool_calls: [taskDone, { name: "code_comment" }] }),
+    event("llm_response", { taskType: "main_task", content: visibleText, tool_calls: [taskDone],
+      reasoning_content: "private reasoning", native_payload: { text: "private native payload" }, filePath: "private path" }),
+    event("tool_call", { taskType: "main_task", tool_name: "task_done", content: "private tool content", tool_calls: [taskDone] }),
+    event("session_end"),
+  ]);
+  const captured: Array<[string, boolean]> = [];
+  const result = await readOcrDiagnostics(report, workspace, (text, truncated) => captured.push([text, truncated]));
+  assert.deepEqual(captured, [[visibleText, false]]);
+  assert.equal(result.unsubmittedTextCompletions, 1);
+  assert.equal(result.session, "complete");
+});
+
+test("OCR 详细诊断限制正文长度和条数，同时保留完整的匹配计数", async (t) => {
+  const workspace = await workspaceFor(t);
+  const longPrefix = "中".repeat(3999);
+  await sessionFile(workspace, [
+    event("session_start"),
+    ...[`${longPrefix}🚀末尾`, "第二条", "第三条", "第四条"].map((content) =>
+      event("llm_response", { taskType: "main_task", content, tool_calls: [{ name: "task_done" }] })),
+    event("session_end"),
+  ]);
+  const captured: Array<[string, boolean]> = [];
+  const result = await readOcrDiagnostics(report, workspace, (text, truncated) => {
+    captured.push([text, truncated]);
+    if (captured.length === 1) throw new Error("日志接收方故障");
+  });
+  assert.equal(captured.length, 3);
+  assert.ok(captured[0][0] === longPrefix);
+  assert.equal(captured[0][1], true);
+  assert.deepEqual(captured.slice(1), [["第二条", false], ["第三条", false]]);
+  assert.equal(result.unsubmittedTextCompletions, 4);
+  assert.equal(result.session, "complete");
+});
+
+test("OCR 在截断前脱敏正文，单条脱敏失败时跳过该条", async (t) => {
+  const workspace = await workspaceFor(t);
+  const prefix = "中".repeat(3991);
+  const credential = "demo-sensitive-credential";
+  const replacement = "[已脱敏]";
+  await sessionFile(workspace, [
+    event("session_start"),
+    ...[`${prefix}${credential}正文足够长，需要截断。`, "脱敏失败", "剩余正文"].map((content) =>
+      event("llm_response", { taskType: "main_task", content, tool_calls: [{ name: "task_done" }] })),
+    event("session_end"),
+  ]);
+  const captured: Array<[string, boolean]> = [];
+  const result = await readOcrDiagnostics(report, workspace, (text, truncated) => captured.push([text, truncated]), (text) => {
+    if (text === "脱敏失败") throw new Error("脱敏失败");
+    return text.replaceAll(credential, replacement);
+  });
+  assert.equal(captured.length, 2);
+  assert.equal(captured[0][0].slice(prefix.length), `${replacement}正文足够`);
+  assert.equal(captured[0][0].length, 4000);
+  assert.equal(captured[0][1], true);
+  assert.deepEqual(captured[1], ["剩余正文", false]);
+  assert.equal(result.unsubmittedTextCompletions, 3);
+});
+
+test("OCR 在会话损坏或结束记录重复时不采集任何正文", async (t) => {
+  const workspace = await workspaceFor(t);
+  const matchingTurn = event("llm_response", { taskType: "main_task", content: "private text", tool_calls: [{ name: "task_done" }] });
+  for (const endRecords of [[], [event("session_end"), event("session_end")], [event("session_end", { sessionId: "different-session" })]]) {
+    await sessionFile(workspace, [event("session_start"), matchingTurn, ...endRecords]);
+    let delivered = 0;
+    let redacted = 0;
+    const result = await readOcrDiagnostics(report, workspace, () => { delivered++; }, (text) => { redacted++; return text; });
+    assert.equal(delivered, 0);
+    assert.equal(redacted, 0);
+    assert.equal(result.session, "incomplete");
+  }
+});
+
 test("OCR 找不到会话时只使用报告中的可验证计数", async (t) => {
   const workspace = await workspaceFor(t);
   const result = await readOcrDiagnostics({ status: "private model response", comments: [{}], tool_calls: { by_tool: {} } }, workspace);

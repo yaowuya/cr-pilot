@@ -9,6 +9,7 @@ import type { TokenUsage } from "../../domain/review-record.ts";
 import type { Change } from "../../domain/review-task.ts";
 import { buildGitEnvironment, createGitRunner, GitProcessError, type GitRunner } from "../git/git-runner.ts";
 import { readOcrDiagnostics } from "./diagnostics.ts";
+import { redactCompletionText, writeOcrTroubleshootingTrace } from "./troubleshooting.ts";
 
 const MAX_REPORT_BYTES = 8 * 1024 * 1024;
 const MAX_WORKSPACE_BYTES = 512 * 1024 * 1024;
@@ -202,8 +203,11 @@ export function createOcrReviewer(options: OcrReviewerOptions = {}): OcrReviewer
   const ocrRunner = options.ocrRunner ?? createGitRunner({ executable: env.OCR_EXECUTABLE?.trim() || "ocr" });
   const rule = env.OCR_RULE_FILE?.trim();
   const ruleFile = rule ? resolve(rule) : undefined;
+  const diagnosticTarget = env.OCR_DIAGNOSTIC_TARGET?.trim();
+  const diagnosticDirectory = env.OCR_DIAGNOSTIC_DIRECTORY?.trim();
+  let troubleshootingCaptured = false;
   return {
-    async review({ snapshot, token, signal, llmTarget }) {
+    async review({ snapshot, token, signal, llmTarget, mr }) {
       signal.throwIfAborted();
       const modelEnv = buildModelEnvironment(llmTarget, env);
       const url = validateRepositoryUrl(snapshot.repositoryUrl, snapshot.gitlabUrl);
@@ -258,9 +262,26 @@ export function createOcrReviewer(options: OcrReviewerOptions = {}): OcrReviewer
         const result = parseOcrReport(report, snapshot);
         workspace.signal.throwIfAborted();
         const complete = result.complete && successfulExit && !signal.aborted;
-        // 诊断来自临时会话，读取失败或跨过评审时限都不改变已经验证的结果。
-        const diagnostics = await readOcrDiagnostics(report, root).catch(() => undefined);
-        return { ...result, complete, ...(diagnostics ? { diagnostics } : {}) };
+        // 只有明确指定的 MR 能读取可见正文。先占用一次性名额，以免重送事件并发写入。
+        const capture = !troubleshootingCaptured && diagnosticTarget && diagnosticDirectory && mr &&
+          diagnosticTarget === `${snapshot.gitlabUrl.replace(/\/+$/u, "")}/${mr.projectId}/${mr.iid}`;
+        if (capture) troubleshootingCaptured = true;
+        const completions: Array<{ text: string; truncated: boolean }> = [];
+        // 诊断失败或跨过时限时保留已经验证的评审结果。
+        const diagnostics = await readOcrDiagnostics(
+          report, root,
+          capture ? (text, truncated) => { completions.push({ text, truncated }); } : undefined,
+          capture ? (text) => redactCompletionText(text, [token, modelEnv.OCR_LLM_TOKEN]) : undefined,
+        ).catch(() => undefined);
+        const troubleshooting = capture && mr && diagnosticDirectory ? await writeOcrTroubleshootingTrace(diagnosticDirectory, {
+          projectId: mr.projectId, iid: mr.iid, base, head, diagnostics, completions,
+        }).catch(() => {
+          troubleshootingCaptured = false;
+          return { status: "failed" as const };
+        }) : undefined;
+        return {
+          ...result, complete, ...(diagnostics ? { diagnostics } : {}), ...(troubleshooting ? { troubleshooting } : {}),
+        };
       } catch (error) {
         reviewSignal.throwIfAborted();
         throw error;
