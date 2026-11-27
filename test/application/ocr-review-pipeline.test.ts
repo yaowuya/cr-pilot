@@ -9,7 +9,7 @@ import type { DiscussionPosition, GitlabClient, MergeRequestTask } from "../../s
 import { openDatabase } from "../../src/infrastructure/sqlite/database.ts";
 import { createLlmProviderRepository } from "../../src/infrastructure/sqlite/llm-provider-repo.ts";
 import { createPromptRepository } from "../../src/infrastructure/sqlite/prompt-repo.ts";
-import { createSilentLogger } from "../../src/shared/logger.ts";
+import { createSilentLogger, type LogFields } from "../../src/shared/logger.ts";
 
 const task: MergeRequestTask = {
   projectId: 5,
@@ -44,6 +44,7 @@ function setup(result: OcrReviewResult, options: Pick<Parameters<typeof createRe
   const findings: PendingFinding[] = [];
   const reviewedSnapshots: RepositoryReviewSnapshot[] = [];
   const modelTargets: Array<ResolvedLlmTarget | undefined> = [];
+  const logs: Array<{ message: string; fields?: LogFields; notesPosted: number }> = [];
   const client: GitlabClient = {
     getRepositoryReviewSnapshot: async () => snapshot,
     getMergeRequestChanges: async () => assert.fail("OCR must use the locked MR diff"),
@@ -79,12 +80,12 @@ function setup(result: OcrReviewResult, options: Pick<Parameters<typeof createRe
         return result;
       },
     },
-    logger: createSilentLogger(),
+    logger: { ...createSilentLogger(), info: (message, fields) => { logs.push({ message, fields, notesPosted: notes.length }); } },
     recordWriter: { insert(record) { records.push(record); return records.length; } },
     findingWriter: { insert(finding) { findings.push(finding); } },
     batchMaxTokens: 6000,
   });
-  return { pipeline, notes, discussions, positions, records, findings, reviewedSnapshots, modelTargets };
+  return { pipeline, notes, discussions, positions, records, findings, reviewedSnapshots, modelTargets, logs };
 }
 
 test("OCR 只评审一次，重复建议只扣一次，按固定 diff 发布并存储 90 分", async () => {
@@ -114,6 +115,32 @@ test("OCR 只评审一次，重复建议只扣一次，按固定 diff 发布并�
   assert.equal(records[0]?.reviewEngine, "ocr");
   assert.equal(records[0]?.score, 90);
   assert.equal(findings.length, 4);
+});
+
+test("OCR 在回写前记录原始、映射和去重建议数，且评分沿用现有规则", async () => {
+  const finding = { path: "store.ts", line: 0, body: "Handle missing rows", severity: "high" };
+  const { pipeline, notes, logs } = setup({
+    complete: false,
+    filesReviewed: 1,
+    unreviewedPaths: [],
+    findings: [finding, finding],
+    diagnostics: {
+      status: "partial", returnedComments: 3, codeCommentCalls: 4, codeCommentFailures: 1,
+      acceptedCodeCommentCalls: 3, unsubmittedTextCompletions: 0, session: "complete",
+      warningCounts: {}, exclusionCounts: {},
+    },
+  });
+  await pipeline.run(task);
+  const index = logs.findIndex(({ message }) => message === "Open Code Review 诊断");
+  assert.notEqual(index, -1);
+  const { fields, notesPosted } = logs[index];
+  assert.equal(fields?.项目ID, task.projectId);
+  assert.equal(fields?.MR编号, task.iid);
+  assert.equal(fields?.映射后建议数, 2);
+  assert.equal(fields?.去重后建议数, 1);
+  assert.equal((fields?.引擎诊断 as { returnedComments: number }).returnedComments, 3);
+  assert.equal(notesPosted, 0);
+  assert.match(notes[0], /OCR 评分暂缺/);
 });
 
 test("OCR 部分评审保留可用建议并将评分置空", async () => {

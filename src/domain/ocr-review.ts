@@ -14,15 +14,30 @@ export interface OcrFinding {
   suggestionCode?: string;
 }
 
+/** 可写入日志的 OCR 汇总证据。null 表示引擎没有提供足够信息。 */
+export interface OcrDiagnostics {
+  status: string | null;
+  returnedComments: number | null;
+  codeCommentCalls: number | null;
+  codeCommentFailures: number | null;
+  acceptedCodeCommentCalls: number | null;
+  /** 结束轮次含可见正文但同轮没有提交建议，仅作为排查线索。 */
+  unsubmittedTextCompletions: number | null;
+  session: "complete" | "incomplete" | "unavailable";
+  warningCounts: Record<string, number>;
+  exclusionCounts: Record<string, number>;
+}
+
 /** 一个 MR 快照的结果。已有建议可随不完整的评审报告一起返回。 */
 export interface OcrReviewResult {
   findings: OcrFinding[];
-  /** 仅 OCR 覆盖契约证明所有应审文件已完成，且结果与固定版本一致时为 true。 */
+  /** 在时限内按固定版本完成全部应审文件时为 true，随后读取诊断不影响此状态。 */
   complete: boolean;
   filesReviewed: number;
   /** 含规则排除和未完成的文件。complete 区分是否有未完成的应审文件。 */
   unreviewedPaths: string[];
   tokenUsage?: TokenUsage;
+  diagnostics?: OcrDiagnostics;
 }
 
 /** 对固定 GitLab MR 快照运行一次 OCR 并释放该任务的临时资源。 */

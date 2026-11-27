@@ -8,6 +8,7 @@ import { isGitObjectId, validateRepositoryUrl, type RepositoryReviewSnapshot } f
 import type { TokenUsage } from "../../domain/review-record.ts";
 import type { Change } from "../../domain/review-task.ts";
 import { buildGitEnvironment, createGitRunner, GitProcessError, type GitRunner } from "../git/git-runner.ts";
+import { readOcrDiagnostics } from "./diagnostics.ts";
 
 const MAX_REPORT_BYTES = 8 * 1024 * 1024;
 const MAX_WORKSPACE_BYTES = 512 * 1024 * 1024;
@@ -30,10 +31,15 @@ interface OcrReviewerOptions {
 
 /** 版本和覆盖率只从运行器的 manifest 与 GitLab 快照判定，不信任评论正文。 */
 export function parseOcrReview(json: string, snapshot: RepositoryReviewSnapshot): OcrReviewResult {
-  let data: unknown;
-  try { data = JSON.parse(json); }
+  return parseOcrReport(readOcrReportObject(json), snapshot);
+}
+
+function readOcrReportObject(json: string): Record<string, unknown> {
+  try { return asObject(JSON.parse(json)); }
   catch { throw new Error("OCR 输出不是有效 JSON"); }
-  const root = asObject(data);
+}
+
+function parseOcrReport(root: Record<string, unknown>, snapshot: RepositoryReviewSnapshot): OcrReviewResult {
   if ((!Array.isArray(root.comments) && root.comments !== null) || typeof root.status !== "string") {
     throw new Error("OCR 输出缺少评审结果");
   }
@@ -248,9 +254,13 @@ export function createOcrReviewer(options: OcrReviewerOptions = {}): OcrReviewer
           } else throw error;
         }
         // OCR 可能先写报告再退出。任务超时后仍保留已写入且经过校验的建议。
-        const result = parseOcrReview(await readReport(output), snapshot);
+        const report = readOcrReportObject(await readReport(output));
+        const result = parseOcrReport(report, snapshot);
         workspace.signal.throwIfAborted();
-        return successfulExit && !signal.aborted ? result : { ...result, complete: false };
+        const complete = result.complete && successfulExit && !signal.aborted;
+        // 诊断来自临时会话，读取失败或跨过评审时限都不改变已经验证的结果。
+        const diagnostics = await readOcrDiagnostics(report, root).catch(() => undefined);
+        return { ...result, complete, ...(diagnostics ? { diagnostics } : {}) };
       } catch (error) {
         reviewSignal.throwIfAborted();
         throw error;

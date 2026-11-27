@@ -131,6 +131,9 @@ test("OCR 使用固定范围的独立工作目录并在任务结束后清理", a
 
   const result = await reviewer.review({ snapshot, token: "gitlab-credential", signal: new AbortController().signal });
   assert.equal(result.complete, true);
+  assert.equal(result.diagnostics?.returnedComments, 1);
+  assert.deepEqual(result.diagnostics?.exclusionCounts, { default_path: 1 });
+  assert.equal(result.diagnostics?.session, "unavailable");
   await assert.rejects(access(taskDir), { code: "ENOENT" });
 });
 

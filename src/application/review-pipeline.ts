@@ -675,7 +675,16 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
           const signal = AbortSignal.timeout(timeoutMs);
           const output = await deps.ocrReviewer.review({ snapshot, token: task.gitlabToken ?? "", signal, llmTarget });
           accumulateUsage(output.tokenUsage);
-          const complete = output.complete && !signal.aborted;
+          const { complete } = output;
+          const report = buildOcrReport({ ...output, complete });
+          // 先记录引擎与适配器各阶段的数量，MR 过期或回写失败时也可排查建议在哪里减少。
+          logger.info("Open Code Review 诊断", {
+            项目ID: task.projectId, MR编号: task.iid,
+            模型厂商: llmTarget?.provider.name, 配置模型: llmTarget?.model,
+            变更文件数: changeCount, 已评审文件数: output.filesReviewed, 完整: complete,
+            映射后建议数: output.findings.length, 去重后建议数: report.findings.length,
+            引擎诊断: output.diagnostics,
+          });
 
           const { refs } = snapshot;
           // GitLab 生成新 diff 有延迟，须同时核对实时 head 和收集好的版本 SHA。
@@ -690,7 +699,6 @@ export function createReviewPipeline(deps: PipelineDeps): ReviewPipeline {
             }
           };
           await assertSnapshotCurrent();
-          const report = buildOcrReport({ ...output, complete });
           const inline = await publishInlineComments({
             task,
             changes: snapshot.changes,
