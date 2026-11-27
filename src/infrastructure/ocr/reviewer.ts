@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseDiffLines, readDiffLine } from "../../domain/inline-comment.ts";
@@ -239,9 +239,14 @@ export function createOcrReviewer(options: OcrReviewerOptions = {}): OcrReviewer
         // OCR 在范围模式下按指定 SHA 读 Git 对象。设置 HEAD 让目录可被普通 Git 工具识别。
         await git(["update-ref", "--no-deref", "HEAD", head]);
         const output = join(root, "review.json");
+        // OCR v1.14.3 从任务的 HOME（Windows 为 USERPROFILE）读取评语语言。
+        const configDir = join(root, ".opencodereview");
+        await mkdir(configDir, { mode: 0o700 });
+        await writeFile(join(configDir, "config.json"), JSON.stringify({ language: "简体中文" }), {
+          encoding: "utf8", flag: "wx", mode: 0o600, signal: reviewSignal,
+        });
         const childEnv: NodeJS.ProcessEnv = {
           ...local, ...modelEnv, TMPDIR: root, TEMP: root, TMP: root, OCR_ENABLE_TELEMETRY: "0", OCR_NO_UPDATE: "1",
-          OCR_CONFIG_PATH: join(root, "ocr-config.json"),
         };
         const args = ["review", "--repo", cwd, "--from", base, "--to", head, "--audience", "agent", "--format", "json", "--output", output];
         if (ruleFile) args.push("--rule", ruleFile);

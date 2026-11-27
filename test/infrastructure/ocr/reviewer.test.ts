@@ -124,6 +124,9 @@ test("OCR 使用固定范围的独立工作目录并在任务结束后清理", a
       assert.equal(env.OCR_LLM_TOKEN, "ocr-credential");
       assert.equal(env.UNRELATED_SECRET, undefined);
       assert.ok(!Object.values(env).some((value) => value?.includes("gitlab-credential")));
+      assert.equal(env.USERPROFILE, taskDir);
+      const configPath = join(taskDir, ".opencodereview", "config.json");
+      assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")), { language: "简体中文" });
       assert.deepEqual(await readdir(cwd), []);
       await writeFile(args[args.indexOf("--output") + 1], JSON.stringify(validReport));
       return Buffer.alloc(0);
